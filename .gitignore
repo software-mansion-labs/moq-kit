@@ -42,5 +42,11 @@ Thumbs.db
 *~
 .vscode/
 
+# Build artifacts
+.build/
+
 # Vendor builds
 vendor/moq/target/
+
+# Generated frameworks
+ios/Frameworks/
