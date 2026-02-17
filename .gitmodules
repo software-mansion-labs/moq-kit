@@ -1,0 +1,3 @@
+[submodule "vendor/moq"]
+	path = vendor/moq
+	url = https://github.com/moq-dev/moq.git
