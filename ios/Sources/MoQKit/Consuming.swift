@@ -49,7 +49,7 @@ public final class MoQCatalog: Sendable {
     }
 
     public static func subscribe(broadcastHandle: UInt32) async throws -> MoQCatalog {
-        let (stream, callback, userData) = makeCallbackStream()
+        let (stream, callback, userData) = makeCallbackStream(label: "moq_consume_catalog")
 
         _ = try moq_consume_catalog(broadcastHandle, callback, userData).asHandle()
 
@@ -114,7 +114,7 @@ public final class MoQVideoTrack: Sendable {
         index: UInt32,
         maxLatencyMs: UInt64
     ) throws -> MoQVideoTrack {
-        let (stream, callback, userData) = makeCallbackStream()
+        let (stream, callback, userData) = makeCallbackStream(label: "moq_consume_video_ordered")
 
         let trackHandle = try moq_consume_video_ordered(
             broadcastHandle, index, maxLatencyMs, callback, userData
@@ -166,7 +166,7 @@ public final class MoQAudioTrack: Sendable {
         index: UInt32,
         maxLatencyMs: UInt64
     ) throws -> MoQAudioTrack {
-        let (stream, callback, userData) = makeCallbackStream()
+        let (stream, callback, userData) = makeCallbackStream(label: "moq_consume_audio_ordered")
 
         let trackHandle = try moq_consume_audio_ordered(
             broadcastHandle, index, maxLatencyMs, callback, userData

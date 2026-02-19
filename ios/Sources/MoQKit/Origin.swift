@@ -24,8 +24,19 @@ public final class MoQOrigin: Sendable {
         }
     }
 
+    /// Waits until the server announces the given path, then consumes it.
+    /// Returns the broadcast handle, or throws if the announcement stream ends without finding the path.
+    public func consume(waitingForPath path: String) async throws -> UInt32 {
+        for await announced in try announced() {
+            if announced.path == path {
+                return try consume(path: path)
+            }
+        }
+        throw MoQError(code: -1) // stream ended without seeing the path
+    }
+
     public func announced() throws -> AsyncStream<AnnouncedBroadcast> {
-        let (stream, callback, userData) = makeCallbackStream()
+        let (stream, callback, userData) = makeCallbackStream(label: "moq_origin_announced")
 
         let announcedHandle = try moq_origin_announced(handle, callback, userData).asHandle()
 
@@ -59,8 +70,9 @@ public final class MoQOrigin: Sendable {
             }
 
             continuation.onTermination = { @Sendable _ in
-                task.cancel()
+                print("closing announcement")
                 moq_origin_announced_close(announcedHandle)
+                task.cancel()
             }
         }
     }

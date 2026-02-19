@@ -3,9 +3,19 @@ set -euo pipefail
 
 # Build libmoq for iOS targets and package as an XCFramework.
 #
-# Usage: ./scripts/build-xcframework.sh
+# Usage: ./scripts/build-xcframework.sh [--debug]
+#
+#   --debug  Build with debug symbols (release-with-debug profile: optimized + DWARF)
 #
 # Produces: ios/Frameworks/Clibmoq.xcframework/
+
+DEBUG=0
+for arg in "$@"; do
+    case "$arg" in
+        --debug) DEBUG=1 ;;
+        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -32,9 +42,18 @@ done
 
 # --- Build for each target ---
 
+if [[ $DEBUG -eq 1 ]]; then
+    CARGO_PROFILE="release-with-debug"
+    PROFILE_FLAGS="--profile release-with-debug"
+    echo "Building with debug symbols (profile: release-with-debug)"
+else
+    CARGO_PROFILE="release"
+    PROFILE_FLAGS="--release"
+fi
+
 for target in "${TARGETS[@]}"; do
     echo "Building libmoq for $target..."
-    cargo build --release --package libmoq --target "$target" \
+    cargo build $PROFILE_FLAGS --package libmoq --target "$target" \
         --manifest-path "$WORKSPACE_CARGO"
 done
 
@@ -67,8 +86,8 @@ EOF
 rm -rf "$XCFRAMEWORK"
 mkdir -p "$OUTPUT_DIR"
 
-DEVICE_LIB="$TARGET_BASE/aarch64-apple-ios/release/libmoq.a"
-SIMULATOR_LIB="$TARGET_BASE/aarch64-apple-ios-sim/release/libmoq.a"
+DEVICE_LIB="$TARGET_BASE/aarch64-apple-ios/$CARGO_PROFILE/libmoq.a"
+SIMULATOR_LIB="$TARGET_BASE/aarch64-apple-ios-sim/$CARGO_PROFILE/libmoq.a"
 
 echo "Creating XCFramework..."
 xcodebuild -create-xcframework \

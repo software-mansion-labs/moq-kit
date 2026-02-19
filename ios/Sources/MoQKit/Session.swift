@@ -5,6 +5,11 @@ public final class MoQSession: Sendable {
     public let status: AsyncStream<Int32>
 
     private init(handle: UInt32, status: AsyncStream<Int32>) {
+        do {
+            try MoQ.initialize(logLevel: MoQ.LogLevel.trace)
+        } catch {
+            
+        }
         self.handle = handle
         self.status = status
     }
@@ -14,7 +19,7 @@ public final class MoQSession: Sendable {
         publishOrigin: UInt32 = 0,
         consumeOrigin: UInt32 = 0
     ) async throws -> MoQSession {
-        let (stream, callback, userData) = makeCallbackStream()
+        let (stream, callback, userData) = makeCallbackStream(label: "moq_session_connect")
 
         let handle = try url.withCStringLen { ptr, len in
             try moq_session_connect(ptr, len, publishOrigin, consumeOrigin, callback, userData).asHandle()
