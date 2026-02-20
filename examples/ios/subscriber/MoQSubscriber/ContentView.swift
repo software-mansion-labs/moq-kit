@@ -3,7 +3,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var relayURL = "http://192.168.92.140:4443"
-    @State private var broadcastPath = "bbb"
+    @State private var broadcastPath = "anon/bbb"
     @State private var player: MoQPlayer?
     @State private var playerState: MoQPlayerState = .idle
     @State private var stateObserverTask: Task<Void, Never>?
@@ -116,9 +116,10 @@ struct ContentView: View {
     private func stop() {
         stateObserverTask?.cancel()
         stateObserverTask = nil
-        player?.close()
+        let p = player
         player = nil
         playerState = .idle
+        Task { await p?.close() }
     }
     
     private func pause() {

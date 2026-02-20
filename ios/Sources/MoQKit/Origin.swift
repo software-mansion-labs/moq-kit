@@ -36,13 +36,13 @@ public final class MoQOrigin: Sendable {
     }
 
     public func announced() throws -> AsyncStream<AnnouncedBroadcast> {
-        let (stream, callback, userData) = makeCallbackStream(label: "moq_origin_announced")
+        let lease = makeCallbackStream(label: "moq_origin_announced")
 
-        let announcedHandle = try moq_origin_announced(handle, callback, userData).asHandle()
+        let announcedHandle = try moq_origin_announced(handle, lease.callback, lease.userData).asHandle()
 
         return AsyncStream { continuation in
             let task = Task {
-                for await rawId in stream {
+                for await rawId in lease.stream {
                     if rawId < 0 {
                         continuation.finish()
                         break
@@ -70,8 +70,8 @@ public final class MoQOrigin: Sendable {
             }
 
             continuation.onTermination = { @Sendable _ in
-                print("closing announcement")
                 moq_origin_announced_close(announcedHandle)
+                lease.release()
                 task.cancel()
             }
         }

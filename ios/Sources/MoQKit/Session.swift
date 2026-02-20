@@ -1,17 +1,18 @@
 import Clibmoq
+import Foundation
 
-public final class MoQSession: Sendable {
-    public let handle: UInt32
+public final class MoQSession: @unchecked Sendable {
     public let status: AsyncStream<Int32>
+    private let resource: CallbackStreamHandle
 
-    private init(handle: UInt32, status: AsyncStream<Int32>) {
-        do {
-            try MoQ.initialize(logLevel: MoQ.LogLevel.trace)
-        } catch {
-            
-        }
-        self.handle = handle
+    private init(
+        status: AsyncStream<Int32>,
+        resource: CallbackStreamHandle
+    ) throws {
+        try MoQ.setupLogger(logLevel: MoQ.LogLevel.trace)
+
         self.status = status
+        self.resource = resource
     }
 
     public static func connect(
@@ -19,15 +20,24 @@ public final class MoQSession: Sendable {
         publishOrigin: UInt32 = 0,
         consumeOrigin: UInt32 = 0
     ) async throws -> MoQSession {
-        let (stream, callback, userData) = makeCallbackStream(label: "moq_session_connect")
+        var statusContinuation: AsyncStream<Int32>.Continuation!
+        let status = AsyncStream<Int32> { statusContinuation = $0 }
 
-        let handle = try url.withCStringLen { ptr, len in
-            try moq_session_connect(ptr, len, publishOrigin, consumeOrigin, callback, userData).asHandle()
-        }
+        let resource = try CallbackStreamHandle(
+            label: "moq_session_connect",
+            open: { cb, ud in
+                try url.withCStringLen { ptr, len in
+                    try moq_session_connect(ptr, len, publishOrigin, consumeOrigin, cb, ud).asHandle()
+                }
+            },
+            close: { _ = moq_session_close($0) },
+            onEvent: { statusContinuation.yield($0) },
+            onDone: { statusContinuation.finish() }
+        )
 
-        var iterator = stream.makeAsyncIterator()
+        var iterator = status.makeAsyncIterator()
 
-        guard let firstStatus = await iterator.next() else {
+        guard let firstStatus = await iterator.next()else {
             throw MoQError(code: -1)
         }
 
@@ -35,27 +45,11 @@ public final class MoQSession: Sendable {
             throw MoQError(code: firstStatus)
         }
 
-        // Wrap remaining status updates into a new stream
-        let remaining = AsyncStream<Int32> { continuation in
-            let task = Task {
-                while let value = await iterator.next() {
-                    continuation.yield(value)
-                }
-                continuation.finish()
-            }
-            continuation.onTermination = { @Sendable _ in
-                task.cancel()
-            }
-        }
-
-        return MoQSession(handle: handle, status: remaining)
+        return try MoQSession(status: status, resource: resource)
     }
 
-    public func close() throws {
-        try moq_session_close(handle).asSuccess()
-    }
-
-    deinit {
-        moq_session_close(handle)
+    /// Closes the session. Idempotent.
+    public func close() async throws {
+        await resource.close()
     }
 }

@@ -50,3 +50,5 @@ vendor/moq/target/
 
 # Generated frameworks
 ios/Frameworks/
+plans
+**/xcuserdata

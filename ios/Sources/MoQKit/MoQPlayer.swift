@@ -50,7 +50,6 @@ public final class MoQPlayer {
     private var origin: MoQOrigin?
     private var session: MoQSession?
     private var broadcastHandle: UInt32?
-    private var catalog: MoQCatalog?
     private var videoTrack: MoQVideoTrack?
     private var audioTrack: MoQAudioTrack?
 
@@ -95,12 +94,16 @@ public final class MoQPlayer {
             self.session = session
 
             // 3. Wait for server to announce path, then consume
-            let broadcastHandle = try await origin.consume(waitingForPath: "anon/bbb")
+            let broadcastHandle = try await origin.consume(waitingForPath: self.path)
             self.broadcastHandle = broadcastHandle
 
             // 4. Subscribe to catalog
-            let catalog = try await MoQCatalog.subscribe(broadcastHandle: broadcastHandle)
-            self.catalog = catalog
+            let catalogUpdates = try MoQCatalog.subscribeUpdates(broadcastHandle: broadcastHandle)
+            var catalogIterator = catalogUpdates.catalogs.makeAsyncIterator()
+            
+            guard let catalog = await catalogIterator.next() else {
+                throw MoQError(code: -1)
+            }
 
             // 5. Build format descriptions from codec configs
             var videoFmt: CMFormatDescription?
@@ -201,7 +204,7 @@ public final class MoQPlayer {
                 for await statusCode in session.status {
                     if statusCode != 0 {
                         self.transition(to: .error("Session ended with code \(statusCode)"))
-                        self.close()
+                        await self.close()
                         return
                     }
                 }
@@ -209,23 +212,23 @@ public final class MoQPlayer {
 
         } catch let error as MoQError {
             transition(to: .error(error.description))
-            tearDown()
+            await tearDown()
             throw MoQPlayerError.connectionFailed(error)
         } catch let error as MoQPlayerError {
             transition(to: .error("\(error)"))
-            tearDown()
+            await tearDown()
             throw error
         } catch {
             transition(to: .error(error.localizedDescription))
-            tearDown()
+            await tearDown()
             throw error
         }
     }
 
     /// Stop playback and release all resources.
-    public func close() {
+    public func close() async {
         guard currentState != .closed else { return }
-        tearDown()
+        await tearDown()
         transition(to: .closed)
         stateContinuation.finish()
     }
@@ -244,7 +247,7 @@ public final class MoQPlayer {
         stateContinuation.yield(newState)
     }
 
-    private func tearDown() {
+    private func tearDown() async {
         // 1. Cancel background tasks
         videoTask?.cancel()
         audioTask?.cancel()
@@ -259,23 +262,13 @@ public final class MoQPlayer {
         synchronizer.setRate(0, time: .zero)
 
         // 3. Close tracks
-        videoTrack?.close()
+        await videoTrack?.close()
         videoTrack = nil
-        audioTrack?.close()
+        await audioTrack?.close()
         audioTrack = nil
 
-        // 4. Close catalog
-        catalog?.close()
-        catalog = nil
-
-        // 5. Close broadcast consumer
-        if let bh = broadcastHandle {
-            try? closeBroadcastConsumer(bh)
-            broadcastHandle = nil
-        }
-
         // 6. Close session
-        try? session?.close()
+        try? await session?.close()
         session = nil
 
         // 7. Close origin
