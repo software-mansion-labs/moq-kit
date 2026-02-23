@@ -1,7 +1,7 @@
 import Clibmoq
 import Foundation
 
-public final class MoQSession: @unchecked Sendable {
+public final class MoQTransport: @unchecked Sendable {
     public let status: AsyncStream<Int32>
     private let resource: CallbackStreamHandle
 
@@ -19,7 +19,7 @@ public final class MoQSession: @unchecked Sendable {
         url: String,
         publishOrigin: UInt32 = 0,
         consumeOrigin: UInt32 = 0
-    ) async throws -> MoQSession {
+    ) async throws -> MoQTransport {
         var statusContinuation: AsyncStream<Int32>.Continuation!
         let status = AsyncStream<Int32> { statusContinuation = $0 }
 
@@ -45,7 +45,7 @@ public final class MoQSession: @unchecked Sendable {
             throw MoQError(code: firstStatus)
         }
 
-        return try MoQSession(status: status, resource: resource)
+        return try MoQTransport(status: status, resource: resource)
     }
 
     /// Closes the session. Idempotent.

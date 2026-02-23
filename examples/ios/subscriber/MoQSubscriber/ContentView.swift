@@ -4,9 +4,12 @@ import SwiftUI
 struct ContentView: View {
     @State private var relayURL = "http://192.168.92.140:4443"
     @State private var broadcastPath = "anon/bbb"
-    @State private var player: MoQPlayer?
-    @State private var playerState: MoQPlayerState = .idle
+    @State private var session: MoQSession?
+    @State private var sessionState: MoQSessionState = .idle
+    @State private var broadcastInfo: MoQBroadcastInfo?
+    @State private var broadcastOffline = false
     @State private var stateObserverTask: Task<Void, Never>?
+    @State private var broadcastObserverTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 16) {
@@ -28,7 +31,7 @@ struct ContentView: View {
                 Button("Stop") { stop() }
                     .buttonStyle(.bordered)
                     .disabled(!canStop)
-                
+
                 Button("Pause") { pause() }
                     .buttonStyle(.bordered)
             }
@@ -43,8 +46,31 @@ struct ContentView: View {
                 Spacer()
             }
 
-            if let player {
-                VideoLayerView(layer: player.videoLayer)
+            if let info = broadcastInfo {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if let video = info.videoTracks.first {
+                            Text("Video: \(video.config.name) (\(video.config.codec))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if let audio = info.audioTracks.first {
+                            Text("Audio: \(audio.config.name) (\(audio.config.codec) \(audio.config.sampleRate) Hz)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if broadcastOffline {
+                        Text("Broadcast offline")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
+            if let session {
+                VideoLayerView(layer: session.videoLayer)
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
@@ -65,17 +91,18 @@ struct ContentView: View {
     // MARK: - Computed Properties
 
     private var canConnect: Bool {
-        playerState == .idle && !relayURL.isEmpty && !broadcastPath.isEmpty
+        sessionState == .idle && !relayURL.isEmpty && !broadcastPath.isEmpty
     }
 
     private var canStop: Bool {
-        playerState == .connecting || playerState == .playing
+        sessionState == .connecting || sessionState == .connected || sessionState == .playing
     }
 
     private var stateLabel: String {
-        switch playerState {
+        switch sessionState {
         case .idle: return "idle"
         case .connecting: return "connecting..."
+        case .connected: return "connected"
         case .playing: return "playing"
         case .error(let msg): return "error: \(msg)"
         case .closed: return "closed"
@@ -83,9 +110,10 @@ struct ContentView: View {
     }
 
     private var stateColor: Color {
-        switch playerState {
+        switch sessionState {
         case .idle: return .gray
         case .connecting: return .orange
+        case .connected: return .blue
         case .playing: return .green
         case .error: return .red
         case .closed: return .gray
@@ -95,18 +123,32 @@ struct ContentView: View {
     // MARK: - Actions
 
     private func connect() {
-        let p = MoQPlayer(url: relayURL, path: broadcastPath)
-        player = p
+        let s = MoQSession(url: relayURL, path: broadcastPath)
+        session = s
 
         stateObserverTask = Task {
-            for await state in p.state {
-                playerState = state
+            for await state in s.state {
+                sessionState = state
+            }
+        }
+
+        broadcastObserverTask = Task {
+            for await event in s.broadcasts {
+                switch event {
+                case .available(let info):
+                    broadcastInfo = info
+                    broadcastOffline = false
+                    
+                    try? await s.startTrack(videoIndex: info.videoTracks.first?.index, audioIndex: info.audioTracks.first?.index)
+                case .unavailable:
+                    broadcastOffline = true
+                }
             }
         }
 
         Task {
             do {
-                try await p.play()
+                try await s.connect()
             } catch {
                 // State is already updated via the observer
             }
@@ -116,13 +158,17 @@ struct ContentView: View {
     private func stop() {
         stateObserverTask?.cancel()
         stateObserverTask = nil
-        let p = player
-        player = nil
-        playerState = .idle
-        Task { await p?.close() }
+        broadcastObserverTask?.cancel()
+        broadcastObserverTask = nil
+        broadcastInfo = nil
+        broadcastOffline = false
+        let s = session
+        session = nil
+        sessionState = .idle
+        Task { await s?.close() }
     }
-    
+
     private func pause() {
-        
+
     }
 }

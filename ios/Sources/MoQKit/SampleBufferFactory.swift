@@ -1,9 +1,9 @@
 import AVFoundation
 import CoreMedia
 
-// MARK: - MoQPlayerError (codec/format related)
+// MARK: - MoQSessionError (codec/format related)
 
-public enum MoQPlayerError: Error, Sendable {
+public enum MoQSessionError: Error, Sendable {
     case unsupportedCodec(String)
     case missingCodecDescription
     case formatDescriptionFailed(OSStatus)
@@ -11,6 +11,8 @@ public enum MoQPlayerError: Error, Sendable {
     case alreadyPlaying
     case alreadyClosed
     case noTracksAvailable
+    case noBroadcastAvailable
+    case noTracksSelected
     case connectionFailed(MoQError)
 }
 
@@ -22,7 +24,7 @@ enum SampleBufferFactory {
 
     static func makeVideoFormatDescription(from config: VideoConfig) throws -> CMFormatDescription {
         guard let descData = config.codecDescription else {
-            throw MoQPlayerError.missingCodecDescription
+            throw MoQSessionError.missingCodecDescription
         }
 
         let codec = config.codec.lowercased()
@@ -31,7 +33,7 @@ enum SampleBufferFactory {
         } else if codec.hasPrefix("hev") || codec.hasPrefix("hvc") {
             return try makeHEVCFormatDescription(hvccData: descData)
         } else {
-            throw MoQPlayerError.unsupportedCodec(config.codec)
+            throw MoQSessionError.unsupportedCodec(config.codec)
         }
     }
 
@@ -49,7 +51,7 @@ enum SampleBufferFactory {
                 formatDescriptionOut: &formatDescription
             )
             guard status == noErr, let fd = formatDescription else {
-                throw MoQPlayerError.formatDescriptionFailed(status)
+                throw MoQSessionError.formatDescriptionFailed(status)
             }
             return fd
         }
@@ -70,7 +72,7 @@ enum SampleBufferFactory {
                 formatDescriptionOut: &formatDescription
             )
             guard status == noErr, let fd = formatDescription else {
-                throw MoQPlayerError.formatDescriptionFailed(status)
+                throw MoQSessionError.formatDescriptionFailed(status)
             }
             return fd
         }
@@ -87,7 +89,7 @@ enum SampleBufferFactory {
         } else if codec == "opus" {
             formatID = kAudioFormatOpus
         } else {
-            throw MoQPlayerError.unsupportedCodec(config.codec)
+            throw MoQSessionError.unsupportedCodec(config.codec)
         }
 
         var asbd = AudioStreamBasicDescription(
@@ -119,7 +121,7 @@ enum SampleBufferFactory {
                 )
             }
             guard status == noErr, let fd = formatDescription else {
-                throw MoQPlayerError.formatDescriptionFailed(status)
+                throw MoQSessionError.formatDescriptionFailed(status)
             }
             return fd
         } else {
@@ -134,7 +136,7 @@ enum SampleBufferFactory {
                 formatDescriptionOut: &formatDescription
             )
             guard status == noErr, let fd = formatDescription else {
-                throw MoQPlayerError.formatDescriptionFailed(status)
+                throw MoQSessionError.formatDescriptionFailed(status)
             }
             return fd
         }
@@ -163,7 +165,7 @@ enum SampleBufferFactory {
             blockBufferOut: &blockBuffer
         )
         guard status == noErr, let block = blockBuffer else {
-            throw MoQPlayerError.sampleBufferFailed(status)
+            throw MoQSessionError.sampleBufferFailed(status)
         }
 
         // Copy frame payload into block buffer
@@ -177,7 +179,7 @@ enum SampleBufferFactory {
             )
         }
         guard status == noErr else {
-            throw MoQPlayerError.sampleBufferFailed(status)
+            throw MoQSessionError.sampleBufferFailed(status)
         }
 
         // Build timing
@@ -219,7 +221,7 @@ enum SampleBufferFactory {
             sampleBufferOut: &sampleBuffer
         )
         guard status == noErr, let sb = sampleBuffer else {
-            throw MoQPlayerError.sampleBufferFailed(status)
+            throw MoQSessionError.sampleBufferFailed(status)
         }
 
         return sb
@@ -273,7 +275,7 @@ private struct ParameterSetCollection {
 /// ```
 private func parseAVCCParameterSets(_ data: Data) throws -> ParameterSetCollection {
     guard data.count >= 7 else {
-        throw MoQPlayerError.missingCodecDescription
+        throw MoQSessionError.missingCodecDescription
     }
 
     var offset = 5
@@ -283,29 +285,29 @@ private func parseAVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
     let numSPS = Int(data[offset]) & 0x1F
     offset += 1
     for _ in 0..<numSPS {
-        guard offset + 2 <= data.count else { throw MoQPlayerError.missingCodecDescription }
+        guard offset + 2 <= data.count else { throw MoQSessionError.missingCodecDescription }
         let length = Int(data[offset]) << 8 | Int(data[offset + 1])
         offset += 2
-        guard offset + length <= data.count else { throw MoQPlayerError.missingCodecDescription }
+        guard offset + length <= data.count else { throw MoQSessionError.missingCodecDescription }
         parameterSets.append(data.subdata(in: offset..<(offset + length)))
         offset += length
     }
 
     // PPS
-    guard offset + 1 <= data.count else { throw MoQPlayerError.missingCodecDescription }
+    guard offset + 1 <= data.count else { throw MoQSessionError.missingCodecDescription }
     let numPPS = Int(data[offset])
     offset += 1
     for _ in 0..<numPPS {
-        guard offset + 2 <= data.count else { throw MoQPlayerError.missingCodecDescription }
+        guard offset + 2 <= data.count else { throw MoQSessionError.missingCodecDescription }
         let length = Int(data[offset]) << 8 | Int(data[offset + 1])
         offset += 2
-        guard offset + length <= data.count else { throw MoQPlayerError.missingCodecDescription }
+        guard offset + length <= data.count else { throw MoQSessionError.missingCodecDescription }
         parameterSets.append(data.subdata(in: offset..<(offset + length)))
         offset += length
     }
 
     guard !parameterSets.isEmpty else {
-        throw MoQPlayerError.missingCodecDescription
+        throw MoQSessionError.missingCodecDescription
     }
 
     return ParameterSetCollection(sets: parameterSets)
@@ -326,7 +328,7 @@ private func parseAVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
 /// ```
 private func parseHVCCParameterSets(_ data: Data) throws -> ParameterSetCollection {
     guard data.count >= 23 else {
-        throw MoQPlayerError.missingCodecDescription
+        throw MoQSessionError.missingCodecDescription
     }
 
     var offset = 22
@@ -336,23 +338,23 @@ private func parseHVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
     var parameterSets: [Data] = []
 
     for _ in 0..<numArrays {
-        guard offset + 3 <= data.count else { throw MoQPlayerError.missingCodecDescription }
+        guard offset + 3 <= data.count else { throw MoQSessionError.missingCodecDescription }
         // Skip NAL unit type byte
         offset += 1
         let numNalus = Int(data[offset]) << 8 | Int(data[offset + 1])
         offset += 2
         for _ in 0..<numNalus {
-            guard offset + 2 <= data.count else { throw MoQPlayerError.missingCodecDescription }
+            guard offset + 2 <= data.count else { throw MoQSessionError.missingCodecDescription }
             let length = Int(data[offset]) << 8 | Int(data[offset + 1])
             offset += 2
-            guard offset + length <= data.count else { throw MoQPlayerError.missingCodecDescription }
+            guard offset + length <= data.count else { throw MoQSessionError.missingCodecDescription }
             parameterSets.append(data.subdata(in: offset..<(offset + length)))
             offset += length
         }
     }
 
     guard !parameterSets.isEmpty else {
-        throw MoQPlayerError.missingCodecDescription
+        throw MoQSessionError.missingCodecDescription
     }
 
     return ParameterSetCollection(sets: parameterSets)
