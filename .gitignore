@@ -6,6 +6,7 @@ Cargo.lock
 # Xcode
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
+**/xcuserdata/
 DerivedData/
 build/
 *.pbxuser
@@ -14,6 +15,9 @@ build/
 *.perspectivev3
 *.xccheckout
 *.moved-aside
+*.xcuserstate
+*.xcbkptlist
+*.xcscmblueprint
 *.hmap
 *.ipa
 *.dSYM.zip
@@ -51,4 +55,3 @@ vendor/moq/target/
 # Generated frameworks
 ios/Frameworks/
 plans
-**/xcuserdata
