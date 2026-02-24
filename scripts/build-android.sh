@@ -27,7 +27,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_CARGO="$ROOT_DIR/vendor/moq/Cargo.toml"
 TARGET_BASE="$ROOT_DIR/vendor/moq/target"
-ANDROID_OUT="$ROOT_DIR/android"
+ANDROID_OUT="$ROOT_DIR/android/moqkit/MoQKit/src/main"
 
 if ! command -v cargo-ndk >/dev/null 2>&1; then
   echo "Error: cargo-ndk is not installed. Install with: cargo install cargo-ndk" >&2
@@ -114,8 +114,7 @@ check_ndk_version() {
   return 0
 }
 
-if ! NDK_DIR="$(resolve_ndk)"; then
-  echo "Error: Android NDK not found. Set ANDROID_NDK_HOME or ANDROID_SDK_ROOT/ANDROID_HOME." >&2
+if ! NDK_DIR="$(resolve_ndk)"; then echo "Error: Android NDK not found. Set ANDROID_NDK_HOME or ANDROID_SDK_ROOT/ANDROID_HOME." >&2
   exit 1
 fi
 export ANDROID_NDK_HOME="$NDK_DIR"
@@ -137,7 +136,7 @@ cargo build $PROFILE_FLAGS --package libmoq --features uniffi-api \
   --manifest-path "$WORKSPACE_CARGO"
 
 echo "==> Generating Kotlin bindings..."
-UNIFFI_OUT="$ANDROID_OUT/uniffi"
+UNIFFI_OUT="$ANDROID_OUT/java"
 rm -rf "$UNIFFI_OUT"
 mkdir -p "$UNIFFI_OUT"
 
@@ -185,4 +184,4 @@ mkdir -p "$ANDROID_OUT/jniLibs"
 echo ""
 echo "Done."
 echo "JNI library: $ANDROID_OUT/jniLibs/arm64-v8a/libmoq.so"
-echo "Kotlin bindings: $ANDROID_OUT/uniffi"
+echo "Kotlin bindings: $UNIFFI_OUT"

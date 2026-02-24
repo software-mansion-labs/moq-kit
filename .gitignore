@@ -56,4 +56,5 @@ vendor/moq/target/
 ios/Frameworks/
 android/uniffi
 android/jniLibs
+android/**/uniffi/
 plans

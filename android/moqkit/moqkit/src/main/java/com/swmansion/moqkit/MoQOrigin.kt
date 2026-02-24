@@ -1,0 +1,39 @@
+package com.swmansion.moqkit
+
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import uniffi.moq.AnnounceCallback
+import uniffi.moq.AnnouncedInfo
+import uniffi.moq.MoqException
+import uniffi.moq.moqOriginAnnounced
+import uniffi.moq.moqOriginAnnouncedClose
+import uniffi.moq.moqOriginAnnouncedInfo
+import uniffi.moq.moqOriginClose
+import uniffi.moq.moqOriginConsume
+import uniffi.moq.moqOriginCreate
+import uniffi.moq.moqOriginPublish
+
+class MoQOrigin(val handle: UInt = moqOriginCreate()) : AutoCloseable {
+
+    fun consume(path: String): UInt = moqOriginConsume(handle, path)
+    fun publish(broadcast: UInt, path: String) = moqOriginPublish(handle, path, broadcast)
+
+    /**
+     * Emits AnnouncedInfo for each broadcast announced on this origin.
+     * Flow is active until the collector cancels or the origin is closed.
+     */
+    fun announced(): Flow<AnnouncedInfo> = callbackFlow {
+        val callback = object : AnnounceCallback {
+            override fun onAnnounce(announcedId: UInt) {
+                try {
+                    trySend(moqOriginAnnouncedInfo(announcedId))
+                } catch (_: MoqException) { /* skip bad announcement */ }
+            }
+        }
+        val announcedHandle = moqOriginAnnounced(handle, callback)
+        awaitClose { moqOriginAnnouncedClose(announcedHandle) }
+    }
+
+    override fun close() { try { moqOriginClose(handle) } catch (_: MoqException) {} }
+}
