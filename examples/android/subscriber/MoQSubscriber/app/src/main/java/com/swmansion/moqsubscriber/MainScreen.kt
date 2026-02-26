@@ -19,9 +19,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.media3.ui.PlayerView
 import com.swmansion.moqkit.MoQSession
 
 @Composable
@@ -60,12 +63,10 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             OutlinedButton(
                 onClick = { vm.stop() },
                 enabled = vm.sessionState is MoQSession.State.Connecting ||
-                        vm.sessionState is MoQSession.State.Connected,
+                        vm.sessionState is MoQSession.State.Connected ||
+                        vm.sessionState is MoQSession.State.Playing,
             ) {
                 Text("Stop")
-            }
-            OutlinedButton(onClick = {}) {
-                Text("Pause")
             }
         }
 
@@ -104,18 +105,15 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             }
         }
 
-        Box(
+        AndroidView(
+            factory = { ctx -> PlayerView(ctx).also { it.useController = false } },
+            update = { pv -> pv.player = vm.player },
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(16f / 9f)
-                .background(Color.Black, shape = RoundedCornerShape(8.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = "No Video",
-                color = Color.White.copy(alpha = 0.5f),
-            )
-        }
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black),
+        )
     }
 }
 
@@ -123,6 +121,7 @@ private fun stateLabel(state: MoQSession.State): String = when (state) {
     MoQSession.State.Idle -> "idle"
     MoQSession.State.Connecting -> "connecting..."
     MoQSession.State.Connected -> "connected"
+    MoQSession.State.Playing -> "playing"
     is MoQSession.State.Error -> "error: ${state.code}"
     MoQSession.State.Closed -> "closed"
 }
@@ -132,6 +131,7 @@ private fun stateColor(state: MoQSession.State): Color = when (state) {
     MoQSession.State.Idle -> Color.Gray
     MoQSession.State.Connecting -> Color(0xFFFFA500)
     MoQSession.State.Connected -> Color.Blue
+    MoQSession.State.Playing -> Color.Green
     is MoQSession.State.Error -> Color.Red
     MoQSession.State.Closed -> Color.Gray
 }

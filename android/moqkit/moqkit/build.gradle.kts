@@ -51,6 +51,7 @@ tasks.register<Copy>("manualBuild") {
 
 dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
+    api(libs.media3.exoplayer)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

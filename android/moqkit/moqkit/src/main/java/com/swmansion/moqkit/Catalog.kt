@@ -21,7 +21,7 @@ class MoQCatalog(val handle: UInt) : AutoCloseable {
 
 /**
  * Returns a Flow<MoQCatalog> that emits a new catalog each time the broadcast's
- * catalog is updated. Each emitted MoQCatalog must be closed by the consumer (use .use{}).
+ * catalog is updated. Each emitted MoQCatalog must be closed by the consumer when no longer needed.
  * Flow is active until the collector cancels.
  */
 fun subscribeCatalog(broadcastHandle: UInt): Flow<MoQCatalog> = callbackFlow {

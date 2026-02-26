@@ -43,6 +43,10 @@ android {
 
 dependencies {
     implementation(files("../libs/MoQKit-release.aar"))
+    // TODO: Remove once MoQKit is published to a Maven repository (transitive deps will be resolved via POM)
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
