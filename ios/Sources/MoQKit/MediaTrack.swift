@@ -1,21 +1,23 @@
-import Clibmoq
 import Foundation
 
 // MARK: - Video Track
 
 public final class MoQVideoTrack: @unchecked Sendable {
     public let frames: AsyncStream<MoQFrame>
-    private let resource: CallbackStreamHandle
+    private let trackHandle: UInt32
     private let framesContinuation: AsyncStream<MoQFrame>.Continuation
+    private let rawContinuation: AsyncStream<UInt32>.Continuation
 
     private init(
+        handle: UInt32,
         frames: AsyncStream<MoQFrame>,
-        resource: CallbackStreamHandle,
-        framesContinuation: AsyncStream<MoQFrame>.Continuation
+        framesContinuation: AsyncStream<MoQFrame>.Continuation,
+        rawContinuation: AsyncStream<UInt32>.Continuation
     ) {
+        self.trackHandle = handle
         self.frames = frames
-        self.resource = resource
         self.framesContinuation = framesContinuation
+        self.rawContinuation = rawContinuation
     }
 
     public static func subscribe(
@@ -23,29 +25,44 @@ public final class MoQVideoTrack: @unchecked Sendable {
         index: UInt32,
         maxLatencyMs: UInt64
     ) throws -> MoQVideoTrack {
-        var continuation: AsyncStream<MoQFrame>.Continuation!
-        let frames = AsyncStream<MoQFrame> { continuation = $0 }
+        // Inner stream: raw IDs only, fed by callback (no Rust calls inside callback)
+        var rawCont: AsyncStream<UInt32>.Continuation!
+        let rawStream = AsyncStream<UInt32> { rawCont = $0 }
 
-        let resource = try CallbackStreamHandle(
-            label: "moq_consume_video_ordered",
-            open: { cb, ud in
-                try moq_consume_video_ordered(broadcastHandle, index, maxLatencyMs, cb, ud).asHandle()
-            },
-            close: { moq_consume_video_close($0) },
-            onEvent: { handleId in 
-                guard handleId >= 0 else { return }
-                if let frame = readFrame(handle: UInt32(handleId)) {
-                    continuation.yield(frame)
-                }
-            },
-            onDone: { continuation.finish() }
+        var framesCont: AsyncStream<MoQFrame>.Continuation!
+        let frames = AsyncStream<MoQFrame> { framesCont = $0 }
+
+        let cb = FrameCB(continuation: rawCont)
+        let handle = try moqConsumeVideoOrdered(
+            broadcast: broadcastHandle,
+            index: index,
+            maxLatencyMs: maxLatencyMs,
+            callback: cb
         )
 
+        let track = MoQVideoTrack(
+            handle: handle,
+            frames: frames,
+            framesContinuation: framesCont,
+            rawContinuation: rawCont
+        )
 
-        let track = MoQVideoTrack(frames: frames, resource: resource, framesContinuation: continuation)
-
-        continuation.onTermination = { @Sendable [weak track] _ in
+        framesCont.onTermination = { @Sendable [weak track] _ in
             Task { await track?.close() }
+        }
+
+        // Bridging Task: consumes raw IDs, calls moqConsumeFrame outside callback lock
+        Task.detached {
+            for await frameId in rawStream {
+                defer { try? moqConsumeFrameClose(frame: frameId) }
+                guard let frameData = try? moqConsumeFrame(frame: frameId) else { continue }
+                framesCont.yield(MoQFrame(
+                    payload: frameData.payload,
+                    timestampUs: frameData.timestampUs,
+                    keyframe: frameData.keyframe
+                ))
+            }
+            framesCont.finish()
         }
 
         return track
@@ -53,11 +70,13 @@ public final class MoQVideoTrack: @unchecked Sendable {
 
     public func close() async {
         framesContinuation.finish()
-        await resource.close()
+        rawContinuation.finish()          // stops bridging Task
+        try? moqConsumeVideoClose(track: trackHandle)
     }
 
     deinit {
         framesContinuation.finish()
+        rawContinuation.finish()
     }
 }
 
@@ -65,17 +84,20 @@ public final class MoQVideoTrack: @unchecked Sendable {
 
 public final class MoQAudioTrack: @unchecked Sendable {
     public let frames: AsyncStream<MoQFrame>
-    private let resource: CallbackStreamHandle
+    private let trackHandle: UInt32
     private let framesContinuation: AsyncStream<MoQFrame>.Continuation
+    private let rawContinuation: AsyncStream<UInt32>.Continuation
 
     private init(
+        handle: UInt32,
         frames: AsyncStream<MoQFrame>,
-        resource: CallbackStreamHandle,
-        framesContinuation: AsyncStream<MoQFrame>.Continuation
+        framesContinuation: AsyncStream<MoQFrame>.Continuation,
+        rawContinuation: AsyncStream<UInt32>.Continuation
     ) {
+        self.trackHandle = handle
         self.frames = frames
-        self.resource = resource
         self.framesContinuation = framesContinuation
+        self.rawContinuation = rawContinuation
     }
 
     public static func subscribe(
@@ -83,32 +105,44 @@ public final class MoQAudioTrack: @unchecked Sendable {
         index: UInt32,
         maxLatencyMs: UInt64
     ) throws -> MoQAudioTrack {
-        var continuation: AsyncStream<MoQFrame>.Continuation!
-        let frames = AsyncStream<MoQFrame> { continuation = $0 }
+        // Inner stream: raw IDs only, fed by callback (no Rust calls inside callback)
+        var rawCont: AsyncStream<UInt32>.Continuation!
+        let rawStream = AsyncStream<UInt32> { rawCont = $0 }
 
-        let resource = try CallbackStreamHandle(
-            label: "moq_consume_audio_ordered",
-            open: { cb, ud in
-                try moq_consume_audio_ordered(broadcastHandle, index, maxLatencyMs, cb, ud).asHandle()
-            },
-            close: { moq_consume_audio_close($0) },
-            onEvent: { handleId in
-                guard handleId >= 0 else { return }
+        var framesCont: AsyncStream<MoQFrame>.Continuation!
+        let frames = AsyncStream<MoQFrame> { framesCont = $0 }
 
-                if let frame = readFrame(handle: UInt32(handleId)) {
-                    continuation.yield(frame)
-                }
-            },
-            onDone: { continuation.finish() }
+        let cb = FrameCB(continuation: rawCont)
+        let handle = try moqConsumeAudioOrdered(
+            broadcast: broadcastHandle,
+            index: index,
+            maxLatencyMs: maxLatencyMs,
+            callback: cb
         )
 
+        let track = MoQAudioTrack(
+            handle: handle,
+            frames: frames,
+            framesContinuation: framesCont,
+            rawContinuation: rawCont
+        )
 
-        let track = MoQAudioTrack(frames: frames, resource: resource,
-                                  framesContinuation: continuation)
-
-
-        continuation.onTermination = { @Sendable [weak track] _ in
+        framesCont.onTermination = { @Sendable [weak track] _ in
             Task { await track?.close() }
+        }
+
+        // Bridging Task: consumes raw IDs, calls moqConsumeFrame outside callback lock
+        Task.detached {
+            for await frameId in rawStream {
+                defer { try? moqConsumeFrameClose(frame: frameId) }
+                guard let frameData = try? moqConsumeFrame(frame: frameId) else { continue }
+                framesCont.yield(MoQFrame(
+                    payload: frameData.payload,
+                    timestampUs: frameData.timestampUs,
+                    keyframe: frameData.keyframe
+                ))
+            }
+            framesCont.finish()
         }
 
         return track
@@ -116,48 +150,26 @@ public final class MoQAudioTrack: @unchecked Sendable {
 
     public func close() async {
         framesContinuation.finish()
-        await resource.close()
+        rawContinuation.finish()          // stops bridging Task
+        try? moqConsumeAudioClose(track: trackHandle)
     }
 
     deinit {
         framesContinuation.finish()
+        rawContinuation.finish()
     }
 }
 
-// MARK: - Frame Chunk Assembly
+// MARK: - Frame Callback
 
-private func readFrame(handle: UInt32) -> MoQFrame? {
-    var payload = Data()
-    var timestampUs: UInt64 = 0
-    var keyframe = false
-    var index: UInt32 = 0
+private final class FrameCB: FrameCallback {
+    private let continuation: AsyncStream<UInt32>.Continuation
 
-    while true {
-        var chunk = moq_frame()
-        let result = moq_consume_frame_chunk(handle, index, &chunk)
-
-        if result < 0 {
-            break
-        }
-
-        if chunk.payload == nil || chunk.payload_size == 0 {
-            moq_consume_frame_close(handle)
-            return nil
-        }
-
-        payload.append(chunk.payload, count: Int(chunk.payload_size))
-
-        if index == 0 {
-            timestampUs = chunk.timestamp_us
-            keyframe = chunk.keyframe
-        }
-
-        index += 1
+    init(continuation: AsyncStream<UInt32>.Continuation) {
+        self.continuation = continuation
     }
 
-    moq_consume_frame_close(handle)
-
-    guard !payload.isEmpty else { return nil }
-
-    return MoQFrame(payload: payload, timestampUs: timestampUs, keyframe: keyframe)
+    func onFrame(frameId: UInt32) {
+        continuation.yield(frameId)   // only safe: no Rust call inside callback
+    }
 }

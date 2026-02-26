@@ -14,7 +14,7 @@ public enum MoQSessionState: Sendable, Equatable {
 
 // MARK: - Broadcast Info
 
-public struct MoQBroadcastTrack<T>: Sendable {
+public struct MoQBroadcastTrack<T: Sendable>: Sendable {
     public let index: UInt32
     public let config: T
 }
@@ -110,6 +110,8 @@ public final class MoQSession {
 
         transition(to: .connecting)
 
+        try moqLogLevel(level: "trace")
+        print("connect triggered")
         do {
             // 1. Create origin
             let origin = try MoQOrigin()
@@ -141,63 +143,68 @@ public final class MoQSession {
             // 6. Watch announcements — manages catalog subscription per active broadcast
             announcedTask = Task { [weak self] in
                 guard let self else { return }
-                guard let announcements = try? origin.announced() else { return }
+                do {
+                    let announcements = try origin.announced()
 
-                for await broadcast in announcements {
-                    guard !Task.isCancelled else { break }
-                    guard broadcast.path == self.path else { continue }
+                    for await broadcast in announcements {
+                        guard !Task.isCancelled else { break }
+                        guard broadcast.path == self.path else { continue }
 
-                    if broadcast.active {
-                        // Tear down any existing tracks and catalog
-                        await self.tearDownTracks()
-                        self.catalogTask?.cancel()
-                        self.catalogTask = nil
-                        self.catalogSubscription = nil
-                        self.currentCatalog = nil
-                        self.currentBroadcastHandle = nil
-                        if self.currentState == .playing {
-                            self.transition(to: .connected)
-                        }
-
-                        do {
-                            let handle = try origin.consume(path: self.path)
-                            self.currentBroadcastHandle = handle
-
-                            let subscription = try MoQCatalog.subscribeUpdates(broadcastHandle: handle)
-                            self.catalogSubscription = subscription
-
-                            self.catalogTask = Task { [weak self] in
-                                guard let self else { return }
-                                for await catalog in subscription.catalogs {
-                                    guard !Task.isCancelled else { break }
-                                    self.currentCatalog = catalog
-                                    let info = self.buildBroadcastInfo(from: catalog)
-                                    self.broadcastsContinuation.yield(.available(info))
-                                }
+                        print(broadcast)
+                        if broadcast.active {
+                            // Tear down any existing tracks and catalog
+                            await self.tearDownTracks()
+                            self.catalogTask?.cancel()
+                            self.catalogTask = nil
+                            self.catalogSubscription = nil
+                            self.currentCatalog = nil
+                            self.currentBroadcastHandle = nil
+                            if self.currentState == .playing {
+                                self.transition(to: .connected)
                             }
-                        } catch {
-                            self.transition(to: .error("\(error)"))
-                            await self.close()
-                            return
+
+                            do {
+                                let handle = try origin.consume(path: self.path)
+                                self.currentBroadcastHandle = handle
+
+                                let subscription = try MoQCatalog.subscribeUpdates(broadcastHandle: handle)
+                                self.catalogSubscription = subscription
+
+                                self.catalogTask = Task { [weak self] in
+                                    guard let self else { return }
+                                    for await catalog in subscription.catalogs {
+                                        guard !Task.isCancelled else { break }
+                                        self.currentCatalog = catalog
+                                        let info = self.buildBroadcastInfo(from: catalog)
+                                        self.broadcastsContinuation.yield(.available(info))
+                                    }
+                                }
+                            } catch {
+                                self.transition(to: .error("\(error)"))
+                                await self.close()
+                                return
+                            }
+                        } else {
+                            // Broadcast went offline
+                            self.catalogTask?.cancel()
+                            self.catalogTask = nil
+                            self.catalogSubscription = nil
+                            self.currentCatalog = nil
+                            self.currentBroadcastHandle = nil
+                            await self.tearDownTracks()
+                            if self.currentState == .playing {
+                                self.transition(to: .connected)
+                            }
+                            self.broadcastsContinuation.yield(.unavailable)
                         }
-                    } else {
-                        // Broadcast went offline
-                        self.catalogTask?.cancel()
-                        self.catalogTask = nil
-                        self.catalogSubscription = nil
-                        self.currentCatalog = nil
-                        self.currentBroadcastHandle = nil
-                        await self.tearDownTracks()
-                        if self.currentState == .playing {
-                            self.transition(to: .connected)
-                        }
-                        self.broadcastsContinuation.yield(.unavailable)
                     }
+                } catch {
+                    print("[MoQSession] announced() failed: \(error)")
                 }
             }
 
-        } catch let error as MoQError {
-            transition(to: .error(error.description))
+        } catch let error as MoqError {
+            transition(to: .error(error.localizedDescription))
             await tearDown()
             throw MoQSessionError.connectionFailed(error)
         } catch let error as MoQSessionError {
@@ -228,11 +235,21 @@ public final class MoQSession {
         var videoFmt: CMFormatDescription?
         var audioFmt: CMFormatDescription?
 
-        if let vi = videoIndex, let vc = try? catalog.videoConfig(at: vi) {
-            videoFmt = try? SampleBufferFactory.makeVideoFormatDescription(from: vc)
+        if let vi = videoIndex {
+            do {
+                let vc = try catalog.videoConfig(at: vi)
+                videoFmt = try SampleBufferFactory.makeVideoFormatDescription(from: vc)
+            } catch {
+                print("[MoQSession] Failed to build video format for index \(vi): \(error)")
+            }
         }
-        if let ai = audioIndex, let ac = try? catalog.audioConfig(at: ai) {
-            audioFmt = try? SampleBufferFactory.makeAudioFormatDescription(from: ac)
+        if let ai = audioIndex {
+            do {
+                let ac = try catalog.audioConfig(at: ai)
+                audioFmt = try SampleBufferFactory.makeAudioFormatDescription(from: ac)
+            } catch {
+                print("[MoQSession] Failed to build audio format for index \(ai): \(error)")
+            }
         }
 
         // Stop any currently rendering tracks first
@@ -281,6 +298,7 @@ public final class MoQSession {
                             }
                         }
                     } catch {
+                        print("[MoQSession] Video frame processing error: \(error)")
                         continue
                     }
                 }
@@ -306,6 +324,7 @@ public final class MoQSession {
                             }
                         }
                     } catch {
+                        print("[MoQSession] Audio frame processing error: \(error)")
                         continue
                     }
                 }
@@ -400,10 +419,10 @@ public final class MoQSession {
         await audioTrack?.close()
         audioTrack = nil
 
-        try? await transport?.close()
+        await transport?.close()
         transport = nil
 
-        try? origin?.close()
+        do { try origin?.close() } catch { print("[MoQSession] origin.close() failed: \(error)") }
         origin = nil
     }
 }

@@ -1,87 +1,78 @@
-import Clibmoq
-
-public struct AnnouncedBroadcast: Sendable {
-    public let path: String
-    public let active: Bool
-}
+import Foundation
 
 public final class MoQOrigin: Sendable {
     public let handle: UInt32
 
     public init() throws {
-        self.handle = try moq_origin_create().asHandle()
+        self.handle = try moqOriginCreate()
     }
 
     public func publish(_ broadcast: UInt32, path: String) throws {
-        try path.withCStringLen { ptr, len in
-            try moq_origin_publish(handle, ptr, len, broadcast).asSuccess()
-        }
+        try moqOriginPublish(origin: handle, path: path, broadcast: broadcast)
     }
 
     public func consume(path: String) throws -> UInt32 {
-        try path.withCStringLen { ptr, len in
-            try moq_origin_consume(handle, ptr, len).asHandle()
-        }
+        try moqOriginConsume(origin: handle, path: path)
     }
 
     /// Waits until the server announces the given path, then consumes it.
-    /// Returns the broadcast handle, or throws if the announcement stream ends without finding the path.
     public func consume(waitingForPath path: String) async throws -> UInt32 {
         for await announced in try announced() {
             if announced.path == path {
                 return try consume(path: path)
             }
         }
-        throw MoQError(code: -1) // stream ended without seeing the path
+        throw MoqError.Error(msg: "Stream ended without finding path: \(path)")
     }
 
-    public func announced() throws -> AsyncStream<AnnouncedBroadcast> {
-        let lease = makeCallbackStream(label: "moq_origin_announced")
+    public func announced() throws -> AsyncStream<AnnouncedInfo> {
+        // Inner stream: raw IDs only, fed by callback (no Rust calls inside callback)
+        var rawCont: AsyncStream<UInt32>.Continuation!
+        let rawStream = AsyncStream<UInt32> { rawCont = $0 }
 
-        let announcedHandle = try moq_origin_announced(handle, lease.callback, lease.userData).asHandle()
+        let cb = AnnounceCB(continuation: rawCont)
+        let announcedHandle = try moqOriginAnnounced(origin: handle, callback: cb)
 
-        return AsyncStream { continuation in
-            let task = Task {
-                for await rawId in lease.stream {
-                    if rawId < 0 {
-                        continuation.finish()
-                        break
-                    }
-
-                    var info = moq_announced()
-                    let result = moq_origin_announced_info(UInt32(rawId), &info)
-                    guard result >= 0 else {
-                        continuation.finish()
-                        break
-                    }
-
-                    let path: String
-                    if let ptr = info.path, info.path_len > 0 {
-                        path = String(
-                            decoding: UnsafeBufferPointer(start: UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self), count: Int(info.path_len)),
-                            as: UTF8.self
-                        )
-                    } else {
-                        path = ""
-                    }
-
-                    continuation.yield(AnnouncedBroadcast(path: path, active: info.active))
-                }
-            }
-
-            continuation.onTermination = { @Sendable _ in
-                moq_origin_announced_close(announcedHandle)
-                lease.release()
-                task.cancel()
-            }
+        rawCont.onTermination = { @Sendable _ in
+            try? moqOriginAnnouncedClose(announced: announcedHandle)
         }
+
+        // Outer stream: AnnouncedInfo fetched outside the callback lock
+        var infoCont: AsyncStream<AnnouncedInfo>.Continuation!
+        let infoStream = AsyncStream<AnnouncedInfo> { infoCont = $0 }
+
+        // When the consumer stops, finish rawStream → fires rawCont.onTermination → closes handle
+        let capturedRaw = rawCont!
+        infoCont.onTermination = { @Sendable _ in capturedRaw.finish() }
+
+        Task.detached {
+            for await rawId in rawStream {
+                guard let info = try? moqOriginAnnouncedInfo(announced: rawId) else { continue }
+                infoCont.yield(info)
+            }
+            infoCont.finish()
+        }
+
+        return infoStream
     }
 
     public func close() throws {
-        try moq_origin_close(handle).asSuccess()
+        try moqOriginClose(origin: handle)
     }
 
     deinit {
-        moq_origin_close(handle)
+        try? moqOriginClose(origin: handle)
+    }
+}
+
+private final class AnnounceCB: AnnounceCallback {
+    private let continuation: AsyncStream<UInt32>.Continuation
+
+    init(continuation: AsyncStream<UInt32>.Continuation) {
+        self.continuation = continuation
+    }
+
+    func onAnnounce(announcedId: UInt32) {
+        continuation.yield(announcedId)   // only safe: no Rust call inside callback
     }
 }

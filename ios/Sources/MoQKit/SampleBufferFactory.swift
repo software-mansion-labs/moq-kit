@@ -13,7 +13,7 @@ public enum MoQSessionError: Error, Sendable {
     case noTracksAvailable
     case noBroadcastAvailable
     case noTracksSelected
-    case connectionFailed(MoQError)
+    case connectionFailed(MoqError)
 }
 
 // MARK: - SampleBufferFactory
@@ -23,7 +23,7 @@ enum SampleBufferFactory {
     // MARK: - Video Format Descriptions
 
     static func makeVideoFormatDescription(from config: VideoConfig) throws -> CMFormatDescription {
-        guard let descData = config.codecDescription else {
+        guard let descData = config.description else {
             throw MoQSessionError.missingCodecDescription
         }
 
@@ -106,7 +106,7 @@ enum SampleBufferFactory {
 
         var formatDescription: CMFormatDescription?
 
-        if let descData = config.codecDescription, !descData.isEmpty {
+        if let descData = config.description, !descData.isEmpty {
             let status = descData.withUnsafeBytes { rawBuf -> OSStatus in
                 let buf = rawBuf.bindMemory(to: UInt8.self)
                 return CMAudioFormatDescriptionCreate(
