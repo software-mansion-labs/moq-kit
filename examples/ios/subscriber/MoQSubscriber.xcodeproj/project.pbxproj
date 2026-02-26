@@ -11,12 +11,18 @@
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* ContentView.swift */; };
 		A10000000000000000000003 /* VideoLayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* VideoLayerView.swift */; };
 		A10000000000000000000004 /* MoQKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000072 /* MoQKit */; };
+		A10000000000000000000005 /* PlayerViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* PlayerViewModel.swift */; };
+		A10000000000000000000006 /* ConnectionControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* ConnectionControlsView.swift */; };
+		A10000000000000000000007 /* SessionPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* SessionPlayerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A10000000000000000000011 /* MoQSubscriberApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoQSubscriberApp.swift; sourceTree = "<group>"; };
 		A10000000000000000000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A10000000000000000000013 /* VideoLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoLayerView.swift; sourceTree = "<group>"; };
+		A10000000000000000000014 /* PlayerViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViewModel.swift; sourceTree = "<group>"; };
+		A10000000000000000000015 /* ConnectionControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionControlsView.swift; sourceTree = "<group>"; };
+		A10000000000000000000016 /* SessionPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPlayerView.swift; sourceTree = "<group>"; };
 		A10000000000000000000032 /* MoQSubscriber.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MoQSubscriber.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -46,6 +52,9 @@
 				A10000000000000000000011 /* MoQSubscriberApp.swift */,
 				A10000000000000000000012 /* ContentView.swift */,
 				A10000000000000000000013 /* VideoLayerView.swift */,
+				A10000000000000000000014 /* PlayerViewModel.swift */,
+				A10000000000000000000015 /* ConnectionControlsView.swift */,
+				A10000000000000000000016 /* SessionPlayerView.swift */,
 			);
 			path = MoQSubscriber;
 			sourceTree = "<group>";
@@ -130,6 +139,9 @@
 				A10000000000000000000001 /* MoQSubscriberApp.swift in Sources */,
 				A10000000000000000000002 /* ContentView.swift in Sources */,
 				A10000000000000000000003 /* VideoLayerView.swift in Sources */,
+				A10000000000000000000005 /* PlayerViewModel.swift in Sources */,
+				A10000000000000000000006 /* ConnectionControlsView.swift in Sources */,
+				A10000000000000000000007 /* SessionPlayerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

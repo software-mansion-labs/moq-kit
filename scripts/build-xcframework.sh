@@ -42,6 +42,12 @@ done
 
 # --- Build for each target ---
 
+# Set iOS deployment target so aws-lc-sys C/asm build matches the Rust linker target.
+# Without this, Xcode defaults to the current SDK version (e.g. 26.2), producing
+# objects that reference ___chkstk_darwin — a symbol unavailable at iOS 10.0,
+# which is what aarch64-apple-ios links against by default.
+export IPHONEOS_DEPLOYMENT_TARGET=16.0
+
 if [[ $DEBUG -eq 1 ]]; then
     CARGO_PROFILE="release-with-debug"
     PROFILE_FLAGS="--profile release-with-debug"

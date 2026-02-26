@@ -150,83 +150,23 @@ class MoQSession(
         val videoFormat = videoConfig?.let { MediaFactory.makeVideoFormatMedia3(it) }
         val audioFormat = audioConfig?.let { MediaFactory.makeAudioFormatMedia3(it) }
 
-        Log.i("MOQ", "videoIndex = $videoIndex, audioIndex = $audioIndex")
-        Log.i("MOQ", "videoFormat = $videoFormat")
-        Log.i("MOQ", "audioFormat = $audioFormat")
         val videoFlow = videoIndex?.let { subscribeVideo(info.broadcastHandle, it) }
         val audioFlow = audioIndex?.let { subscribeAudio(info.broadcastHandle, it) }
 
         val source = MoQMediaSource(videoFormat, audioFormat, videoFlow, audioFlow, scope)
         val newPlayer = ExoPlayer.Builder(context).build()
 
-        newPlayer.setTrackSelectionParameters(
-            newPlayer.getTrackSelectionParameters()
-                .buildUpon()
-                // This won't remove the keys, but sets them to neutral
-                .build()
-        );
-
         newPlayer.addListener(object : Player.Listener {
-            override fun onTracksChanged(tracks: Tracks) {
-                Log.i("Exo", tracks.toString())
-                for (group in tracks.groups) {
-                    if (group.type == C.TRACK_TYPE_AUDIO) {
-                        // Is the track supported by the hardware?
-                        val isSupported = group.isSupported
-                        // Is the player actually trying to play it?
-                        val isSelected = group.isSelected
-
-                        Log.i("ExoPlayer", "Audio Group: Supported=$isSupported, Selected=$isSelected")
-                    }
-                }
-            }
-
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("Exo", "Player error: ${error.errorCodeName} cause=${error.cause}", error)
+                Log.e("MOQExoPlayer", "Player error: ${error.errorCodeName} cause=${error.cause}", error)
                 _state.value = State.Error(error.errorCode)
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                Log.i("Exo", "Player state change $playbackState")
+                Log.d("MOQExoPlayer", "Player state change $playbackState")
                 if (playbackState == Player.STATE_READY) {
                     _state.compareAndSet(State.Connected, State.Playing)
                 }
-            }
-        })
-
-        newPlayer.addAnalyticsListener(object : AnalyticsListener {
-            override fun onAudioInputFormatChanged(
-                eventTime: AnalyticsListener.EventTime,
-                format: Format,
-                eval: DecoderReuseEvaluation?
-            ) {
-                Log.i("Exo", "Audio format: $format")
-            }
-
-            override fun onAudioDecoderInitialized(
-                eventTime: AnalyticsListener.EventTime,
-                decoderName: String,
-                initializedTimestampMs: Long,
-                initializationDurationMs: Long
-            ) {
-                Log.i("Exo", "Audio decoder: $decoderName init=${initializationDurationMs}ms")
-            }
-
-            override fun onAudioUnderrun(
-                eventTime: AnalyticsListener.EventTime,
-                bufferSize: Int,
-                bufferSizeMs: Long,
-                elapsedSinceLastFeedMs: Long
-            ) {
-                Log.w("Exo", "Audio underrun bufferSize=$bufferSize sizeMs=$bufferSizeMs")
-            }
-
-            override fun onAudioSinkError(eventTime: AnalyticsListener.EventTime, audioSinkError: Exception) {
-                Log.e("Exo", "Audio sink error", audioSinkError)
-            }
-
-            override fun onAudioCodecError(eventTime: AnalyticsListener.EventTime, audioCodecError: Exception) {
-                Log.e("Exo", "Audio codec error", audioCodecError)
             }
         })
 
@@ -248,7 +188,7 @@ class MoQSession(
         } else false
 
         if (!wasConnected && !wasConnecting && !wasPlaying && !wasError) return
-        tearDown()
+       tearDown()
     }
 
     private fun tearDownTracks() {
