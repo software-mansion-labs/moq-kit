@@ -110,8 +110,7 @@ public final class MoQSession {
 
         transition(to: .connecting)
 
-        try moqLogLevel(level: "trace")
-        print("connect triggered")
+        // try moqLogLevel(level: "trace")
         do {
             // 1. Create origin
             let origin = try MoQOrigin()
@@ -150,7 +149,6 @@ public final class MoQSession {
                         guard !Task.isCancelled else { break }
                         guard broadcast.path == self.path else { continue }
 
-                        print(broadcast)
                         if broadcast.active {
                             // Tear down any existing tracks and catalog
                             await self.tearDownTracks()
