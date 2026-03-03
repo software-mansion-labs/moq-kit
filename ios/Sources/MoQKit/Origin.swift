@@ -15,16 +15,6 @@ public final class MoQOrigin: Sendable {
         try moqOriginConsume(origin: handle, path: path)
     }
 
-    /// Waits until the server announces the given path, then consumes it.
-    public func consume(waitingForPath path: String) async throws -> UInt32 {
-        for await announced in try announced() {
-            if announced.path == path {
-                return try consume(path: path)
-            }
-        }
-        throw MoqError.Error(msg: "Stream ended without finding path: \(path)")
-    }
-
     public func announced() throws -> AsyncStream<AnnouncedInfo> {
         // Inner stream: raw IDs only, fed by callback (no Rust calls inside callback)
         var rawCont: AsyncStream<UInt32>.Continuation!

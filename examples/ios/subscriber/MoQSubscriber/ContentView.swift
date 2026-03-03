@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var relayURL = "http://192.168.92.140:4443"
+    @State private var relayURL = "http://192.168.92.67:4443"
     @State private var broadcastPath = "anon/bbb"
     @StateObject private var player = PlayerViewModel()
 
@@ -32,7 +32,7 @@ struct ContentView: View {
     }
 
     private func connectAll() {
-        player.connect(url: relayURL, path: broadcastPath)
+        player.connect(url: relayURL)
     }
 
     private func stopAll() {

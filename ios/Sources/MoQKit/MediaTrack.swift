@@ -40,7 +40,9 @@ public class MoQMediaTrack: @unchecked Sendable {
         Task.detached {
             for await frameId in rawStream {
                 defer { try? moqConsumeFrameClose(frame: frameId) }
-                guard let frameData = try? moqConsumeFrame(frame: frameId) else { continue }
+                guard let frameData = try? moqConsumeFrame(frame: frameId) else {
+                    continue
+                }
                 framesCont.yield(MoQFrame(
                     payload: frameData.payload,
                     timestampUs: frameData.timestampUs,
@@ -79,6 +81,16 @@ public final class MoQVideoTrack: MoQMediaTrack {
             closeFunc: { try moqConsumeVideoClose(track: $0) }
         )
     }
+
+    convenience init(from info: MoQVideoTrackInfo, broadcastHandle: UInt32, maxLatencyMs: UInt64) throws {
+        try self.init(
+            broadcastHandle: broadcastHandle,
+            index: info.index,
+            maxLatencyMs: maxLatencyMs,
+            subscribeFunc: { try moqConsumeVideoOrdered(broadcast: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            closeFunc: { try moqConsumeVideoClose(track: $0) }
+        )
+    }
 }
 
 // MARK: - Audio Track
@@ -92,6 +104,16 @@ public final class MoQAudioTrack: MoQMediaTrack {
         try MoQAudioTrack(
             broadcastHandle: broadcastHandle,
             index: index,
+            maxLatencyMs: maxLatencyMs,
+            subscribeFunc: { try moqConsumeAudioOrdered(broadcast: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            closeFunc: { try moqConsumeAudioClose(track: $0) }
+        )
+    }
+
+    convenience init(from info: MoQAudioTrackInfo, broadcastHandle: UInt32, maxLatencyMs: UInt64) throws {
+        try self.init(
+            broadcastHandle: broadcastHandle,
+            index: info.index,
             maxLatencyMs: maxLatencyMs,
             subscribeFunc: { try moqConsumeAudioOrdered(broadcast: $0, index: $1, maxLatencyMs: $2, callback: $3) },
             closeFunc: { try moqConsumeAudioClose(track: $0) }

@@ -1,20 +1,6 @@
 import AVFoundation
 import CoreMedia
 
-// MARK: - MoQSessionError (codec/format related)
-
-public enum MoQSessionError: Error, Sendable {
-    case unsupportedCodec(String)
-    case missingCodecDescription
-    case formatDescriptionFailed(OSStatus)
-    case sampleBufferFailed(OSStatus)
-    case alreadyPlaying
-    case alreadyClosed
-    case noTracksAvailable
-    case noBroadcastAvailable
-    case noTracksSelected
-    case connectionFailed(MoqError)
-}
 
 // MARK: - SampleBufferFactory
 

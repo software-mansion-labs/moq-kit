@@ -4,7 +4,8 @@ import PackageDescription
 
 let package = Package(
     name: "MoQKit",
-    platforms: [.iOS(.v16)],
+    // TODO: remove the macos platform, helpful just for LSP
+    platforms: [.macOS(.v10_15), .iOS(.v16)],
     products: [
         .library(name: "MoQKit", targets: ["MoQKit"]),
     ],
