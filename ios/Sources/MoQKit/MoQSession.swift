@@ -19,8 +19,8 @@ public enum MoQSessionError: Error, Sendable {
 
 public enum MoQSessionState: Sendable, Equatable {
     case idle
-    case connecting   // Establishing QUIC connection
-    case connected    // Transport ready; watching for broadcast announcements
+    case connecting  // Establishing QUIC connection
+    case connected  // Transport ready; watching for broadcast announcements
     case error(String)
     case closed
 }
@@ -120,7 +120,8 @@ public final class MoQSession {
                             do {
                                 try self.handleActiveBroadcast(broadcast)
                             } catch {
-                                MoQLogger.session.error("handleActiveBroadcast failed for \(path): \(error)")
+                                MoQLogger.session.error(
+                                    "handleActiveBroadcast failed for \(path): \(error)")
                                 self.transition(to: .error("\(error)"))
                                 await self.close()
                                 return
@@ -152,7 +153,6 @@ public final class MoQSession {
             throw error
         }
     }
-    
 
     /// Creates a player pre-configured to subscribe to the given tracks.
     /// Must be called while the broadcast at `path` is active.
@@ -164,8 +164,11 @@ public final class MoQSession {
         guard let entry = activeBroadcasts[path] else {
             throw MoQSessionError.noBroadcastAvailable
         }
-        MoQLogger.session.debug("Creating player for \(path), tracks count = \(tracks.count), maxLatencyMs = \(maxLatencyMs)")
-        return try MoQAVPlayer(tracks: tracks, broadcastHandle: entry.handle, maxLatencyMs: maxLatencyMs)
+        MoQLogger.session.debug(
+            "Creating player for \(path), tracks count = \(tracks.count), maxLatencyMs = \(maxLatencyMs)"
+        )
+        return try MoQAVPlayer(
+            tracks: tracks, broadcastHandle: entry.handle, maxLatencyMs: maxLatencyMs)
     }
 
     /// Stop playback and release all resources.
@@ -212,7 +215,8 @@ public final class MoQSession {
     }
 
     private func transition(to newState: MoQSessionState) {
-        MoQLogger.session.debug("State: \(String(describing: self.currentState)) → \(String(describing: newState))")
+        MoQLogger.session.debug(
+            "State: \(String(describing: self.currentState)) → \(String(describing: newState))")
         currentState = newState
         stateContinuation.yield(newState)
     }
@@ -239,7 +243,7 @@ public final class MoQSession {
 
     private func tearDown() async {
         MoQLogger.session.debug("Tearing down session")
-        
+
         transportMonitorTask?.cancel()
         transportMonitorTask = nil
         announcedTask?.cancel()
@@ -251,7 +255,9 @@ public final class MoQSession {
         await transport?.close()
         transport = nil
 
-        do { try origin?.close() } catch { MoQLogger.session.error("origin.close() failed: \(error)") }
+        do { try origin?.close() } catch {
+            MoQLogger.session.error("origin.close() failed: \(error)")
+        }
         origin = nil
     }
 }

@@ -67,7 +67,7 @@ public class MoQMediaTrack: @unchecked Sendable {
 
 // MARK: - Video Track
 
-public final class MoQVideoTrack: MoQMediaTrack {
+public final class MoQVideoTrack: MoQMediaTrack, @unchecked Sendable {
     public static func subscribe(
         broadcastHandle: UInt32,
         index: UInt32,
@@ -95,7 +95,7 @@ public final class MoQVideoTrack: MoQMediaTrack {
 
 // MARK: - Audio Track
 
-public final class MoQAudioTrack: MoQMediaTrack {
+public final class MoQAudioTrack: MoQMediaTrack, @unchecked Sendable {
     public static func subscribe(
         broadcastHandle: UInt32,
         index: UInt32,

@@ -13,10 +13,13 @@ set -euo pipefail
 
 DEBUG=0
 for arg in "$@"; do
-    case "$arg" in
-        --debug) DEBUG=1 ;;
-        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
-    esac
+  case "$arg" in
+  --debug) DEBUG=1 ;;
+  *)
+    echo "Unknown argument: $arg" >&2
+    exit 1
+    ;;
+  esac
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,8 +30,8 @@ OUTPUT_DIR="$ROOT_DIR/ios/Frameworks"
 XCFRAMEWORK="$OUTPUT_DIR/libmoq.xcframework"
 
 TARGETS=(
-    aarch64-apple-ios
-    aarch64-apple-ios-sim
+  aarch64-apple-ios
+  aarch64-apple-ios-sim
 )
 
 # --- Install Rust targets if missing ---
@@ -36,10 +39,10 @@ TARGETS=(
 echo "Checking Rust targets..."
 INSTALLED=$(rustup target list --installed)
 for target in "${TARGETS[@]}"; do
-    if ! echo "$INSTALLED" | grep -q "^${target}$"; then
-        echo "Installing Rust target: $target"
-        rustup target add "$target"
-    fi
+  if ! echo "$INSTALLED" | grep -q "^${target}$"; then
+    echo "Installing Rust target: $target"
+    rustup target add "$target"
+  fi
 done
 
 # --- Build for each target ---
@@ -51,18 +54,18 @@ done
 export IPHONEOS_DEPLOYMENT_TARGET=16.0
 
 if [[ $DEBUG -eq 1 ]]; then
-    CARGO_PROFILE="release-with-debug"
-    PROFILE_FLAGS="--profile release-with-debug"
-    echo "Building with debug symbols (profile: release-with-debug)"
+  CARGO_PROFILE="release-with-debug"
+  PROFILE_FLAGS="--profile release-with-debug"
+  echo "Building with debug symbols (profile: release-with-debug)"
 else
-    CARGO_PROFILE="release"
-    PROFILE_FLAGS="--release"
+  CARGO_PROFILE="release"
+  PROFILE_FLAGS="--release"
 fi
 
 for target in "${TARGETS[@]}"; do
-    echo "Building libmoq for $target (uniffi-api)..."
-    cargo build $PROFILE_FLAGS --package libmoq --features uniffi-api --target "$target" \
-        --manifest-path "$WORKSPACE_CARGO"
+  echo "Building libmoq for $target (uniffi-api)..."
+  cargo build $PROFILE_FLAGS --package libmoq --no-default-features --features uniffi-api --target "$target" \
+    --manifest-path "$WORKSPACE_CARGO"
 done
 
 # --- Generate UniFFI Swift bindings ---
@@ -75,12 +78,12 @@ DEVICE_LIB="$TARGET_BASE/aarch64-apple-ios/$CARGO_PROFILE/libmoq.a"
 
 echo "Generating Swift bindings via uniffi-bindgen..."
 (cd "$ROOT_DIR/vendor/moq" &&
-    cargo run $PROFILE_FLAGS --features uniffi-api --bin uniffi-bindgen \
-        --manifest-path "$WORKSPACE_CARGO" \
-        generate \
-        --library "$DEVICE_LIB" \
-        --language swift \
-        --out-dir "$UNIFFI_OUT")
+  cargo run $PROFILE_FLAGS --no-default-features --features uniffi-api --bin uniffi-bindgen \
+    --manifest-path "$WORKSPACE_CARGO" \
+    generate \
+    --library "$DEVICE_LIB" \
+    --language swift \
+    --out-dir "$UNIFFI_OUT")
 
 # Copy generated moq.swift into the Swift package source tree (overwrite every build)
 SWIFT_SOURCES="$ROOT_DIR/ios/Sources/MoQKit"
@@ -96,8 +99,8 @@ rm -rf "$HEADERS_DIR"
 mkdir -p "$HEADERS_DIR"
 
 if [[ ! -f "$UNIFFI_OUT/moqFFI.h" ]]; then
-    echo "Error: moqFFI.h not found at $UNIFFI_OUT/moqFFI.h" >&2
-    exit 1
+  echo "Error: moqFFI.h not found at $UNIFFI_OUT/moqFFI.h" >&2
+  exit 1
 fi
 
 cp "$UNIFFI_OUT/moqFFI.h" "$HEADERS_DIR/moqFFI.h"
@@ -112,9 +115,9 @@ mkdir -p "$OUTPUT_DIR"
 
 echo "Creating XCFramework..."
 xcodebuild -create-xcframework \
-    -library "$DEVICE_LIB" -headers "$HEADERS_DIR" \
-    -library "$SIMULATOR_LIB" -headers "$HEADERS_DIR" \
-    -output "$XCFRAMEWORK"
+  -library "$DEVICE_LIB" -headers "$HEADERS_DIR" \
+  -library "$SIMULATOR_LIB" -headers "$HEADERS_DIR" \
+  -output "$XCFRAMEWORK"
 
 # --- Clean up ---
 

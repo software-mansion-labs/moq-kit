@@ -5,9 +5,9 @@ import PackageDescription
 let package = Package(
     name: "MoQKit",
     // TODO: remove the macos platform, helpful just for LSP
-    platforms: [.macOS(.v10_15), .iOS(.v16)],
+    platforms: [.macOS(.v11), .iOS(.v17)],
     products: [
-        .library(name: "MoQKit", targets: ["MoQKit"]),
+        .library(name: "MoQKit", targets: ["MoQKit"])
     ],
     targets: [
         .binaryTarget(name: "moqFFI", path: "Frameworks/libmoq.xcframework"),
