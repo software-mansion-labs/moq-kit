@@ -62,7 +62,7 @@ private final class AnnounceCB: AnnounceCallback {
         self.continuation = continuation
     }
 
-    func onAnnounce(announcedId: UInt32) {
-        continuation.yield(announcedId)   // only safe: no Rust call inside callback
+    func onAnnounce(announcedId: Int32) {
+        continuation.yield(UInt32(bitPattern: announcedId))   // only safe: no Rust call inside callback
     }
 }

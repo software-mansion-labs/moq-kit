@@ -63,8 +63,8 @@ else
 fi
 
 for target in "${TARGETS[@]}"; do
-  echo "Building libmoq for $target (uniffi-api)..."
-  cargo build $PROFILE_FLAGS --package libmoq --no-default-features --features uniffi-api --target "$target" \
+  echo "Building moq-ffi for $target..."
+  cargo build $PROFILE_FLAGS --package moq-ffi --target "$target" \
     --manifest-path "$WORKSPACE_CARGO"
 done
 
@@ -74,11 +74,11 @@ UNIFFI_OUT="$ROOT_DIR/.build/uniffi-out"
 rm -rf "$UNIFFI_OUT"
 mkdir -p "$UNIFFI_OUT"
 
-DEVICE_LIB="$TARGET_BASE/aarch64-apple-ios/$CARGO_PROFILE/libmoq.a"
+DEVICE_LIB="$TARGET_BASE/aarch64-apple-ios/$CARGO_PROFILE/libmoq_ffi.a"
 
 echo "Generating Swift bindings via uniffi-bindgen..."
 (cd "$ROOT_DIR/vendor/moq" &&
-  cargo run $PROFILE_FLAGS --no-default-features --features uniffi-api --bin uniffi-bindgen \
+  cargo run $PROFILE_FLAGS --package moq-ffi --bin uniffi-bindgen \
     --manifest-path "$WORKSPACE_CARGO" \
     generate \
     --library "$DEVICE_LIB" \
@@ -108,7 +108,7 @@ cp "$UNIFFI_OUT/moqFFI.modulemap" "$HEADERS_DIR/module.modulemap"
 
 # --- Create XCFramework ---
 
-SIMULATOR_LIB="$TARGET_BASE/aarch64-apple-ios-sim/$CARGO_PROFILE/libmoq.a"
+SIMULATOR_LIB="$TARGET_BASE/aarch64-apple-ios-sim/$CARGO_PROFILE/libmoq_ffi.a"
 
 rm -rf "$XCFRAMEWORK"
 mkdir -p "$OUTPUT_DIR"

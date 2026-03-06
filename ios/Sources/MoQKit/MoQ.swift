@@ -25,13 +25,13 @@ fileprivate extension RustBuffer {
     }
 
     static func from(_ ptr: UnsafeBufferPointer<UInt8>) -> RustBuffer {
-        try! rustCall { ffi_moq_rustbuffer_from_bytes(ForeignBytes(bufferPointer: ptr), $0) }
+        try! rustCall { ffi_moq_ffi_rustbuffer_from_bytes(ForeignBytes(bufferPointer: ptr), $0) }
     }
 
     // Frees the buffer in place.
     // The buffer must not be used after this is called.
     func deallocate() {
-        try! rustCall { ffi_moq_rustbuffer_free(self, $0) }
+        try! rustCall { ffi_moq_ffi_rustbuffer_free(self, $0) }
     }
 }
 
@@ -281,7 +281,7 @@ private func makeRustCall<T, E: Swift.Error>(
     _ callback: (UnsafeMutablePointer<RustCallStatus>) -> T,
     errorHandler: ((RustBuffer) throws -> E)?
 ) throws -> T {
-    uniffiEnsureMoqInitialized()
+    uniffiEnsureMoqFfiInitialized()
     var callStatus = RustCallStatus.init()
     let returnedVal = callback(&callStatus)
     try uniffiCheckCallStatus(callStatus: callStatus, errorHandler: errorHandler)
@@ -894,7 +894,7 @@ public func FfiConverterTypeMoqError_lower(_ value: MoqError) -> RustBuffer {
  */
 public protocol AnnounceCallback: AnyObject, Sendable {
     
-    func onAnnounce(announcedId: UInt32) 
+    func onAnnounce(announcedId: Int32) 
     
 }
 
@@ -924,7 +924,7 @@ fileprivate struct UniffiCallbackInterfaceAnnounceCallback {
         },
         onAnnounce: { (
             uniffiHandle: UInt64,
-            announcedId: UInt32,
+            announcedId: Int32,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -934,7 +934,7 @@ fileprivate struct UniffiCallbackInterfaceAnnounceCallback {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onAnnounce(
-                     announcedId: try FfiConverterUInt32.lift(announcedId)
+                     announcedId: try FfiConverterInt32.lift(announcedId)
                 )
             }
 
@@ -950,7 +950,7 @@ fileprivate struct UniffiCallbackInterfaceAnnounceCallback {
 }
 
 private func uniffiCallbackInitAnnounceCallback() {
-    uniffi_moq_fn_init_callback_vtable_announcecallback(UniffiCallbackInterfaceAnnounceCallback.vtable)
+    uniffi_moq_ffi_fn_init_callback_vtable_announcecallback(UniffiCallbackInterfaceAnnounceCallback.vtable)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -1021,7 +1021,7 @@ public func FfiConverterCallbackInterfaceAnnounceCallback_lower(_ v: AnnounceCal
  */
 public protocol CatalogCallback: AnyObject, Sendable {
     
-    func onCatalog(catalogId: UInt32) 
+    func onCatalog(catalogId: Int32) 
     
 }
 
@@ -1051,7 +1051,7 @@ fileprivate struct UniffiCallbackInterfaceCatalogCallback {
         },
         onCatalog: { (
             uniffiHandle: UInt64,
-            catalogId: UInt32,
+            catalogId: Int32,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -1061,7 +1061,7 @@ fileprivate struct UniffiCallbackInterfaceCatalogCallback {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onCatalog(
-                     catalogId: try FfiConverterUInt32.lift(catalogId)
+                     catalogId: try FfiConverterInt32.lift(catalogId)
                 )
             }
 
@@ -1077,7 +1077,7 @@ fileprivate struct UniffiCallbackInterfaceCatalogCallback {
 }
 
 private func uniffiCallbackInitCatalogCallback() {
-    uniffi_moq_fn_init_callback_vtable_catalogcallback(UniffiCallbackInterfaceCatalogCallback.vtable)
+    uniffi_moq_ffi_fn_init_callback_vtable_catalogcallback(UniffiCallbackInterfaceCatalogCallback.vtable)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -1148,7 +1148,7 @@ public func FfiConverterCallbackInterfaceCatalogCallback_lower(_ v: CatalogCallb
  */
 public protocol FrameCallback: AnyObject, Sendable {
     
-    func onFrame(frameId: UInt32) 
+    func onFrame(frameId: Int32) 
     
 }
 
@@ -1178,7 +1178,7 @@ fileprivate struct UniffiCallbackInterfaceFrameCallback {
         },
         onFrame: { (
             uniffiHandle: UInt64,
-            frameId: UInt32,
+            frameId: Int32,
             uniffiOutReturn: UnsafeMutableRawPointer,
             uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
         ) in
@@ -1188,7 +1188,7 @@ fileprivate struct UniffiCallbackInterfaceFrameCallback {
                     throw UniffiInternalError.unexpectedStaleHandle
                 }
                 return uniffiObj.onFrame(
-                     frameId: try FfiConverterUInt32.lift(frameId)
+                     frameId: try FfiConverterInt32.lift(frameId)
                 )
             }
 
@@ -1204,7 +1204,7 @@ fileprivate struct UniffiCallbackInterfaceFrameCallback {
 }
 
 private func uniffiCallbackInitFrameCallback() {
-    uniffi_moq_fn_init_callback_vtable_framecallback(UniffiCallbackInterfaceFrameCallback.vtable)
+    uniffi_moq_ffi_fn_init_callback_vtable_framecallback(UniffiCallbackInterfaceFrameCallback.vtable)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -1331,7 +1331,7 @@ fileprivate struct UniffiCallbackInterfaceSessionCallback {
 }
 
 private func uniffiCallbackInitSessionCallback() {
-    uniffi_moq_fn_init_callback_vtable_sessioncallback(UniffiCallbackInterfaceSessionCallback.vtable)
+    uniffi_moq_ffi_fn_init_callback_vtable_sessioncallback(UniffiCallbackInterfaceSessionCallback.vtable)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -1445,7 +1445,7 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
  * Close an audio track consumer and clean up its resources.
  */
 public func moqConsumeAudioClose(track: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_audio_close(
+    uniffi_moq_ffi_fn_func_moq_consume_audio_close(
         FfiConverterUInt32.lower(track),$0
     )
 }
@@ -1455,23 +1455,23 @@ public func moqConsumeAudioClose(track: UInt32)throws   {try rustCallWithError(F
  */
 public func moqConsumeAudioConfig(catalog: UInt32, index: UInt32)throws  -> AudioConfig  {
     return try  FfiConverterTypeAudioConfig_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_audio_config(
+    uniffi_moq_ffi_fn_func_moq_consume_audio_config(
         FfiConverterUInt32.lower(catalog),
         FfiConverterUInt32.lower(index),$0
     )
 })
 }
 /**
- * Consume an audio track from a broadcast, delivering frames in decode order.
+ * Consume an audio track from a catalog, delivering frames in decode order.
  *
  * `max_latency_ms` controls the maximum buffering before skipping frames.
  * The callback receives a `frame_id` when each frame is available.
  * Returns a non-zero handle that can be passed to [`moq_consume_audio_close`].
  */
-public func moqConsumeAudioOrdered(broadcast: UInt32, index: UInt32, maxLatencyMs: UInt64, callback: FrameCallback)throws  -> UInt32  {
+public func moqConsumeAudioOrdered(catalog: UInt32, index: UInt32, maxLatencyMs: UInt64, callback: FrameCallback)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_audio_ordered(
-        FfiConverterUInt32.lower(broadcast),
+    uniffi_moq_ffi_fn_func_moq_consume_audio_ordered(
+        FfiConverterUInt32.lower(catalog),
         FfiConverterUInt32.lower(index),
         FfiConverterUInt64.lower(maxLatencyMs),
         FfiConverterCallbackInterfaceFrameCallback_lower(callback),$0
@@ -1486,17 +1486,26 @@ public func moqConsumeAudioOrdered(broadcast: UInt32, index: UInt32, maxLatencyM
  */
 public func moqConsumeCatalog(broadcast: UInt32, callback: CatalogCallback)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_catalog(
+    uniffi_moq_ffi_fn_func_moq_consume_catalog(
         FfiConverterUInt32.lower(broadcast),
         FfiConverterCallbackInterfaceCatalogCallback_lower(callback),$0
     )
 })
 }
 /**
- * Close a catalog consumer and clean up its resources.
+ * Close a catalog consumer and cancel its background task.
  */
 public func moqConsumeCatalogClose(catalog: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_catalog_close(
+    uniffi_moq_ffi_fn_func_moq_consume_catalog_close(
+        FfiConverterUInt32.lower(catalog),$0
+    )
+}
+}
+/**
+ * Close a catalog snapshot received via the catalog callback.
+ */
+public func moqConsumeCatalogSnapshotClose(catalog: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_func_moq_consume_catalog_snapshot_close(
         FfiConverterUInt32.lower(catalog),$0
     )
 }
@@ -1505,7 +1514,7 @@ public func moqConsumeCatalogClose(catalog: UInt32)throws   {try rustCallWithErr
  * Close a broadcast consumer and clean up its resources.
  */
 public func moqConsumeClose(consume: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_close(
+    uniffi_moq_ffi_fn_func_moq_consume_close(
         FfiConverterUInt32.lower(consume),$0
     )
 }
@@ -1518,7 +1527,7 @@ public func moqConsumeClose(consume: UInt32)throws   {try rustCallWithError(FfiC
  */
 public func moqConsumeFrame(frame: UInt32)throws  -> FrameData  {
     return try  FfiConverterTypeFrameData_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_frame(
+    uniffi_moq_ffi_fn_func_moq_consume_frame(
         FfiConverterUInt32.lower(frame),$0
     )
 })
@@ -1527,7 +1536,7 @@ public func moqConsumeFrame(frame: UInt32)throws  -> FrameData  {
  * Close a frame and free its resources.
  */
 public func moqConsumeFrameClose(frame: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_frame_close(
+    uniffi_moq_ffi_fn_func_moq_consume_frame_close(
         FfiConverterUInt32.lower(frame),$0
     )
 }
@@ -1536,7 +1545,7 @@ public func moqConsumeFrameClose(frame: UInt32)throws   {try rustCallWithError(F
  * Close a video track consumer and clean up its resources.
  */
 public func moqConsumeVideoClose(track: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_video_close(
+    uniffi_moq_ffi_fn_func_moq_consume_video_close(
         FfiConverterUInt32.lower(track),$0
     )
 }
@@ -1546,23 +1555,23 @@ public func moqConsumeVideoClose(track: UInt32)throws   {try rustCallWithError(F
  */
 public func moqConsumeVideoConfig(catalog: UInt32, index: UInt32)throws  -> VideoConfig  {
     return try  FfiConverterTypeVideoConfig_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_video_config(
+    uniffi_moq_ffi_fn_func_moq_consume_video_config(
         FfiConverterUInt32.lower(catalog),
         FfiConverterUInt32.lower(index),$0
     )
 })
 }
 /**
- * Consume a video track from a broadcast, delivering frames in decode order.
+ * Consume a video track from a catalog, delivering frames in decode order.
  *
  * `max_latency_ms` controls the maximum buffering before skipping a GoP.
  * The callback receives a `frame_id` when each frame is available.
  * Returns a non-zero handle that can be passed to [`moq_consume_video_close`].
  */
-public func moqConsumeVideoOrdered(broadcast: UInt32, index: UInt32, maxLatencyMs: UInt64, callback: FrameCallback)throws  -> UInt32  {
+public func moqConsumeVideoOrdered(catalog: UInt32, index: UInt32, maxLatencyMs: UInt64, callback: FrameCallback)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_consume_video_ordered(
-        FfiConverterUInt32.lower(broadcast),
+    uniffi_moq_ffi_fn_func_moq_consume_video_ordered(
+        FfiConverterUInt32.lower(catalog),
         FfiConverterUInt32.lower(index),
         FfiConverterUInt64.lower(maxLatencyMs),
         FfiConverterCallbackInterfaceFrameCallback_lower(callback),$0
@@ -1576,7 +1585,7 @@ public func moqConsumeVideoOrdered(broadcast: UInt32, index: UInt32, maxLatencyM
  * The `level` string may be: `"error"`, `"warn"`, `"info"`, `"debug"`, or `"trace"`.
  */
 public func moqLogLevel(level: String)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_log_level(
+    uniffi_moq_ffi_fn_func_moq_log_level(
         FfiConverterString.lower(level),$0
     )
 }
@@ -1589,7 +1598,7 @@ public func moqLogLevel(level: String)throws   {try rustCallWithError(FfiConvert
  */
 public func moqOriginAnnounced(origin: UInt32, callback: AnnounceCallback)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_origin_announced(
+    uniffi_moq_ffi_fn_func_moq_origin_announced(
         FfiConverterUInt32.lower(origin),
         FfiConverterCallbackInterfaceAnnounceCallback_lower(callback),$0
     )
@@ -1599,7 +1608,7 @@ public func moqOriginAnnounced(origin: UInt32, callback: AnnounceCallback)throws
  * Stop receiving announcements for broadcasts published to an origin.
  */
 public func moqOriginAnnouncedClose(announced: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_origin_announced_close(
+    uniffi_moq_ffi_fn_func_moq_origin_announced_close(
         FfiConverterUInt32.lower(announced),$0
     )
 }
@@ -1609,7 +1618,7 @@ public func moqOriginAnnouncedClose(announced: UInt32)throws   {try rustCallWith
  */
 public func moqOriginAnnouncedInfo(announced: UInt32)throws  -> AnnouncedInfo  {
     return try  FfiConverterTypeAnnouncedInfo_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_origin_announced_info(
+    uniffi_moq_ffi_fn_func_moq_origin_announced_info(
         FfiConverterUInt32.lower(announced),$0
     )
 })
@@ -1618,7 +1627,7 @@ public func moqOriginAnnouncedInfo(announced: UInt32)throws  -> AnnouncedInfo  {
  * Close an origin and clean up its resources.
  */
 public func moqOriginClose(origin: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_origin_close(
+    uniffi_moq_ffi_fn_func_moq_origin_close(
         FfiConverterUInt32.lower(origin),$0
     )
 }
@@ -1630,7 +1639,7 @@ public func moqOriginClose(origin: UInt32)throws   {try rustCallWithError(FfiCon
  */
 public func moqOriginConsume(origin: UInt32, path: String)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_origin_consume(
+    uniffi_moq_ffi_fn_func_moq_origin_consume(
         FfiConverterUInt32.lower(origin),
         FfiConverterString.lower(path),$0
     )
@@ -1643,7 +1652,7 @@ public func moqOriginConsume(origin: UInt32, path: String)throws  -> UInt32  {
  */
 public func moqOriginCreate()throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_origin_create($0
+    uniffi_moq_ffi_fn_func_moq_origin_create($0
     )
 })
 }
@@ -1651,7 +1660,7 @@ public func moqOriginCreate()throws  -> UInt32  {
  * Publish a broadcast to an origin under the given path.
  */
 public func moqOriginPublish(origin: UInt32, path: String, broadcast: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_origin_publish(
+    uniffi_moq_ffi_fn_func_moq_origin_publish(
         FfiConverterUInt32.lower(origin),
         FfiConverterString.lower(path),
         FfiConverterUInt32.lower(broadcast),$0
@@ -1662,7 +1671,7 @@ public func moqOriginPublish(origin: UInt32, path: String, broadcast: UInt32)thr
  * Close a broadcast and clean up its resources.
  */
 public func moqPublishClose(broadcast: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_publish_close(
+    uniffi_moq_ffi_fn_func_moq_publish_close(
         FfiConverterUInt32.lower(broadcast),$0
     )
 }
@@ -1674,7 +1683,7 @@ public func moqPublishClose(broadcast: UInt32)throws   {try rustCallWithError(Ff
  */
 public func moqPublishCreate()throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_publish_create($0
+    uniffi_moq_ffi_fn_func_moq_publish_create($0
     )
 })
 }
@@ -1682,7 +1691,7 @@ public func moqPublishCreate()throws  -> UInt32  {
  * Remove a track from a broadcast and clean up its resources.
  */
 public func moqPublishMediaClose(media: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_publish_media_close(
+    uniffi_moq_ffi_fn_func_moq_publish_media_close(
         FfiConverterUInt32.lower(media),$0
     )
 }
@@ -1693,7 +1702,7 @@ public func moqPublishMediaClose(media: UInt32)throws   {try rustCallWithError(F
  * `timestamp_us` is the presentation timestamp in microseconds.
  */
 public func moqPublishMediaFrame(media: UInt32, payload: Data, timestampUs: UInt64)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_publish_media_frame(
+    uniffi_moq_ffi_fn_func_moq_publish_media_frame(
         FfiConverterUInt32.lower(media),
         FfiConverterData.lower(payload),
         FfiConverterUInt64.lower(timestampUs),$0
@@ -1708,7 +1717,7 @@ public func moqPublishMediaFrame(media: UInt32, payload: Data, timestampUs: UInt
  */
 public func moqPublishMediaOrdered(broadcast: UInt32, format: String, `init`: Data)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_publish_media_ordered(
+    uniffi_moq_ffi_fn_func_moq_publish_media_ordered(
         FfiConverterUInt32.lower(broadcast),
         FfiConverterString.lower(format),
         FfiConverterData.lower(`init`),$0
@@ -1719,7 +1728,7 @@ public func moqPublishMediaOrdered(broadcast: UInt32, format: String, `init`: Da
  * Close a session and free its resources.
  */
 public func moqSessionClose(session: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_session_close(
+    uniffi_moq_ffi_fn_func_moq_session_close(
         FfiConverterUInt32.lower(session),$0
     )
 }
@@ -1733,7 +1742,7 @@ public func moqSessionClose(session: UInt32)throws   {try rustCallWithError(FfiC
  */
 public func moqSessionConnect(url: String, originPublish: UInt32, originConsume: UInt32, callback: SessionCallback)throws  -> UInt32  {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_fn_func_moq_session_connect(
+    uniffi_moq_ffi_fn_func_moq_session_connect(
         FfiConverterString.lower(url),
         FfiConverterUInt32.lower(originPublish),
         FfiConverterUInt32.lower(originConsume),
@@ -1753,98 +1762,101 @@ private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
     let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
-    let scaffolding_contract_version = ffi_moq_uniffi_contract_version()
+    let scaffolding_contract_version = ffi_moq_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_audio_close() != 60041) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_audio_close() != 1414) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_audio_config() != 59569) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_audio_config() != 28165) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_audio_ordered() != 64269) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_audio_ordered() != 4893) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_catalog() != 22603) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_catalog() != 29400) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_catalog_close() != 62911) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_catalog_close() != 6165) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_close() != 60566) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_catalog_snapshot_close() != 17531) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_frame() != 46766) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_close() != 59181) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_frame_close() != 396) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_frame() != 52462) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_video_close() != 62199) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_frame_close() != 28083) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_video_config() != 5668) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_video_close() != 5638) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_consume_video_ordered() != 54453) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_video_config() != 25849) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_log_level() != 1197) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_video_ordered() != 38110) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_origin_announced() != 34863) {
+    if (uniffi_moq_ffi_checksum_func_moq_log_level() != 14349) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_origin_announced_close() != 8291) {
+    if (uniffi_moq_ffi_checksum_func_moq_origin_announced() != 28213) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_origin_announced_info() != 24599) {
+    if (uniffi_moq_ffi_checksum_func_moq_origin_announced_close() != 40716) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_origin_close() != 9230) {
+    if (uniffi_moq_ffi_checksum_func_moq_origin_announced_info() != 24231) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_origin_consume() != 11681) {
+    if (uniffi_moq_ffi_checksum_func_moq_origin_close() != 49817) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_origin_create() != 28836) {
+    if (uniffi_moq_ffi_checksum_func_moq_origin_consume() != 26396) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_origin_publish() != 4549) {
+    if (uniffi_moq_ffi_checksum_func_moq_origin_create() != 34132) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_publish_close() != 41441) {
+    if (uniffi_moq_ffi_checksum_func_moq_origin_publish() != 37281) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_publish_create() != 19781) {
+    if (uniffi_moq_ffi_checksum_func_moq_publish_close() != 28305) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_publish_media_close() != 49491) {
+    if (uniffi_moq_ffi_checksum_func_moq_publish_create() != 54564) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_publish_media_frame() != 59537) {
+    if (uniffi_moq_ffi_checksum_func_moq_publish_media_close() != 61399) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_publish_media_ordered() != 44233) {
+    if (uniffi_moq_ffi_checksum_func_moq_publish_media_frame() != 46970) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_session_close() != 29133) {
+    if (uniffi_moq_ffi_checksum_func_moq_publish_media_ordered() != 11878) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_func_moq_session_connect() != 29846) {
+    if (uniffi_moq_ffi_checksum_func_moq_session_close() != 5253) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_method_announcecallback_on_announce() != 59086) {
+    if (uniffi_moq_ffi_checksum_func_moq_session_connect() != 34068) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_method_catalogcallback_on_catalog() != 60897) {
+    if (uniffi_moq_ffi_checksum_method_announcecallback_on_announce() != 24954) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_method_framecallback_on_frame() != 65363) {
+    if (uniffi_moq_ffi_checksum_method_catalogcallback_on_catalog() != 33062) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_checksum_method_sessioncallback_on_status() != 31922) {
+    if (uniffi_moq_ffi_checksum_method_framecallback_on_frame() != 9285) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_sessioncallback_on_status() != 449) {
         return InitializationResult.apiChecksumMismatch
     }
 
@@ -1857,7 +1869,7 @@ private let initializationResult: InitializationResult = {
 
 // Make the ensure init function public so that other modules which have external type references to
 // our types can call it.
-public func uniffiEnsureMoqInitialized() {
+public func uniffiEnsureMoqFfiInitialized() {
     switch initializationResult {
     case .ok:
         break

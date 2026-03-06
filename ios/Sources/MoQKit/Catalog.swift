@@ -97,8 +97,8 @@ private final class CatalogCB: CatalogCallback {
         self.continuation = continuation
     }
 
-    func onCatalog(catalogId: UInt32) {
-        continuation.yield(MoQCatalog(handle: catalogId))
+    func onCatalog(catalogId: Int32) {
+        continuation.yield(MoQCatalog(handle: UInt32(bitPattern: catalogId)))
     }
 }
 

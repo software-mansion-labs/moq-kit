@@ -1,8 +1,18 @@
 import AVFoundation
 import CoreMedia
 
-enum MoQAVPlayerError: Error {
-    case invalidTracksAmount(message: String)
+// MARK: - MoQPlayerEvent
+
+public enum MoQPlayerEvent: Sendable {
+    case trackPlaying(TrackKind)
+    case trackPaused(TrackKind)
+    case trackStopped(TrackKind)
+    case allTracksStopped
+    case error(TrackKind, String)
+
+    public enum TrackKind: String, Sendable {
+        case video, audio
+    }
 }
 
 // MARK: - MoQAVPlayer
@@ -10,111 +20,68 @@ enum MoQAVPlayerError: Error {
 @MainActor
 public final class MoQAVPlayer {
     public var videoLayer: AVSampleBufferDisplayLayer
-    public var onTrackEnded: (() -> Void)?
-    public var onBufferingStateChanged: ((Bool) -> Void)?
+    public let events: AsyncStream<MoQPlayerEvent>
 
     private let audioRenderer: AVSampleBufferAudioRenderer
     private let synchronizer: AVSampleBufferRenderSynchronizer
 
-    private let videoSubscription: MoQVideoTrack?
-    private let audioSubscription: MoQAudioTrack?
-    private let videoFormatDescription: CMFormatDescription?
-    private let audioFormatDescription: CMFormatDescription?
+    private let tracks: [any MoQTrackInfo]
+    private let maxLatencyMs: UInt64
+
+    private var videoSubscription: MoQVideoTrack?
+    private var audioSubscription: MoQAudioTrack?
+    private var videoFormatDescription: CMFormatDescription?
+    private var audioFormatDescription: CMFormatDescription?
 
     private var videoTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
+    private var coordinatorTask: Task<Void, Never>?
+
+    private let eventsContinuation: AsyncStream<MoQPlayerEvent>.Continuation
+
+    private var hasVideoTrack: Bool { tracks.contains(where: { $0 is MoQVideoTrackInfo }) }
+    private var hasAudioTrack: Bool { tracks.contains(where: { $0 is MoQAudioTrackInfo }) }
 
     init(
         tracks: [any MoQTrackInfo],
-        broadcastHandle: UInt32,
         maxLatencyMs: UInt64
     ) throws {
-
-        var videoSub: MoQVideoTrack?
-        var audioSub: MoQAudioTrack?
-        var videoFmt: CMFormatDescription?
-        var audioFmt: CMFormatDescription?
-
         if tracks.isEmpty || tracks.count > 2 {
-            throw MoQAVPlayerError.invalidTracksAmount(message: "expected one or two tracks")
+            throw MoQSessionError.invalidConfiguration("expected one or two tracks")
         }
 
-        for track in tracks {
-            if let vInfo = track as? MoQVideoTrackInfo {
-                MoQLogger.player.debug(
-                    "Video track information, name = \(vInfo.name), config = \(vInfo.config.debugDescription)"
-                )
+        self.tracks = tracks
+        self.maxLatencyMs = maxLatencyMs
 
-                do {
-                    videoFmt = try SampleBufferFactory.makeVideoFormatDescription(
-                        from: vInfo.config)
-                } catch {
-                    MoQLogger.player.error(
-                        "Failed to build video format for index \(vInfo.index): \(error)"
-                    )
-                }
-                do {
-                    videoSub = try MoQVideoTrack(
-                        from: vInfo, broadcastHandle: broadcastHandle, maxLatencyMs: maxLatencyMs)
-                } catch {
-                    MoQLogger.player.error(
-                        "Failed to subscribe to video track \(vInfo.index): \(error)"
-                    )
-                }
-            } else if let aInfo = track as? MoQAudioTrackInfo {
-                MoQLogger.player.debug(
-                    "Audio track information, name = \(aInfo.name), config = \(aInfo.config.debugDescription)"
-                )
+        self.audioRenderer = AVSampleBufferAudioRenderer()
+        self.videoLayer = AVSampleBufferDisplayLayer()
+        self.synchronizer = AVSampleBufferRenderSynchronizer()
 
-                do {
-                    audioFmt = try SampleBufferFactory.makeAudioFormatDescription(
-                        from: aInfo.config)
-                } catch {
-                    MoQLogger.player.error(
-                        "Failed to build audio format for index \(aInfo.index): \(error)"
-                    )
-                }
-                do {
-                    audioSub = try MoQAudioTrack(
-                        from: aInfo, broadcastHandle: broadcastHandle, maxLatencyMs: maxLatencyMs)
-                } catch {
-                    MoQLogger.player.error(
-                        "Failed to subscribe to audio track \(aInfo.index): \(error)"
-                    )
-                }
-            }
-        }
+        var cont: AsyncStream<MoQPlayerEvent>.Continuation!
+        self.events = AsyncStream { cont = $0 }
+        self.eventsContinuation = cont
+    }
 
-        self.videoSubscription = videoSub
-        self.audioSubscription = audioSub
-        self.videoFormatDescription = videoFmt
-        self.audioFormatDescription = audioFmt
+    // MARK: - Public API
 
-        let audioRenderer = AVSampleBufferAudioRenderer()
-        let videoLayer = AVSampleBufferDisplayLayer()
-        let synchronizer = AVSampleBufferRenderSynchronizer()
+    public func play() async throws {
+        guard videoTask == nil && audioTask == nil else { return }
 
-        if audioSub != nil && videoSub != nil {
+        try subscribe()
+
+        let shouldSync = audioSubscription != nil && videoSubscription != nil
+        if shouldSync {
             MoQLogger.player.debug("Adding A/V synchronization")
             synchronizer.addRenderer(audioRenderer)
             videoLayer.controlTimebase = synchronizer.timebase
         }
-
-        self.audioRenderer = audioRenderer
-        self.videoLayer = videoLayer
-        self.synchronizer = synchronizer
-    }
-
-    public func play() async throws {
-        guard self.audioTask == nil && self.videoTask == nil else { return }
 
         let baseTimestamp = BaseTimestamp()
         let playbackStarted = PlaybackStartFlag()
         let layer = videoLayer
         let renderer = audioRenderer
         let sync = synchronizer
-
-        let shouldSync = self.audioSubscription != nil && self.videoSubscription != nil
+        let continuation = eventsContinuation
 
         MoQLogger.player.debug(
             "Starting playback, audio = \(self.audioSubscription != nil), video = \(self.videoSubscription != nil)"
@@ -126,6 +93,7 @@ public final class MoQAVPlayer {
             })
 
             videoTask = Task.detached {
+                var firstFrame = true
                 for await frame in vTrack.frames {
                     if Task.isCancelled { break }
                     do {
@@ -139,6 +107,10 @@ public final class MoQAVPlayer {
                                 "Trying to enqueue data for display layer that is already full")
                         }
                         layer.enqueue(sb)
+                        if firstFrame {
+                            firstFrame = false
+                            continuation.yield(.trackPlaying(.video))
+                        }
                         if playbackStarted.setIfFirst() && shouldSync {
                             MoQLogger.player.debug("Syncing audio and video feeds")
                             await MainActor.run {
@@ -147,7 +119,11 @@ public final class MoQAVPlayer {
                         }
                     } catch {
                         MoQLogger.player.error("Video frame processing error: \(error)")
+                        continuation.yield(.error(.video, error.localizedDescription))
                     }
+                }
+                if !Task.isCancelled {
+                    continuation.yield(.trackStopped(.video))
                 }
             }
         }
@@ -158,6 +134,7 @@ public final class MoQAVPlayer {
             })
 
             audioTask = Task.detached {
+                var firstFrame = true
                 for await frame in aTrack.frames {
                     if Task.isCancelled { break }
                     do {
@@ -167,6 +144,10 @@ public final class MoQAVPlayer {
                         )
                         audioTracer.record(ptsUs: frame.timestampUs)
                         renderer.enqueue(sb)
+                        if firstFrame {
+                            firstFrame = false
+                            continuation.yield(.trackPlaying(.audio))
+                        }
                         if playbackStarted.setIfFirst() && shouldSync {
                             await MainActor.run {
                                 sync.setRate(1.0, time: CMTime(value: 0, timescale: 1_000_000))
@@ -174,9 +155,52 @@ public final class MoQAVPlayer {
                         }
                     } catch {
                         MoQLogger.player.error("Audio frame processing error: \(error)")
+                        continuation.yield(.error(.audio, error.localizedDescription))
                     }
                 }
+                if !Task.isCancelled {
+                    continuation.yield(.trackStopped(.audio))
+                }
             }
+        }
+
+        // Coordinator: wait for both tasks and emit allTracksStopped if they ended naturally
+        let vTask = videoTask
+        let aTask = audioTask
+        coordinatorTask = Task.detached {
+            await vTask?.value
+            await aTask?.value
+            if !Task.isCancelled {
+                continuation.yield(.allTracksStopped)
+                continuation.finish()
+            }
+        }
+    }
+
+    public func pause() async {
+        videoTask?.cancel()
+        audioTask?.cancel()
+        coordinatorTask?.cancel()
+        videoTask = nil
+        audioTask = nil
+        coordinatorTask = nil
+
+        videoLayer.flushAndRemoveImage()
+        audioRenderer.flush()
+        await synchronizer.removeRenderer(audioRenderer, at: .zero)
+        videoLayer.controlTimebase = nil
+        synchronizer.setRate(0, time: .zero)
+
+        await videoSubscription?.close()
+        await audioSubscription?.close()
+        videoSubscription = nil
+        audioSubscription = nil
+
+        if hasVideoTrack {
+            eventsContinuation.yield(.trackPaused(.video))
+        }
+        if hasAudioTrack {
+            eventsContinuation.yield(.trackPaused(.audio))
         }
     }
 
@@ -184,8 +208,10 @@ public final class MoQAVPlayer {
         MoQLogger.player.debug("Stopping the player")
         videoTask?.cancel()
         audioTask?.cancel()
+        coordinatorTask?.cancel()
         videoTask = nil
         audioTask = nil
+        coordinatorTask = nil
 
         videoLayer.flushAndRemoveImage()
         audioRenderer.flush()
@@ -193,11 +219,67 @@ public final class MoQAVPlayer {
 
         await videoSubscription?.close()
         await audioSubscription?.close()
+        videoSubscription = nil
+        audioSubscription = nil
+
+        eventsContinuation.finish()
     }
 
     deinit {
         videoTask?.cancel()
         audioTask?.cancel()
+        coordinatorTask?.cancel()
+        eventsContinuation.finish()
+    }
+
+    // MARK: - Private
+
+    private func subscribe() throws {
+        for track in tracks {
+            if let vInfo = track as? MoQVideoTrackInfo {
+                MoQLogger.player.debug(
+                    "Video track information, name = \(vInfo.name), config = \(vInfo.config.debugDescription)"
+                )
+
+                do {
+                    videoFormatDescription = try SampleBufferFactory.makeVideoFormatDescription(
+                        from: vInfo.config)
+                } catch {
+                    MoQLogger.player.error(
+                        "Failed to build video format for index \(vInfo.index): \(error)"
+                    )
+                }
+                do {
+                    videoSubscription = try MoQVideoTrack(
+                        from: vInfo, maxLatencyMs: maxLatencyMs)
+                } catch {
+                    MoQLogger.player.error(
+                        "Failed to subscribe to video track \(vInfo.index): \(error)"
+                    )
+                }
+            } else if let aInfo = track as? MoQAudioTrackInfo {
+                MoQLogger.player.debug(
+                    "Audio track information, name = \(aInfo.name), config = \(aInfo.config.debugDescription)"
+                )
+
+                do {
+                    audioFormatDescription = try SampleBufferFactory.makeAudioFormatDescription(
+                        from: aInfo.config)
+                } catch {
+                    MoQLogger.player.error(
+                        "Failed to build audio format for index \(aInfo.index): \(error)"
+                    )
+                }
+                do {
+                    audioSubscription = try MoQAudioTrack(
+                        from: aInfo, maxLatencyMs: maxLatencyMs)
+                } catch {
+                    MoQLogger.player.error(
+                        "Failed to subscribe to audio track \(aInfo.index): \(error)"
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -238,7 +320,7 @@ private final class PacketTimingTracer: @unchecked Sendable {
         burstFactor: Double = 0.3,
         reportInterval: Int = 120,
         reportCallback: @escaping(String) -> Void
-        
+
     ) {
         self.kind = kind
         self.stallFactor = stallFactor

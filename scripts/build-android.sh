@@ -132,7 +132,7 @@ else
 fi
 
 echo "==> Building host library for UniFFI metadata..."
-cargo build $PROFILE_FLAGS --package libmoq --features uniffi-api \
+cargo build $PROFILE_FLAGS --package moq-ffi \
   --manifest-path "$WORKSPACE_CARGO"
 
 echo "==> Generating Kotlin bindings..."
@@ -149,8 +149,8 @@ esac
 
 HOST_LIB=""
 for candidate in \
-  "$TARGET_BASE/$CARGO_PROFILE/libmoq.$HOST_LIB_EXT" \
-  "$TARGET_BASE/$CARGO_PROFILE/moq.$HOST_LIB_EXT"; do
+  "$TARGET_BASE/$CARGO_PROFILE/libmoq_ffi.$HOST_LIB_EXT" \
+  "$TARGET_BASE/$CARGO_PROFILE/moq_ffi.$HOST_LIB_EXT"; do
   if [[ -f "$candidate" ]]; then
     HOST_LIB="$candidate"
     break
@@ -158,7 +158,7 @@ for candidate in \
 done
 
 if [[ -z "$HOST_LIB" ]]; then
-  HOST_LIB="$(find "$TARGET_BASE/$CARGO_PROFILE" -maxdepth 1 -type f \( -name 'libmoq.*' -o -name 'moq.*' \) | head -n 1)"
+  HOST_LIB="$(find "$TARGET_BASE/$CARGO_PROFILE" -maxdepth 1 -type f \( -name 'libmoq_ffi.*' -o -name 'moq_ffi.*' \) | head -n 1)"
 fi
 
 if [[ -z "$HOST_LIB" || ! -f "$HOST_LIB" ]]; then
@@ -167,7 +167,7 @@ if [[ -z "$HOST_LIB" || ! -f "$HOST_LIB" ]]; then
 fi
 
 (cd "$ROOT_DIR/vendor/moq" &&
-  cargo run --features uniffi-api --bin uniffi-bindgen \
+  cargo run --package moq-ffi --bin uniffi-bindgen \
     --manifest-path "$WORKSPACE_CARGO" \
     generate \
     --library "$HOST_LIB" \
@@ -178,7 +178,7 @@ echo "==> Building Android shared library (arm64-v8a)..."
 mkdir -p "$ANDROID_OUT/jniLibs"
 (cd "$ROOT_DIR/vendor/moq" &&
   cargo ndk -t arm64-v8a -o "$ANDROID_OUT/jniLibs" \
-    build $PROFILE_FLAGS --package libmoq --features uniffi-api \
+    build $PROFILE_FLAGS --package moq-ffi \
     --manifest-path "$WORKSPACE_CARGO")
 
 echo ""

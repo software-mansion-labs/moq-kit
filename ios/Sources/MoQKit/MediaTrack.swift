@@ -10,7 +10,7 @@ public class MoQMediaTrack: @unchecked Sendable {
     private let closeFunc: (UInt32) throws -> Void
 
     fileprivate init(
-        broadcastHandle: UInt32,
+        catalogHandle: UInt32,
         index: UInt32,
         maxLatencyMs: UInt64,
         subscribeFunc: (UInt32, UInt32, UInt64, any FrameCallback) throws -> UInt32,
@@ -23,7 +23,7 @@ public class MoQMediaTrack: @unchecked Sendable {
         let frames = AsyncStream<MoQFrame> { framesCont = $0 }
 
         let cb = FrameCB(continuation: rawCont)
-        let handle = try subscribeFunc(broadcastHandle, index, maxLatencyMs, cb)
+        let handle = try subscribeFunc(catalogHandle, index, maxLatencyMs, cb)
 
         self.trackHandle = handle
         self.frames = frames
@@ -69,25 +69,25 @@ public class MoQMediaTrack: @unchecked Sendable {
 
 public final class MoQVideoTrack: MoQMediaTrack, @unchecked Sendable {
     public static func subscribe(
-        broadcastHandle: UInt32,
+        catalogHandle: UInt32,
         index: UInt32,
         maxLatencyMs: UInt64
     ) throws -> MoQVideoTrack {
         try MoQVideoTrack(
-            broadcastHandle: broadcastHandle,
+            catalogHandle: catalogHandle,
             index: index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeVideoOrdered(broadcast: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: { try moqConsumeVideoOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
             closeFunc: { try moqConsumeVideoClose(track: $0) }
         )
     }
 
-    convenience init(from info: MoQVideoTrackInfo, broadcastHandle: UInt32, maxLatencyMs: UInt64) throws {
+    convenience init(from info: MoQVideoTrackInfo, maxLatencyMs: UInt64) throws {
         try self.init(
-            broadcastHandle: broadcastHandle,
+            catalogHandle: info.catalog.handle,
             index: info.index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeVideoOrdered(broadcast: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: { try moqConsumeVideoOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
             closeFunc: { try moqConsumeVideoClose(track: $0) }
         )
     }
@@ -97,25 +97,25 @@ public final class MoQVideoTrack: MoQMediaTrack, @unchecked Sendable {
 
 public final class MoQAudioTrack: MoQMediaTrack, @unchecked Sendable {
     public static func subscribe(
-        broadcastHandle: UInt32,
+        catalogHandle: UInt32,
         index: UInt32,
         maxLatencyMs: UInt64
     ) throws -> MoQAudioTrack {
         try MoQAudioTrack(
-            broadcastHandle: broadcastHandle,
+            catalogHandle: catalogHandle,
             index: index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeAudioOrdered(broadcast: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: { try moqConsumeAudioOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
             closeFunc: { try moqConsumeAudioClose(track: $0) }
         )
     }
 
-    convenience init(from info: MoQAudioTrackInfo, broadcastHandle: UInt32, maxLatencyMs: UInt64) throws {
+    convenience init(from info: MoQAudioTrackInfo, maxLatencyMs: UInt64) throws {
         try self.init(
-            broadcastHandle: broadcastHandle,
+            catalogHandle: info.catalog.handle,
             index: info.index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeAudioOrdered(broadcast: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: { try moqConsumeAudioOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
             closeFunc: { try moqConsumeAudioClose(track: $0) }
         )
     }
@@ -130,7 +130,7 @@ private final class FrameCB: FrameCallback {
         self.continuation = continuation
     }
 
-    func onFrame(frameId: UInt32) {
-        continuation.yield(frameId)   // only safe: no Rust call inside callback
+    func onFrame(frameId: Int32) {
+        continuation.yield(UInt32(bitPattern: frameId))   // only safe: no Rust call inside callback
     }
 }

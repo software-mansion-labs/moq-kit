@@ -20,11 +20,14 @@ cd android/moqkit && ./gradlew :MoQKit:manualBuild  # Assemble AAR + copy to exa
 ### Rust (vendor/moq)
 ```bash
 # From moq-kit root — targets the vendor/moq workspace
-cargo build --release --package libmoq --features uniffi-api --target aarch64-apple-ios
-cargo build --release --package libmoq --features uniffi-api --target aarch64-apple-ios-sim
+cargo build --release --package moq-ffi --target aarch64-apple-ios
+cargo build --release --package moq-ffi --target aarch64-apple-ios-sim
 
 # Android
-cargo ndk -t arm64-v8a build --release --package libmoq --features uniffi-api
+cargo ndk -t arm64-v8a build --release --package moq-ffi
+
+# C bindings only (libmoq)
+cargo build --release --package libmoq
 
 # vendor/moq internal checks
 cd vendor/moq && just check   # tests + linting
@@ -35,23 +38,24 @@ Use `--profile release-with-debug` instead of `--release` to include DWARF debug
 
 ## Architecture
 
-moq-kit wraps **libmoq** (Rust) with idiomatic Swift and Kotlin APIs. The stack:
+moq-kit wraps **moq-ffi** (Rust) with idiomatic Swift and Kotlin APIs. The stack:
 
 ```
 moq-kit (Swift / Kotlin)    ← platform APIs in this repo
-libmoq (UniFFI bindings)    ← generated from vendor/moq/rs/libmoq/
+moq-ffi (UniFFI bindings)   ← vendor/moq/rs/moq-ffi/
+libmoq (C bindings)         ← vendor/moq/rs/libmoq/ (pure C API)
 hang (media layer)          ← codecs, containers, catalogs
 moq-lite (transport)        ← pub/sub over QUIC
 QUIC / WebTransport         ← network transport
 ```
 
-**vendor/moq** is a git submodule pointing to `moq-dev/moq`. The libmoq Rust crate lives at `vendor/moq/rs/libmoq/`.
+**vendor/moq** is a git submodule pointing to `moq-dev/moq`. The UniFFI crate lives at `vendor/moq/rs/moq-ffi/`, the C bindings at `vendor/moq/rs/libmoq/`.
 
 ## UniFFI Bindings (critical)
 
-Both platforms use **UniFFI** rather than raw C FFI:
+Both platforms use **UniFFI** via the standalone `moq-ffi` crate (NOT libmoq):
 
-- Rust uses `--features uniffi-api` (NOT the default `c-api`)
+- Rust uses `--package moq-ffi` (libmoq is now pure C bindings only)
 - iOS: `build-xcframework.sh` runs `uniffi-bindgen`, generates `ios/Sources/MoQKit/moq.swift`
 - Android: `build-android.sh` generates Kotlin under `android/moqkit/MoQKit/src/main/java/uniffi/moq/`
 - **Never edit these generated files manually** — they're overwritten every build

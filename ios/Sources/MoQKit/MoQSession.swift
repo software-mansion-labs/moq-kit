@@ -12,6 +12,7 @@ public enum MoQSessionError: Error, Sendable {
     case noTracksAvailable
     case noBroadcastAvailable
     case noTracksSelected
+    case invalidConfiguration(String)
     case connectionFailed(MoqError)
 }
 
@@ -161,14 +162,13 @@ public final class MoQSession {
         tracks: [any MoQTrackInfo],
         maxLatencyMs: UInt64 = 500
     ) throws -> MoQAVPlayer {
-        guard let entry = activeBroadcasts[path] else {
+        guard activeBroadcasts[path] != nil else {
             throw MoQSessionError.noBroadcastAvailable
         }
         MoQLogger.session.debug(
             "Creating player for \(path), tracks count = \(tracks.count), maxLatencyMs = \(maxLatencyMs)"
         )
-        return try MoQAVPlayer(
-            tracks: tracks, broadcastHandle: entry.handle, maxLatencyMs: maxLatencyMs)
+        return try MoQAVPlayer(tracks: tracks, maxLatencyMs: maxLatencyMs)
     }
 
     /// Stop playback and release all resources.

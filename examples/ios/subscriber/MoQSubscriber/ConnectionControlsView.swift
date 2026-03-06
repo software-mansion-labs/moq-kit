@@ -5,8 +5,12 @@ struct ConnectionControlsView: View {
     @Binding var broadcastPath: String
     let canConnect: Bool
     let canStop: Bool
+    let canPause: Bool
+    let canResume: Bool
     let onConnect: () -> Void
     let onStop: () -> Void
+    let onPause: () -> Void
+    let onResume: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
@@ -28,6 +32,14 @@ struct ConnectionControlsView: View {
                 Button("Stop") { onStop() }
                     .buttonStyle(.bordered)
                     .disabled(!canStop)
+                
+                if canPause {
+                    Button("Pause") { onPause() }
+                        .buttonStyle(.bordered)
+                } else if canResume {
+                    Button("Resume") { onResume() }
+                        .buttonStyle(.bordered)
+                }
             }
         }
     }

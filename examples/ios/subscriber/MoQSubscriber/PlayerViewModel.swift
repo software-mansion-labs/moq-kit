@@ -7,15 +7,37 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var info: MoQBroadcastInfo
     @Published var player: MoQAVPlayer?
     @Published var offline: Bool = false
+    @Published var isPlaying: Bool = false
+
+    var eventTask: Task<Void, Never>?
 
     init(info: MoQBroadcastInfo) {
         self.id = info.path
         self.info = info
     }
 
+    func observeEvents(of player: MoQAVPlayer) {
+        eventTask = Task {
+            for await event in player.events {
+                switch event {
+                case .trackPlaying:
+                    isPlaying = true
+                case .allTracksStopped:
+                    isPlaying = false
+                    offline = true
+                default:
+                    break
+                }
+            }
+        }
+    }
+
     func stop() async {
+        eventTask?.cancel()
+        eventTask = nil
         await player?.stopAll()
         player = nil
+        isPlaying = false
     }
 }
 
@@ -34,6 +56,14 @@ final class PlayerViewModel: ObservableObject {
 
     var canStop: Bool {
         sessionState == .connecting || sessionState == .connected
+    }
+    
+    var canPause: Bool {
+        true
+    }
+    
+    var canResume: Bool {
+        true
     }
 
     var stateLabel: String {
@@ -85,6 +115,9 @@ final class PlayerViewModel: ObservableObject {
                     if let a = info.audioTracks.first { tracks.append(a) }
                     let p = try? s.makePlayer(path: info.path, tracks: tracks)
                     entry.player = p
+                    if let p {
+                        entry.observeEvents(of: p)
+                    }
                     try? await p?.play()
                 case .unavailable(let path):
                     if let entry = broadcasts.first(where: { $0.id == path }) {
@@ -117,6 +150,24 @@ final class PlayerViewModel: ObservableObject {
                 await entry.stop()
             }
             await s?.close()
+        }
+    }
+    
+    func pause() {
+        broadcasts.forEach { entry in
+            Task {
+                await entry.player?.pause()
+            }
+        }
+    }
+    
+    func play() {
+        broadcasts.forEach { entry in
+            Task {
+                do {
+                    try await entry.player?.play()
+                } catch {}
+            }
         }
     }
 }
