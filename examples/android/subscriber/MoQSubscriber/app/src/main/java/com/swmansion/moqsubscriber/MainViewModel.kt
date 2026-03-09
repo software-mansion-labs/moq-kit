@@ -13,7 +13,7 @@ import kotlinx.coroutines.launch
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     var relayUrl by mutableStateOf("http://192.168.92.140:4443")
-    var broadcastPath by mutableStateOf("anon/bbb")
+    var broadcastPath by mutableStateOf("anon/bbb/ccc")
     var sessionState by mutableStateOf<MoQSession.State>(MoQSession.State.Idle)
     var broadcastInfo by mutableStateOf<MoQSession.BroadcastInfo?>(null)
     var player by mutableStateOf<ExoPlayer?>(null)
@@ -23,7 +23,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connect() {
         val context = getApplication<Application>()
-        val s = MoQSession(url = relayUrl, path = broadcastPath, parentScope = viewModelScope)
+        val s = MoQSession(
+            url = relayUrl,
+            path = broadcastPath,
+            parentScope = viewModelScope,
+        )
         session = s
 
         sessionJobs = listOf(
@@ -33,13 +37,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch {
                 s.broadcasts.collect { info ->
                     broadcastInfo = info
-                    val videoIdx = info.videoTracks.firstOrNull()?.index?.toUInt()
-                    val audioIdx = info.audioTracks.firstOrNull()?.index?.toUInt()
-                    player = s.startTrack(
-                        context = context,
-                        videoIndex = videoIdx,
-                        audioIndex = audioIdx,
-                    )
+                    val videoIndex = info.videoTracks.firstOrNull()?.index?.toUInt()
+                    val audioIndex = info.audioTracks.firstOrNull()?.index?.toUInt()
+                    player = s.startTrack(context, videoIndex, audioIndex)
                 }
             },
             viewModelScope.launch {

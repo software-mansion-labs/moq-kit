@@ -88,16 +88,16 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
 
         vm.broadcastInfo?.let { info ->
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                info.videoTracks.firstOrNull()?.let { v ->
+                info.videoTracks.firstOrNull()?.let { (_, config) ->
                     Text(
-                        text = "Video: ${v.value.name} (${v.value.codec})",
+                        text = "Video: ${config.codec}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                info.audioTracks.firstOrNull()?.let { a ->
+                info.audioTracks.firstOrNull()?.let { (_, config) ->
                     Text(
-                        text = "Audio: ${a.value.name} (${a.value.codec} ${a.value.sampleRate} Hz)",
+                        text = "Audio: ${config.codec} ${config.sampleRate} Hz",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

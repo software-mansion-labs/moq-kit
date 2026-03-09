@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build libmoq for Android (arm64-v8a), generate UniFFI Kotlin bindings,
+# Build moq-ffi for Android (arm64-v8a), generate UniFFI Kotlin bindings,
 # and place outputs under moq-kit/android/.
 #
 # Usage: ./scripts/build-android.sh [--debug]
@@ -9,7 +9,7 @@ set -euo pipefail
 #   --debug  Build Rust with debug symbols (debug profile)
 #
 # Produces:
-#   android/jniLibs/arm64-v8a/libmoq.so
+#   android/jniLibs/arm64-v8a/moq_ffi.so
 #   android/uniffi/ (Kotlin bindings)
 
 DEBUG=0
@@ -114,7 +114,8 @@ check_ndk_version() {
   return 0
 }
 
-if ! NDK_DIR="$(resolve_ndk)"; then echo "Error: Android NDK not found. Set ANDROID_NDK_HOME or ANDROID_SDK_ROOT/ANDROID_HOME." >&2
+if ! NDK_DIR="$(resolve_ndk)"; then
+  echo "Error: Android NDK not found. Set ANDROID_NDK_HOME or ANDROID_SDK_ROOT/ANDROID_HOME." >&2
   exit 1
 fi
 export ANDROID_NDK_HOME="$NDK_DIR"
@@ -137,7 +138,6 @@ cargo build $PROFILE_FLAGS --package moq-ffi \
 
 echo "==> Generating Kotlin bindings..."
 UNIFFI_OUT="$ANDROID_OUT/java"
-rm -rf "$UNIFFI_OUT"
 mkdir -p "$UNIFFI_OUT"
 
 case "$(uname -s)" in
@@ -149,7 +149,6 @@ esac
 
 HOST_LIB=""
 for candidate in \
-  "$TARGET_BASE/$CARGO_PROFILE/libmoq_ffi.$HOST_LIB_EXT" \
   "$TARGET_BASE/$CARGO_PROFILE/moq_ffi.$HOST_LIB_EXT"; do
   if [[ -f "$candidate" ]]; then
     HOST_LIB="$candidate"
@@ -167,7 +166,7 @@ if [[ -z "$HOST_LIB" || ! -f "$HOST_LIB" ]]; then
 fi
 
 (cd "$ROOT_DIR/vendor/moq" &&
-  cargo run --package moq-ffi --bin uniffi-bindgen \
+  cargo run $PROFILE_FLAGS --package moq-ffi --bin uniffi-bindgen \
     --manifest-path "$WORKSPACE_CARGO" \
     generate \
     --library "$HOST_LIB" \
@@ -183,5 +182,5 @@ mkdir -p "$ANDROID_OUT/jniLibs"
 
 echo ""
 echo "Done."
-echo "JNI library: $ANDROID_OUT/jniLibs/arm64-v8a/libmoq.so"
+echo "JNI library: $ANDROID_OUT/jniLibs/arm64-v8a/moq_ffi.so"
 echo "Kotlin bindings: $UNIFFI_OUT"

@@ -26,7 +26,17 @@ class MoQCatalog(val handle: UInt) : AutoCloseable {
  */
 fun subscribeCatalog(broadcastHandle: UInt): Flow<MoQCatalog> = callbackFlow {
     val callback = object : CatalogCallback {
-        override fun onCatalog(catalogId: UInt) { trySend(MoQCatalog(catalogId)) }
+        override fun onCatalog(catalogId: Int) {
+            if (catalogId < 0) {
+                if (catalogId == -1) {
+                    channel.close()
+                } else {
+                    channel.close(MoQSessionException("Catalog subscription closed with error code: $catalogId"))
+                }
+                return
+            }
+            trySend(MoQCatalog(catalogId.toUInt()))
+        }
     }
     val subscriptionHandle = moqConsumeCatalog(broadcastHandle, callback)
     awaitClose { try { moqConsumeClose(subscriptionHandle) } catch (_: MoqException) {} }

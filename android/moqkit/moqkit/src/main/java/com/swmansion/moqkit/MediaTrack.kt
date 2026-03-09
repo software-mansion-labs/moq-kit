@@ -19,12 +19,21 @@ fun subscribeVideoTrack(
     maxLatencyMs: ULong = 1000u,
 ): Flow<FrameData> = callbackFlow {
     val callback = object : FrameCallback {
-        override fun onFrame(frameId: UInt) {
+        override fun onFrame(frameId: Int) {
+            if (frameId < 0) {
+                if (frameId == -1) {
+                    channel.close()
+                } else {
+                    channel.close(MoQSessionException("Video track closed with error code: $frameId"))
+                }
+                return
+            }
+            val id = frameId.toUInt()
             try {
-                trySend(moqConsumeFrame(frameId))
+                trySend(moqConsumeFrame(id))
             } catch (_: MoqException) {
             } finally {
-                try { moqConsumeFrameClose(frameId) } catch (_: MoqException) {}
+                try { moqConsumeFrameClose(id) } catch (_: MoqException) {}
             }
         }
     }
@@ -38,12 +47,21 @@ fun subscribeAudioTrack(
     maxLatencyMs: ULong = 1000u,
 ): Flow<FrameData> = callbackFlow {
     val callback = object : FrameCallback {
-        override fun onFrame(frameId: UInt) {
+        override fun onFrame(frameId: Int) {
+            if (frameId < 0) {
+                if (frameId == -1) {
+                    channel.close()
+                } else {
+                    channel.close(MoQSessionException("Audio track closed with error code: $frameId"))
+                }
+                return
+            }
+            val id = frameId.toUInt()
             try {
-                trySend(moqConsumeFrame(frameId))
+                trySend(moqConsumeFrame(id))
             } catch (_: MoqException) {
             } finally {
-                try { moqConsumeFrameClose(frameId) } catch (_: MoqException) {}
+                try { moqConsumeFrameClose(id) } catch (_: MoqException) {}
             }
         }
     }

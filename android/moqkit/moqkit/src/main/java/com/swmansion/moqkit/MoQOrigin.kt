@@ -25,9 +25,17 @@ class MoQOrigin(val handle: UInt = moqOriginCreate()) : AutoCloseable {
      */
     fun announced(): Flow<AnnouncedInfo> = callbackFlow {
         val callback = object : AnnounceCallback {
-            override fun onAnnounce(announcedId: UInt) {
+            override fun onAnnounce(announcedId: Int) {
+                if (announcedId < 0) {
+                    if (announcedId == -1) {
+                        channel.close()
+                    } else {
+                        channel.close(MoQSessionException("Announce subscription closed with error code: $announcedId"))
+                    }
+                    return
+                }
                 try {
-                    trySend(moqOriginAnnouncedInfo(announcedId))
+                    trySend(moqOriginAnnouncedInfo(announcedId.toUInt()))
                 } catch (_: MoqException) { /* skip bad announcement */ }
             }
         }
