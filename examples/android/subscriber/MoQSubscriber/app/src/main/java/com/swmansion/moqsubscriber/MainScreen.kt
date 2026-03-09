@@ -63,8 +63,7 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             OutlinedButton(
                 onClick = { vm.stop() },
                 enabled = vm.sessionState is MoQSession.State.Connecting ||
-                        vm.sessionState is MoQSession.State.Connected ||
-                        vm.sessionState is MoQSession.State.Playing,
+                        vm.sessionState is MoQSession.State.Connected,
             ) {
                 Text("Stop")
             }
@@ -74,13 +73,15 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            val displayColor = if (vm.isPlaying) Color.Green else stateColor(vm.sessionState)
+            val displayLabel = if (vm.isPlaying) "playing" else stateLabel(vm.sessionState)
             Box(
                 modifier = Modifier
                     .size(10.dp)
-                    .background(stateColor(vm.sessionState), shape = RoundedCornerShape(5.dp))
+                    .background(displayColor, shape = RoundedCornerShape(5.dp))
             )
             Text(
-                text = stateLabel(vm.sessionState),
+                text = displayLabel,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -121,7 +122,6 @@ private fun stateLabel(state: MoQSession.State): String = when (state) {
     MoQSession.State.Idle -> "idle"
     MoQSession.State.Connecting -> "connecting..."
     MoQSession.State.Connected -> "connected"
-    MoQSession.State.Playing -> "playing"
     is MoQSession.State.Error -> "error: ${state.code}"
     MoQSession.State.Closed -> "closed"
 }
@@ -131,7 +131,6 @@ private fun stateColor(state: MoQSession.State): Color = when (state) {
     MoQSession.State.Idle -> Color.Gray
     MoQSession.State.Connecting -> Color(0xFFFFA500)
     MoQSession.State.Connected -> Color.Blue
-    MoQSession.State.Playing -> Color.Green
     is MoQSession.State.Error -> Color.Red
     MoQSession.State.Closed -> Color.Gray
 }

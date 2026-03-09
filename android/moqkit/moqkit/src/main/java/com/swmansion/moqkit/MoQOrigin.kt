@@ -1,8 +1,11 @@
 package com.swmansion.moqkit
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import uniffi.moq.AnnounceCallback
 import uniffi.moq.AnnouncedInfo
 import uniffi.moq.MoqException
@@ -24,23 +27,36 @@ class MoQOrigin(val handle: UInt = moqOriginCreate()) : AutoCloseable {
      * Flow is active until the collector cancels or the origin is closed.
      */
     fun announced(): Flow<AnnouncedInfo> = callbackFlow {
+        val rawChannel = Channel<Int>(Channel.UNLIMITED)
+
         val callback = object : AnnounceCallback {
             override fun onAnnounce(announcedId: Int) {
+                rawChannel.trySend(announcedId)
+            }
+        }
+
+        val announcedHandle = moqOriginAnnounced(handle, callback)
+
+        launch(Dispatchers.IO) {
+            for (announcedId in rawChannel) {
                 if (announcedId < 0) {
                     if (announcedId == -1) {
                         channel.close()
                     } else {
                         channel.close(MoQSessionException("Announce subscription closed with error code: $announcedId"))
                     }
-                    return
+                    break
                 }
                 try {
                     trySend(moqOriginAnnouncedInfo(announcedId.toUInt()))
-                } catch (_: MoqException) { /* skip bad announcement */ }
+                } catch (_: MoqException) {}
             }
         }
-        val announcedHandle = moqOriginAnnounced(handle, callback)
-        awaitClose { moqOriginAnnouncedClose(announcedHandle) }
+
+        awaitClose {
+            rawChannel.close()
+            moqOriginAnnouncedClose(announcedHandle)
+        }
     }
 
     override fun close() { try { moqOriginClose(handle) } catch (_: MoqException) {} }

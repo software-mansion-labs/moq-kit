@@ -1,17 +1,6 @@
-@file:OptIn(UnstableApi::class) package com.swmansion.moqkit
+package com.swmansion.moqkit
 
 import android.content.Context
-import android.util.Log
-import androidx.annotation.OptIn
-import androidx.media3.common.C
-import androidx.media3.common.Player
-import androidx.media3.common.Tracks
-import androidx.media3.common.Format
-import androidx.media3.common.PlaybackException
-import androidx.media3.exoplayer.analytics.AnalyticsListener
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DecoderReuseEvaluation
-import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,7 +31,6 @@ class MoQSession(
         object Idle : State()
         object Connecting : State()
         object Connected : State()
-        object Playing : State()
         data class Error(val code: Int) : State()
         object Closed : State()
     }
@@ -63,7 +51,6 @@ class MoQSession(
     private var origin: MoQOrigin? = null
     private var monitorJob: Job? = null
 
-    private var player: ExoPlayer? = null
     private var activeCatalog: MoQCatalog? = null
     private var pendingCatalog: MoQCatalog? = null
 
@@ -121,7 +108,7 @@ class MoQSession(
             _broadcasts.emit(BroadcastInfo(broadcastHandle, videoTracks, audioTracks))
         }
         // No finally: tearDown owns pendingCatalog cleanup. A finally would race with
-        // startTrack activating pendingCatalog or with tearDown closing it.
+        // makePlayer activating pendingCatalog or with tearDown closing it.
     }
 
     fun subscribeVideo(broadcastHandle: UInt, index: UInt): Flow<FrameData> =
@@ -130,13 +117,13 @@ class MoQSession(
     fun subscribeAudio(broadcastHandle: UInt, index: UInt): Flow<FrameData> =
         subscribeAudioTrack(broadcastHandle, index, maxLatencyMs)
 
-    suspend fun startTrack(
+    fun makePlayer(
         context: Context,
         videoIndex: UInt? = null,
         audioIndex: UInt? = null,
-    ): ExoPlayer? {
-        val info = _broadcasts.replayCache.firstOrNull() ?: return null
-        tearDownTracks()
+    ): MoQPlayer {
+        val info = _broadcasts.replayCache.firstOrNull()
+            ?: throw IllegalStateException("No broadcast available yet")
 
         if (pendingCatalog != null) {
             activeCatalog?.close()
@@ -144,62 +131,32 @@ class MoQSession(
             pendingCatalog = null
         }
 
-        val videoConfig = videoIndex?.let { info.videoTracks.getOrNull(it.toInt())?.value }
-        val audioConfig = audioIndex?.let { info.audioTracks.getOrNull(it.toInt())?.value }
+        val videoTrack = videoIndex?.let { info.videoTracks.getOrNull(it.toInt()) }
+        val audioTrack = audioIndex?.let { info.audioTracks.getOrNull(it.toInt()) }
 
-        val videoFormat = videoConfig?.let { MediaFactory.makeVideoFormatMedia3(it) }
-        val audioFormat = audioConfig?.let { MediaFactory.makeAudioFormatMedia3(it) }
-
-        val videoFlow = videoIndex?.let { subscribeVideo(info.broadcastHandle, it) }
-        val audioFlow = audioIndex?.let { subscribeAudio(info.broadcastHandle, it) }
-
-        val source = MoQMediaSource(videoFormat, audioFormat, videoFlow, audioFlow, scope)
-        val newPlayer = ExoPlayer.Builder(context).build()
-
-        newPlayer.addListener(object : Player.Listener {
-            override fun onPlayerError(error: PlaybackException) {
-                Log.e("MOQExoPlayer", "Player error: ${error.errorCodeName} cause=${error.cause}", error)
-                _state.value = State.Error(error.errorCode)
-            }
-
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                Log.d("MOQExoPlayer", "Player state change $playbackState")
-                if (playbackState == Player.STATE_READY) {
-                    _state.compareAndSet(State.Connected, State.Playing)
-                }
-            }
-        })
-
-        newPlayer.setMediaSource(source)
-        newPlayer.prepare()
-        newPlayer.play()
-        player = newPlayer
-
-        return newPlayer
+        return MoQPlayer(
+            context = context,
+            broadcastHandle = info.broadcastHandle,
+            videoTrack = videoTrack,
+            audioTrack = audioTrack,
+            maxLatencyMs = maxLatencyMs,
+            parentScope = scope,
+        )
     }
 
     suspend fun close() {
         val wasConnected = _state.compareAndSet(State.Connected, State.Closed)
         val wasConnecting = if (!wasConnected) _state.compareAndSet(State.Connecting, State.Closed) else false
-        val wasPlaying = if (!wasConnected && !wasConnecting) _state.compareAndSet(State.Playing, State.Closed) else false
-        val wasError = if (!wasConnected && !wasConnecting && !wasPlaying) {
+        val wasError = if (!wasConnected && !wasConnecting) {
             val current = _state.value
             if (current is State.Error) _state.compareAndSet(current, State.Closed) else false
         } else false
 
-        if (!wasConnected && !wasConnecting && !wasPlaying && !wasError) return
-       tearDown()
-    }
-
-    private fun tearDownTracks() {
-        player?.stop()
-        player?.release()
-        player = null
-        if (_state.value == State.Playing) _state.value = State.Connected
+        if (!wasConnected && !wasConnecting && !wasError) return
+        tearDown()
     }
 
     private suspend fun tearDown() {
-        tearDownTracks()
         activeCatalog?.close()
         activeCatalog = null
         pendingCatalog?.close()
