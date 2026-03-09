@@ -11,19 +11,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
-import uniffi.moq.AudioConfig
-import uniffi.moq.VideoConfig
 
 class MoQPlayer(
     private val context: Context,
-    private val broadcastHandle: UInt,
-    private val videoTrack: IndexedValue<VideoConfig>?,
-    private val audioTrack: IndexedValue<AudioConfig>?,
-    private val maxLatencyMs: ULong,
+    private val tracks: List<MoQTrackInfo>,
+    private val maxLatencyMs: ULong = 1000u,
     parentScope: CoroutineScope,
 ) {
     sealed class Event {
         object Playing : Event()
+        object Paused : Event()
         data class Error(val code: Int, val message: String) : Event()
         object Stopped : Event()
     }
@@ -37,19 +34,19 @@ class MoQPlayer(
         private set
 
     fun start(): ExoPlayer {
-        stop()
+        releasePlayer()
 
-        val videoConfig = videoTrack?.value
-        val audioConfig = audioTrack?.value
+        val videoInfo = tracks.filterIsInstance<MoQVideoTrackInfo>().firstOrNull()
+        val audioInfo = tracks.filterIsInstance<MoQAudioTrackInfo>().firstOrNull()
 
-        val videoFormat = videoConfig?.let { MediaFactory.makeVideoFormatMedia3(it) }
-        val audioFormat = audioConfig?.let { MediaFactory.makeAudioFormatMedia3(it) }
+        val videoFormat = videoInfo?.let { MediaFactory.makeVideoFormatMedia3(it.config) }
+        val audioFormat = audioInfo?.let { MediaFactory.makeAudioFormatMedia3(it.config) }
 
-        val videoFlow = videoTrack?.let {
-            subscribeVideoTrack(broadcastHandle, it.index.toUInt(), maxLatencyMs)
+        val videoFlow = videoInfo?.let {
+            subscribeVideoTrack(it.catalog.handle, it.index, maxLatencyMs)
         }
-        val audioFlow = audioTrack?.let {
-            subscribeAudioTrack(broadcastHandle, it.index.toUInt(), maxLatencyMs)
+        val audioFlow = audioInfo?.let {
+            subscribeAudioTrack(it.catalog.handle, it.index, maxLatencyMs)
         }
 
         val source = MoQMediaSource(videoFormat, audioFormat, videoFlow, audioFlow, scope)
@@ -61,9 +58,9 @@ class MoQPlayer(
                 _events.tryEmit(Event.Error(error.errorCode, error.errorCodeName))
             }
 
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                Log.d("MoQPlayer", "Player state change $playbackState")
-                if (playbackState == Player.STATE_READY) {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                Log.d("MoQPlayer", "Player isPlaying=$isPlaying")
+                if (isPlaying) {
                     _events.tryEmit(Event.Playing)
                 }
             }
@@ -77,10 +74,23 @@ class MoQPlayer(
         return newPlayer
     }
 
+    fun pause() {
+        releasePlayer()
+        _events.tryEmit(Event.Paused)
+    }
+
+    fun resume(): ExoPlayer {
+        return start()
+    }
+
     fun stop() {
+        releasePlayer()
+        _events.tryEmit(Event.Stopped)
+    }
+
+    private fun releasePlayer() {
         exoPlayer?.stop()
         exoPlayer?.release()
         exoPlayer = null
-        _events.tryEmit(Event.Stopped)
     }
 }

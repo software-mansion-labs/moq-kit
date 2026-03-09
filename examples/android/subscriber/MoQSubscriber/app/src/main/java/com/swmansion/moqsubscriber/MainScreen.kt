@@ -10,8 +10,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -43,20 +46,11 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             modifier = Modifier.fillMaxWidth(),
         )
 
-        OutlinedTextField(
-            value = vm.broadcastPath,
-            onValueChange = { vm.broadcastPath = it },
-            label = { Text("Broadcast Path") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Button(
                 onClick = { vm.connect() },
                 enabled = vm.sessionState is MoQSession.State.Idle &&
-                        vm.relayUrl.isNotEmpty() &&
-                        vm.broadcastPath.isNotEmpty(),
+                        vm.relayUrl.isNotEmpty(),
             ) {
                 Text("Connect")
             }
@@ -67,54 +61,110 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             ) {
                 Text("Stop")
             }
+            OutlinedButton(
+                onClick = { if (vm.broadcasts.any { it.isPaused }) vm.resume() else vm.pause() },
+                enabled = vm.broadcasts.any { it.isPlaying || it.isPaused },
+            ) {
+                Text(if (vm.broadcasts.any { it.isPaused }) "Resume" else "Pause")
+            }
         }
 
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            val displayColor = if (vm.isPlaying) Color.Green else stateColor(vm.sessionState)
-            val displayLabel = if (vm.isPlaying) "playing" else stateLabel(vm.sessionState)
             Box(
                 modifier = Modifier
                     .size(10.dp)
-                    .background(displayColor, shape = RoundedCornerShape(5.dp))
+                    .background(stateColor(vm.sessionState), shape = RoundedCornerShape(5.dp))
             )
             Text(
-                text = displayLabel,
+                text = stateLabel(vm.sessionState),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        vm.broadcastInfo?.let { info ->
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            items(vm.broadcasts, key = { it.id }) { entry ->
+                BroadcastCard(entry)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BroadcastCard(entry: BroadcastEntry) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val color = when {
+                    entry.offline -> Color.Red
+                    entry.isPlaying -> Color.Green
+                    entry.isPaused -> Color(0xFFFFA500)
+                    else -> Color.Gray
+                }
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(color, shape = RoundedCornerShape(5.dp))
+                )
+                Text(
+                    text = entry.id,
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                val statusLabel = when {
+                    entry.offline -> "offline"
+                    entry.isPlaying -> "playing"
+                    entry.isPaused -> "paused"
+                    else -> "loading"
+                }
+                Text(
+                    text = statusLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            val info = entry.info
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                info.videoTracks.firstOrNull()?.let { (_, config) ->
+                info.videoTracks.firstOrNull()?.let { track ->
                     Text(
-                        text = "Video: ${config.codec}",
+                        text = "Video: ${track.config.codec}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                info.audioTracks.firstOrNull()?.let { (_, config) ->
+                info.audioTracks.firstOrNull()?.let { track ->
                     Text(
-                        text = "Audio: ${config.codec} ${config.sampleRate} Hz",
+                        text = "Audio: ${track.config.codec} ${track.config.sampleRate} Hz",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
-        }
 
-        AndroidView(
-            factory = { ctx -> PlayerView(ctx).also { it.useController = false } },
-            update = { pv -> pv.player = vm.player },
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 9f)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color.Black),
-        )
+            AndroidView(
+                factory = { ctx -> PlayerView(ctx).also { it.useController = false } },
+                update = { pv -> pv.player = entry.player },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black),
+            )
+        }
     }
 }
 
