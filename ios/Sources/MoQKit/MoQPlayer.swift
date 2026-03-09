@@ -42,7 +42,7 @@ public final class MoQAVPlayer {
     private var hasVideoTrack: Bool { tracks.contains(where: { $0 is MoQVideoTrackInfo }) }
     private var hasAudioTrack: Bool { tracks.contains(where: { $0 is MoQAudioTrackInfo }) }
 
-    init(
+    public init(
         tracks: [any MoQTrackInfo],
         maxLatencyMs: UInt64
     ) throws {

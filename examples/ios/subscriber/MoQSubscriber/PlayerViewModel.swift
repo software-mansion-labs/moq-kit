@@ -113,7 +113,7 @@ final class PlayerViewModel: ObservableObject {
                     var tracks: [any MoQTrackInfo] = []
                     if let v = info.videoTracks.first { tracks.append(v) }
                     if let a = info.audioTracks.first { tracks.append(a) }
-                    let p = try? s.makePlayer(path: info.path, tracks: tracks)
+                    let p = try? MoQAVPlayer(tracks: tracks, maxLatencyMs: 500)
                     entry.player = p
                     if let p {
                         entry.observeEvents(of: p)

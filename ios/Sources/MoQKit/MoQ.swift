@@ -1442,7 +1442,7 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
     }
 }
 /**
- * Close an audio track consumer and clean up its resources.
+ * Close an audio track consumer and cancel its background task.
  */
 public func moqConsumeAudioClose(track: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
     uniffi_moq_ffi_fn_func_moq_consume_audio_close(
@@ -1504,8 +1504,8 @@ public func moqConsumeCatalogClose(catalog: UInt32)throws   {try rustCallWithErr
 /**
  * Close a catalog snapshot received via the catalog callback.
  */
-public func moqConsumeCatalogSnapshotClose(catalog: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_func_moq_consume_catalog_snapshot_close(
+public func moqConsumeCatalogFree(catalog: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_func_moq_consume_catalog_free(
         FfiConverterUInt32.lower(catalog),$0
     )
 }
@@ -1542,7 +1542,7 @@ public func moqConsumeFrameClose(frame: UInt32)throws   {try rustCallWithError(F
 }
 }
 /**
- * Close a video track consumer and clean up its resources.
+ * Close a video track consumer and cancel its background task.
  */
 public func moqConsumeVideoClose(track: UInt32)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
     uniffi_moq_ffi_fn_func_moq_consume_video_close(
@@ -1766,7 +1766,7 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_moq_ffi_checksum_func_moq_consume_audio_close() != 1414) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_audio_close() != 40766) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_func_moq_consume_audio_config() != 28165) {
@@ -1781,7 +1781,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_func_moq_consume_catalog_close() != 6165) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_func_moq_consume_catalog_snapshot_close() != 17531) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_catalog_free() != 57856) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_func_moq_consume_close() != 59181) {
@@ -1793,7 +1793,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_func_moq_consume_frame_close() != 28083) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_func_moq_consume_video_close() != 5638) {
+    if (uniffi_moq_ffi_checksum_func_moq_consume_video_close() != 31594) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_func_moq_consume_video_config() != 25849) {

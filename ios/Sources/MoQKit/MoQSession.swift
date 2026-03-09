@@ -106,9 +106,9 @@ public final class MoQSession {
             announcedTask = Task { [weak self] in
                 guard let self else { return }
                 do {
-                    let announcements = try origin.announced()
+                    let subscription = try origin.announced()
 
-                    for await broadcast in announcements {
+                    for await broadcast in subscription.announcements {
                         guard !Task.isCancelled else { break }
                         let path = broadcast.path
 
@@ -153,22 +153,6 @@ public final class MoQSession {
             await tearDown()
             throw error
         }
-    }
-
-    /// Creates a player pre-configured to subscribe to the given tracks.
-    /// Must be called while the broadcast at `path` is active.
-    public func makePlayer(
-        path: String,
-        tracks: [any MoQTrackInfo],
-        maxLatencyMs: UInt64 = 500
-    ) throws -> MoQAVPlayer {
-        guard activeBroadcasts[path] != nil else {
-            throw MoQSessionError.noBroadcastAvailable
-        }
-        MoQLogger.session.debug(
-            "Creating player for \(path), tracks count = \(tracks.count), maxLatencyMs = \(maxLatencyMs)"
-        )
-        return try MoQAVPlayer(tracks: tracks, maxLatencyMs: maxLatencyMs)
     }
 
     /// Stop playback and release all resources.

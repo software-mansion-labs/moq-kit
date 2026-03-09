@@ -1,13 +1,26 @@
 import Foundation
 
+// MARK: - Track State
+
+public enum MoQTrackState: Sendable, Equatable {
+    case idle  // subscribed, awaiting first frame
+    case active  // receiving frames
+    case closed
+    case error(String)
+}
+
 // MARK: - Media Track Base
 
 public class MoQMediaTrack: @unchecked Sendable {
     public let frames: AsyncStream<MoQFrame>
+    public let state: AsyncStream<MoQTrackState>
+
     private let trackHandle: UInt32
     private let framesContinuation: AsyncStream<MoQFrame>.Continuation
-    private let rawContinuation: AsyncStream<UInt32>.Continuation
+    private let stateContinuation: AsyncStream<MoQTrackState>.Continuation
+    private let rawFrameContinuation: AsyncStream<Int32>.Continuation
     private let closeFunc: (UInt32) throws -> Void
+    private var bridgingTask: Task<Void, Never>?
 
     fileprivate init(
         catalogHandle: UInt32,
@@ -16,52 +29,88 @@ public class MoQMediaTrack: @unchecked Sendable {
         subscribeFunc: (UInt32, UInt32, UInt64, any FrameCallback) throws -> UInt32,
         closeFunc: @escaping (UInt32) throws -> Void
     ) throws {
-        var rawCont: AsyncStream<UInt32>.Continuation!
-        let rawStream = AsyncStream<UInt32> { rawCont = $0 }
+        var rawCont: AsyncStream<Int32>.Continuation!
+        let rawStream = AsyncStream<Int32> { rawCont = $0 }
 
         var framesCont: AsyncStream<MoQFrame>.Continuation!
         let frames = AsyncStream<MoQFrame> { framesCont = $0 }
+
+        var stateCont: AsyncStream<MoQTrackState>.Continuation!
+        let state = AsyncStream<MoQTrackState> { stateCont = $0 }
 
         let cb = FrameCB(continuation: rawCont)
         let handle = try subscribeFunc(catalogHandle, index, maxLatencyMs, cb)
 
         self.trackHandle = handle
         self.frames = frames
+        self.state = state
         self.framesContinuation = framesCont
-        self.rawContinuation = rawCont
+        self.stateContinuation = stateCont
+        self.rawFrameContinuation = rawCont
         self.closeFunc = closeFunc
 
+        stateCont.yield(.idle)
+
         // Must be set after self is fully initialized
-        framesCont.onTermination = { @Sendable [weak self] _ in
-            Task { await self?.close() }
+        framesCont.onTermination = { _ in
+            try? closeFunc(handle)
         }
 
         // Bridging Task: consumes raw IDs, calls moqConsumeFrame outside callback lock
-        Task.detached {
-            for await frameId in rawStream {
-                defer { try? moqConsumeFrameClose(frame: frameId) }
-                guard let frameData = try? moqConsumeFrame(frame: frameId) else {
-                    continue
+        bridgingTask = Task.detached {
+            var isFirstFrame = true
+            defer { framesCont.finish() }
+
+            for await rawId in rawStream {
+                if Task.isCancelled { break }
+
+                if rawId <= 0 {
+                    if rawId == 0 {
+                        stateCont.yield(.closed)
+                    } else {
+                        stateCont.yield(.error("Invalid frame ID: \(rawId)"))
+                    }
+                    return
                 }
-                framesCont.yield(MoQFrame(
-                    payload: frameData.payload,
-                    timestampUs: frameData.timestampUs,
-                    keyframe: frameData.keyframe
-                ))
+
+                let frameId = UInt32(bitPattern: rawId)
+
+                defer { try? moqConsumeFrameClose(frame: frameId) }
+
+                do {
+                    let frameData = try moqConsumeFrame(frame: frameId)
+                    if isFirstFrame {
+                        stateCont.yield(.active)
+                        isFirstFrame = false
+                    }
+                    framesCont.yield(
+                        MoQFrame(
+                            payload: frameData.payload,
+                            timestampUs: frameData.timestampUs,
+                            keyframe: frameData.keyframe
+                        ))
+                } catch {
+                    stateCont.yield(.error(error.localizedDescription))
+                    return
+                }
             }
-            framesCont.finish()
         }
     }
 
     public func close() async {
+        bridgingTask?.cancel()
+        stateContinuation.yield(.closed)
+        stateContinuation.finish()
         framesContinuation.finish()
-        rawContinuation.finish()
+        rawFrameContinuation.finish()
         try? closeFunc(trackHandle)
     }
 
     deinit {
+        bridgingTask?.cancel()
+        stateContinuation.finish()
         framesContinuation.finish()
-        rawContinuation.finish()
+        rawFrameContinuation.finish()
     }
 }
 
@@ -77,7 +126,9 @@ public final class MoQVideoTrack: MoQMediaTrack, @unchecked Sendable {
             catalogHandle: catalogHandle,
             index: index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeVideoOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: {
+                try moqConsumeVideoOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3)
+            },
             closeFunc: { try moqConsumeVideoClose(track: $0) }
         )
     }
@@ -87,7 +138,9 @@ public final class MoQVideoTrack: MoQMediaTrack, @unchecked Sendable {
             catalogHandle: info.catalog.handle,
             index: info.index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeVideoOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: {
+                try moqConsumeVideoOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3)
+            },
             closeFunc: { try moqConsumeVideoClose(track: $0) }
         )
     }
@@ -105,7 +158,9 @@ public final class MoQAudioTrack: MoQMediaTrack, @unchecked Sendable {
             catalogHandle: catalogHandle,
             index: index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeAudioOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: {
+                try moqConsumeAudioOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3)
+            },
             closeFunc: { try moqConsumeAudioClose(track: $0) }
         )
     }
@@ -115,7 +170,9 @@ public final class MoQAudioTrack: MoQMediaTrack, @unchecked Sendable {
             catalogHandle: info.catalog.handle,
             index: info.index,
             maxLatencyMs: maxLatencyMs,
-            subscribeFunc: { try moqConsumeAudioOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3) },
+            subscribeFunc: {
+                try moqConsumeAudioOrdered(catalog: $0, index: $1, maxLatencyMs: $2, callback: $3)
+            },
             closeFunc: { try moqConsumeAudioClose(track: $0) }
         )
     }
@@ -124,13 +181,13 @@ public final class MoQAudioTrack: MoQMediaTrack, @unchecked Sendable {
 // MARK: - Frame Callback
 
 private final class FrameCB: FrameCallback {
-    private let continuation: AsyncStream<UInt32>.Continuation
+    private let continuation: AsyncStream<Int32>.Continuation
 
-    init(continuation: AsyncStream<UInt32>.Continuation) {
+    init(continuation: AsyncStream<Int32>.Continuation) {
         self.continuation = continuation
     }
 
     func onFrame(frameId: Int32) {
-        continuation.yield(UInt32(bitPattern: frameId))   // only safe: no Rust call inside callback
+        continuation.yield(frameId)
     }
 }
