@@ -28,8 +28,8 @@ public final class MoQAVPlayer {
     private let tracks: [any MoQTrackInfo]
     private let maxLatencyMs: UInt64
 
-    private var videoSubscription: MoQVideoTrack?
-    private var audioSubscription: MoQAudioTrack?
+    private var videoSubscription: MoQMediaTrack?
+    private var audioSubscription: MoQMediaTrack?
     private var videoFormatDescription: CMFormatDescription?
     private var audioFormatDescription: CMFormatDescription?
 
@@ -67,7 +67,7 @@ public final class MoQAVPlayer {
     public func play() async throws {
         guard videoTask == nil && audioTask == nil else { return }
 
-        try subscribe()
+        try await subscribe()
 
         let shouldSync = audioSubscription != nil && videoSubscription != nil
         if shouldSync {
@@ -191,8 +191,8 @@ public final class MoQAVPlayer {
         videoLayer.controlTimebase = nil
         synchronizer.setRate(0, time: .zero)
 
-        await videoSubscription?.close()
-        await audioSubscription?.close()
+        videoSubscription?.close()
+        audioSubscription?.close()
         videoSubscription = nil
         audioSubscription = nil
 
@@ -217,8 +217,8 @@ public final class MoQAVPlayer {
         audioRenderer.flush()
         synchronizer.setRate(0, time: .zero)
 
-        await videoSubscription?.close()
-        await audioSubscription?.close()
+        videoSubscription?.close()
+        audioSubscription?.close()
         videoSubscription = nil
         audioSubscription = nil
 
@@ -234,7 +234,7 @@ public final class MoQAVPlayer {
 
     // MARK: - Private
 
-    private func subscribe() throws {
+    private func subscribe() async throws {
         for track in tracks {
             if let vInfo = track as? MoQVideoTrackInfo {
                 MoQLogger.player.debug(
@@ -246,15 +246,16 @@ public final class MoQAVPlayer {
                         from: vInfo.config)
                 } catch {
                     MoQLogger.player.error(
-                        "Failed to build video format for index \(vInfo.index): \(error)"
+                        "Failed to build video format for \(vInfo.name): \(error)"
                     )
                 }
                 do {
-                    videoSubscription = try MoQVideoTrack(
-                        from: vInfo, maxLatencyMs: maxLatencyMs)
+                    videoSubscription = try await MoQMediaTrack(
+                        broadcast: vInfo.broadcast, name: vInfo.name,
+                        maxLatencyMs: maxLatencyMs)
                 } catch {
                     MoQLogger.player.error(
-                        "Failed to subscribe to video track \(vInfo.index): \(error)"
+                        "Failed to subscribe to video track \(vInfo.name): \(error)"
                     )
                 }
             } else if let aInfo = track as? MoQAudioTrackInfo {
@@ -267,15 +268,16 @@ public final class MoQAVPlayer {
                         from: aInfo.config)
                 } catch {
                     MoQLogger.player.error(
-                        "Failed to build audio format for index \(aInfo.index): \(error)"
+                        "Failed to build audio format for \(aInfo.name): \(error)"
                     )
                 }
                 do {
-                    audioSubscription = try MoQAudioTrack(
-                        from: aInfo, maxLatencyMs: maxLatencyMs)
+                    audioSubscription = try await MoQMediaTrack(
+                        broadcast: aInfo.broadcast, name: aInfo.name,
+                        maxLatencyMs: maxLatencyMs)
                 } catch {
                     MoQLogger.player.error(
-                        "Failed to subscribe to audio track \(aInfo.index): \(error)"
+                        "Failed to subscribe to audio track \(aInfo.name): \(error)"
                     )
                 }
             }

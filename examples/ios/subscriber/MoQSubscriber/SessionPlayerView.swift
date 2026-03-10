@@ -53,12 +53,12 @@ private struct BroadcastPlayerView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     if let video = entry.info.videoTracks.first {
-                        Text("Video: \(video.config.name) (\(video.config.codec))")
+                        Text("Video: \(video.name) (\(video.config.codec))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     if let audio = entry.info.audioTracks.first {
-                        Text("Audio: \(audio.config.name) (\(audio.config.codec) \(audio.config.sampleRate) Hz)")
+                        Text("Audio: \(audio.name) (\(audio.config.codec) \(audio.config.sampleRate) Hz)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
