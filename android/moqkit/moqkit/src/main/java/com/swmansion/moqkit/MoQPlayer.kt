@@ -43,10 +43,10 @@ class MoQPlayer(
         val audioFormat = audioInfo?.let { MediaFactory.makeAudioFormatMedia3(it.config) }
 
         val videoFlow = videoInfo?.let {
-            subscribeVideoTrack(it.catalog.handle, it.index, maxLatencyMs)
+            subscribeTrack(it.broadcast, it.name, maxLatencyMs)
         }
         val audioFlow = audioInfo?.let {
-            subscribeAudioTrack(it.catalog.handle, it.index, maxLatencyMs)
+            subscribeTrack(it.broadcast, it.name, maxLatencyMs)
         }
 
         val source = MoQMediaSource(videoFormat, audioFormat, videoFlow, audioFlow, scope)

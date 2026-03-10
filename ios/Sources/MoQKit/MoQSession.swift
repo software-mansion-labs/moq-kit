@@ -236,7 +236,7 @@ public final class MoQSession {
         for (_, task) in activeBroadcasts { task.cancel() }
         activeBroadcasts.removeAll()
 
-        session?.close()
+        session?.disconnect()
         session = nil
         origin = nil
     }

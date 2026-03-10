@@ -28,7 +28,7 @@ class BroadcastEntry(info: MoQBroadcastInfo) {
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    var relayUrl by mutableStateOf("http://192.168.92.140:4443")
+    var relayUrl by mutableStateOf("http://192.168.92.236:4443")
     var sessionState by mutableStateOf<MoQSession.State>(MoQSession.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
 

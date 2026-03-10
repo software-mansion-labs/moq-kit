@@ -69,7 +69,7 @@ public final class MoQMediaTrack: @unchecked Sendable {
     }
 
     public func close() {
-        track.close()
+        track.unsubscribe()
         readTask?.cancel()
         stateContinuation.yield(.closed)
         stateContinuation.finish()
@@ -77,7 +77,7 @@ public final class MoQMediaTrack: @unchecked Sendable {
     }
 
     deinit {
-        track.close()
+        track.unsubscribe()
         readTask?.cancel()
         stateContinuation.finish()
         framesContinuation.finish()

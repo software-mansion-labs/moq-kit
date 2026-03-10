@@ -172,7 +172,7 @@ private fun stateLabel(state: MoQSession.State): String = when (state) {
     MoQSession.State.Idle -> "idle"
     MoQSession.State.Connecting -> "connecting..."
     MoQSession.State.Connected -> "connected"
-    is MoQSession.State.Error -> "error: ${state.code}"
+    is MoQSession.State.Error -> "error: ${state.message}"
     MoQSession.State.Closed -> "closed"
 }
 

@@ -6,13 +6,13 @@ import android.media.MediaFormat
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
-import uniffi.moq.AudioConfig
-import uniffi.moq.VideoConfig
+import uniffi.moq.MoqAudioRendition
+import uniffi.moq.MoqVideoRendition
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 internal object MediaFactory {
-    fun makeVideoFormat(config: VideoConfig): MediaFormat? {
+    fun makeVideoFormat(config: MoqVideoRendition): MediaFormat? {
         val mime = videoMime(config.codec) ?: return null
         val desc = config.description ?: return null
 
@@ -27,7 +27,7 @@ internal object MediaFactory {
         return format
     }
 
-    fun makeAudioFormat(config: AudioConfig): MediaFormat? {
+    fun makeAudioFormat(config: MoqAudioRendition): MediaFormat? {
         val mime = audioMime(config.codec) ?: return null
         val desc = config.description
 
@@ -62,7 +62,7 @@ internal object MediaFactory {
         return ByteBuffer.wrap(csd)
     }
 
-    fun makeVideoFormatMedia3(config: VideoConfig): Format? {
+    fun makeVideoFormatMedia3(config: MoqVideoRendition): Format? {
         val mime = videoMimeMedia3(config.codec) ?: return null
         val desc = config.description ?: return null
 
@@ -82,7 +82,7 @@ internal object MediaFactory {
             .build()
     }
 
-    fun makeAudioFormatMedia3(config: AudioConfig): Format? {
+    fun makeAudioFormatMedia3(config: MoqAudioRendition): Format? {
         val mime = audioMimeMedia3(config.codec) ?: return null
         val desc: ByteArray = when (mime) {
             MimeTypes.AUDIO_AAC -> config.description
