@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#MISE description="Build and run the Android subscriber demo on a connected device"
+#MISE depends=["android:aar"]
+set -euo pipefail
+
+echo "==> Checking for connected device..."
+if ! adb devices | grep -q "device$"; then
+  echo "Error: No Android device connected. Connect a device and enable USB debugging." >&2
+  exit 1
+fi
+
+echo "==> Installing debug APK..."
+cd "$MISE_PROJECT_ROOT/examples/android/subscriber/MoQSubscriber" && ./gradlew installDebug
+
+echo "==> Launching..."
+adb shell am start -n com.swmansion.moqsubscriber/.MainActivity
+
+echo "Done."

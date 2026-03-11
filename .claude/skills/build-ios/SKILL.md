@@ -9,7 +9,7 @@ Run the following steps sequentially:
 
 ## 1. Build XCFramework (Rust → UniFFI → XCFramework)
 ```bash
-./scripts/build-xcframework.sh
+mise run build-xcframework
 ```
 This compiles Rust for `aarch64-apple-ios` and `aarch64-apple-ios-sim`, runs `uniffi-bindgen` to generate `ios/Sources/MoQKit/moq.swift`, and creates `ios/Frameworks/libmoq.xcframework`.
 
@@ -25,6 +25,6 @@ swift build --package-path ios --sdk iphonesimulator --triple arm64-apple-ios16.
 
 ## Full build shortcut
 ```bash
-./scripts/build-ios.sh
+mise run build-ios
 ```
 Runs both steps above.

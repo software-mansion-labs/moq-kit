@@ -975,9 +975,9 @@ public func FfiConverterTypeMoqCatalogStream_lower(_ value: MoqCatalogStream) ->
 public protocol MoqMediaProtocol: AnyObject, Sendable {
     
     /**
-     * Close this media track and finalize encoding.
+     * Finish this media track and finalize encoding.
      */
-    func close() throws 
+    func finish() throws 
     
     /**
      * Write a frame to this media track.
@@ -1041,10 +1041,10 @@ open class MoqMedia: MoqMediaProtocol, @unchecked Sendable {
 
     
     /**
-     * Close this media track and finalize encoding.
+     * Finish this media track and finalize encoding.
      */
-open func close()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqmedia_close(
+open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqmedia_finish(
             self.uniffiCloneHandle(),$0
     )
 }
@@ -1401,14 +1401,14 @@ public func FfiConverterTypeMoqPublisher_lower(_ value: MoqPublisher) -> UInt64 
 public protocol MoqSessionProtocol: AnyObject, Sendable {
     
     /**
-     * Close the session.
-     */
-    func close() 
-    
-    /**
      * Wait until the session is closed.
      */
     func closed() async throws 
+    
+    /**
+     * Disconnect the session.
+     */
+    func disconnect() 
     
 }
 open class MoqSession: MoqSessionProtocol, @unchecked Sendable {
@@ -1465,16 +1465,6 @@ open class MoqSession: MoqSessionProtocol, @unchecked Sendable {
 
     
     /**
-     * Close the session.
-     */
-open func close()  {try! rustCall() {
-    uniffi_moq_ffi_fn_method_moqsession_close(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-    /**
      * Wait until the session is closed.
      */
 open func closed()async throws   {
@@ -1492,6 +1482,16 @@ open func closed()async throws   {
             liftFunc: { $0 },
             errorHandler: FfiConverterTypeMoqError_lift
         )
+}
+    
+    /**
+     * Disconnect the session.
+     */
+open func disconnect()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqsession_disconnect(
+            self.uniffiCloneHandle(),$0
+    )
+}
 }
     
 
@@ -1547,14 +1547,14 @@ public func FfiConverterTypeMoqSession_lower(_ value: MoqSession) -> UInt64 {
 public protocol MoqTrackProtocol: AnyObject, Sendable {
     
     /**
-     * Close this track, causing any pending `next()` call to return `None`.
-     */
-    func close() 
-    
-    /**
      * Get the next frame. Returns `None` when the track ends or is closed.
      */
     func next() async throws  -> FrameData?
+    
+    /**
+     * Unsubscribe from this track, causing any pending `next()` call to return `None`.
+     */
+    func unsubscribe() 
     
 }
 open class MoqTrack: MoqTrackProtocol, @unchecked Sendable {
@@ -1611,16 +1611,6 @@ open class MoqTrack: MoqTrackProtocol, @unchecked Sendable {
 
     
     /**
-     * Close this track, causing any pending `next()` call to return `None`.
-     */
-open func close()  {try! rustCall() {
-    uniffi_moq_ffi_fn_method_moqtrack_close(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-    /**
      * Get the next frame. Returns `None` when the track ends or is closed.
      */
 open func next()async throws  -> FrameData?  {
@@ -1638,6 +1628,16 @@ open func next()async throws  -> FrameData?  {
             liftFunc: FfiConverterOptionTypeFrameData.lift,
             errorHandler: FfiConverterTypeMoqError_lift
         )
+}
+    
+    /**
+     * Unsubscribe from this track, causing any pending `next()` call to return `None`.
+     */
+open func unsubscribe()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqtrack_unsubscribe(
+            self.uniffiCloneHandle(),$0
+    )
+}
 }
     
 
@@ -2611,7 +2611,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_method_moqcatalogstream_next() != 33056) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqmedia_close() != 14594) {
+    if (uniffi_moq_ffi_checksum_method_moqmedia_finish() != 54605) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqmedia_write_frame() != 44640) {
@@ -2629,16 +2629,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_method_moqpublisher_media_ordered() != 32403) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqsession_close() != 21297) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_moq_ffi_checksum_method_moqsession_closed() != 18448) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqtrack_close() != 21921) {
+    if (uniffi_moq_ffi_checksum_method_moqsession_disconnect() != 6767) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqtrack_next() != 58243) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrack_unsubscribe() != 53690) {
         return InitializationResult.apiChecksumMismatch
     }
 

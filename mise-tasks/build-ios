@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#MISE description="Build XCFramework + Swift package for iOS"
+#MISE depends=["build-xcframework"]
+set -euo pipefail
+
+# Builds the Swift package after the XCFramework is ready.
+# The --debug flag is passed through to build-xcframework via depends.
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+
+echo ""
+echo "==> Building Swift package..."
+SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+swift build \
+    --package-path "$ROOT_DIR/ios" \
+    --sdk "$SDK" \
+    --triple arm64-apple-ios16.0-simulator
+
+echo ""
+echo "Done."

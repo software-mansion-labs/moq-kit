@@ -1,10 +1,10 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var relayURL = "http://192.168.92.236:4443"
+    @State private var relayURL = "http://192.168.92.140:4443"
     @State private var broadcastPath = "anon/bbb/ccc"
     @StateObject private var player = PlayerViewModel()
-    
+
     @State var paused: Bool = false
 
     private var canConnect: Bool {
@@ -14,15 +14,15 @@ struct ContentView: View {
     private var canStop: Bool {
         player.canStop
     }
-    
+
     private var canPause: Bool {
         !paused
     }
-    
+
     private var canResume: Bool {
         paused
     }
-    
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -52,12 +52,12 @@ struct ContentView: View {
     private func stopAll() {
         player.stop()
     }
-    
+
     private func pauseAll() {
         paused = true
         player.pause()
     }
-    
+
     private func resumeAll() {
         paused = false
         player.play()

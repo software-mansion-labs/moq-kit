@@ -58,3 +58,4 @@ android/uniffi
 android/jniLibs
 android/**/uniffi/
 plans
+bin

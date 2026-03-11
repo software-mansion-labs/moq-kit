@@ -26,8 +26,8 @@ cargo build --release --package libmoq
 ## Debug symbols
 Use `--profile release-with-debug` instead of `--release` to include DWARF debug info.
 
-## Lint and test (inside vendor/moq)
+## Lint and test
 ```bash
-cd vendor/moq && just check   # tests + linting
-cd vendor/moq && just fix     # auto-format
+mise run rust:check   # tests + linting
+mise run rust:fix     # auto-format
 ```

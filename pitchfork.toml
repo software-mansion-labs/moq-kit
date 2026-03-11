@@ -1,0 +1,9 @@
+[daemons.relay]
+run = "mise run relay"
+
+[daemons.publish-shrek]
+run = "mise run publish-stream --name bbb/shrek"
+
+[daemons.publish-another-shrek]
+run = "mise run publish-stream --name bbb/another-shrek"
+

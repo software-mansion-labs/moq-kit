@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
+#MISE description="Build Rust → UniFFI → .so + Kotlin bindings for Android"
 set -euo pipefail
 
-# Build moq-ffi for Android (arm64-v8a), generate UniFFI Kotlin bindings,
-# and place outputs under moq-kit/android/.
-#
-# Usage: ./scripts/build-android.sh [--debug]
-#
+# usage: build-android [--debug]
 #   --debug  Build Rust with debug symbols (debug profile)
 #
 # Produces:
-#   android/jniLibs/arm64-v8a/moq_ffi.so
-#   android/uniffi/ (Kotlin bindings)
+#   android/moqkit/MoQKit/src/main/jniLibs/arm64-v8a/moq_ffi.so
+#   android/moqkit/MoQKit/src/main/java/uniffi/ (Kotlin bindings)
 
 DEBUG=0
 for arg in "$@"; do
@@ -23,8 +20,7 @@ for arg in "$@"; do
   esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$MISE_PROJECT_ROOT"
 WORKSPACE_CARGO="$ROOT_DIR/vendor/moq/Cargo.toml"
 TARGET_BASE="$ROOT_DIR/vendor/moq/target"
 ANDROID_OUT="$ROOT_DIR/android/moqkit/MoQKit/src/main"
@@ -34,10 +30,6 @@ if ! command -v cargo-ndk >/dev/null 2>&1; then
   exit 1
 fi
 
-# if ! command -v uniffi-bindgen >/dev/null 2>&1; then
-#   echo "Error: uniffi-bindgen is not installed. Install with: cargo install uniffi_bindgen" >&2
-#   exit 1
-# fi
 TARGETS=(
   aarch64-linux-android
 )
@@ -102,15 +94,11 @@ check_ndk_version() {
     return 0
   fi
   local rev
-  rev="$(sed -n 's/^Pkg\\.Revision[[:space:]]*=[[:space:]]*//p' "$props" | head -n 1 | tr -d '[:space:]')"
+  rev="$(sed -n 's/^Pkg\.Revision[[:space:]]*=[[:space:]]*//p' "$props" | head -n 1 | tr -d '[:space:]')"
   if [[ -z "$rev" ]]; then
     return 0
   fi
   local major="${rev%%.*}"
-  # if [[ "$major" =~ ^[0-9]+$ && "$major" -lt 23 ]]; then
-  #   echo "Error: NDK version $rev at $ndk_dir is not supported. Install NDK r23+ and point ANDROID_NDK_HOME to it." >&2
-  #   return 2
-  # fi
   return 0
 }
 

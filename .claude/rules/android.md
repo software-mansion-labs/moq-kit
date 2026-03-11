@@ -3,7 +3,7 @@ description: Android SDK conventions and patterns
 globs:
   - "android/**"
   - "examples/android/**"
-  - "scripts/build-android.sh"
+  - "mise-tasks/build-android"
 ---
 
 # Android SDK Rules

@@ -9,13 +9,13 @@ Run the following steps sequentially:
 
 ## 1. Build JNI shared library + Kotlin bindings (Rust → UniFFI → .so + Kotlin)
 ```bash
-./scripts/build-android.sh
+mise run build-android
 ```
 This compiles Rust via `cargo ndk` for `arm64-v8a`, runs `uniffi-bindgen` to generate Kotlin bindings, and copies the `.so` into `android/moqkit/MoQKit/src/main/jniLibs/`.
 
 ## 2. Assemble AAR and copy to examples
 ```bash
-cd android/moqkit && ./gradlew :MoQKit:manualBuild
+mise run android:aar
 ```
 
 ## 3. Verify
@@ -26,6 +26,6 @@ cd android/moqkit && ./gradlew :MoQKit:manualBuild
 
 ## Full build shortcut
 ```bash
-./scripts/build-android.sh && cd android/moqkit && ./gradlew :MoQKit:manualBuild
+mise run android:build
 ```
 Runs both steps above.

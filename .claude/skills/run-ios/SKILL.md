@@ -5,18 +5,31 @@ description: Build and run the iOS subscriber demo on a connected device
 
 # Run iOS Subscriber Demo
 
-## 1. Build XCFramework
+## Quick run
 ```bash
-./scripts/build-xcframework.sh
+mise run run-ios
+```
+Builds XCFramework, detects a connected device, builds the Xcode project, installs and launches the app.
+
+To target a simulator instead:
+```bash
+mise run run-ios -- --simulator
 ```
 
-## 2. Detect connected device
+## Manual steps (if needed)
+
+### 1. Build XCFramework
+```bash
+mise run build-xcframework
+```
+
+### 2. Detect connected device
 ```bash
 xcrun xctrace list devices
 ```
 Prefer a **real device** over a simulator. Parse the output to find the device UDID.
 
-## 3. Build
+### 3. Build
 ```bash
 xcodebuild -project examples/ios/subscriber/MoQSubscriber.xcodeproj \
   -scheme MoQSubscriber \
@@ -35,16 +48,16 @@ xcodebuild -project examples/ios/subscriber/MoQSubscriber.xcodeproj \
   build
 ```
 
-## 4. Install and launch
+### 4. Install and launch
 
-### Real device
+#### Real device
 Find the `.app` path from the build output (typically in `~/Library/Developer/Xcode/DerivedData/MoQSubscriber-*/Build/Products/Debug-iphoneos/MoQSubscriber.app`), then:
 ```bash
 xcrun devicectl device install app --device <DEVICE_UDID> <PATH_TO_APP>
 xcrun devicectl device process launch --device <DEVICE_UDID> com.example.MoQSubscriber
 ```
 
-### Simulator
+#### Simulator
 ```bash
 xcrun simctl boot "<SIMULATOR_UDID>"
 xcrun simctl install "<SIMULATOR_UDID>" <PATH_TO_APP>

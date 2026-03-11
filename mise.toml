@@ -1,0 +1,27 @@
+[tasks."rust:check"]
+description = "Run tests + linting in vendor/moq"
+run = "cd vendor/moq && just check"
+
+[tasks."rust:fix"]
+description = "Auto-format Rust code in vendor/moq"
+run = "cd vendor/moq && just fix"
+
+[tasks."android:aar"]
+description = "Assemble AAR and copy to examples"
+run = "cd android/moqkit && ./gradlew :MoQKit:manualBuild"
+
+[tasks."android:install"]
+description = "Install Android subscriber demo APK"
+run = "cd examples/android/subscriber/MoQSubscriber && ./gradlew installDebug"
+
+[tasks."android:launch"]
+description = "Launch Android subscriber demo"
+run = "adb shell am start -n com.swmansion.moqsubscriber/.MainActivity"
+
+[tasks."android:build"]
+description = "Build Rust + UniFFI + .so + Kotlin bindings + AAR"
+depends = ["build-android", "android:aar"]
+
+[tasks."relay"]
+description = "Run a relay server"
+run = "cd vendor/moq && just relay"
