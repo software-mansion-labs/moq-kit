@@ -39,6 +39,9 @@ internal class MoQMediaSource(
     private val audioFlow: Flow<FrameData>?,
     private val scope: CoroutineScope,
 ) : BaseMediaSource() {
+    companion object {
+        private const val TAG = "MoQMediaSource"
+    }
 
     private val timeline = SinglePeriodTimeline(
         /* durationUs= */ C.TIME_UNSET,
@@ -50,6 +53,7 @@ internal class MoQMediaSource(
     )
 
     override fun prepareSourceInternal(mediaTransferListener: TransferListener?) {
+        Log.d(TAG, "prepareSourceInternal: video=${videoFormat != null} audio=${audioFormat != null}")
         refreshSourceInfo(timeline)
     }
 
@@ -63,13 +67,19 @@ internal class MoQMediaSource(
         id: MediaSource.MediaPeriodId,
         allocator: Allocator,
         startPositionUs: Long,
-    ): MediaPeriod = MoQMediaPeriod(allocator)
+    ): MediaPeriod {
+        Log.d(TAG, "createPeriod: startPositionUs=$startPositionUs")
+        return MoQMediaPeriod(allocator)
+    }
 
     override fun releasePeriod(period: MediaPeriod) {
+        Log.d(TAG, "releasePeriod")
         (period as MoQMediaPeriod).release()
     }
 
-    override fun releaseSourceInternal() {}
+    override fun releaseSourceInternal() {
+        Log.d(TAG, "releaseSourceInternal")
+    }
 
     @UnstableApi inner class MoQMediaPeriod(allocator: Allocator) : MediaPeriod {
 
@@ -102,6 +112,7 @@ internal class MoQMediaSource(
                 synchronized(this) {
                     if (commonBaseTimestampUs == -1L && firstVideoTimestampUs != -1L && firstAudioTimestampUs != -1L) {
                         commonBaseTimestampUs = minOf(firstVideoTimestampUs, firstAudioTimestampUs)
+                        Log.d(TAG, "Common base timestamp set: ${commonBaseTimestampUs}us (video=$firstVideoTimestampUs audio=$firstAudioTimestampUs)")
                     }
                 }
             }
@@ -112,6 +123,7 @@ internal class MoQMediaSource(
                 synchronized(this) {
                     if (firstVideoTimestampUs == -1L) {
                         firstVideoTimestampUs = rawTimestampUs
+                        Log.d(TAG, "First video timestamp: ${rawTimestampUs}us")
                     }
                 }
                 updateCommonBaseIfReady()
@@ -125,6 +137,7 @@ internal class MoQMediaSource(
                 synchronized(this) {
                     if (firstAudioTimestampUs == -1L) {
                         firstAudioTimestampUs = rawTimestampUs
+                        Log.d(TAG, "First audio timestamp: ${rawTimestampUs}us")
                     }
                 }
                 updateCommonBaseIfReady()
@@ -134,47 +147,60 @@ internal class MoQMediaSource(
         }
 
         override fun prepare(callback: MediaPeriod.Callback, positionUs: Long) {
+            Log.d(TAG, "Period prepare: positionUs=$positionUs video=${videoFormat != null} audio=${audioFormat != null}")
             loadingCallback = callback
             videoFormat?.let { videoQueue?.format(it) }
             audioFormat?.let { audioQueue?.format(it) }
 
             videoJob = scope.launch(Dispatchers.IO) {
-                videoFlow?.collect { frame ->
-                    val annexB = frame.payload.avccToAnnexB()
-                    val pba = ParsableByteArray(annexB)
-                    videoQueue?.sampleData(pba, annexB.size)
-                    val flags = if (frame.keyframe) C.BUFFER_FLAG_KEY_FRAME else 0
-                    val adjustedTimestamp = getAdjustedVideoTimestampUs(frame.timestampUs.toLong())
-                    // Log.d("MoQMediaSource", "Video frame: raw=${frame.timestampUs} adj=$adjustedTimestamp size=${annexB.size} key=${frame.keyframe}")
-                    videoQueue?.sampleMetadata(
-                        adjustedTimestamp,
-                        flags,
-                        annexB.size,
-                        0,
-                        null
-                    )
-                    loadingCallback?.onContinueLoadingRequested(this@MoQMediaPeriod)
+                Log.d(TAG, "Video flow collection started")
+                try {
+                    videoFlow?.collect { frame ->
+                        val annexB = frame.payload.avccToAnnexB()
+                        val pba = ParsableByteArray(annexB)
+                        videoQueue?.sampleData(pba, annexB.size)
+                        val flags = if (frame.keyframe) C.BUFFER_FLAG_KEY_FRAME else 0
+                        val adjustedTimestamp = getAdjustedVideoTimestampUs(frame.timestampUs.toLong())
+                        videoQueue?.sampleMetadata(
+                            adjustedTimestamp,
+                            flags,
+                            annexB.size,
+                            0,
+                            null
+                        )
+                        loadingCallback?.onContinueLoadingRequested(this@MoQMediaPeriod)
+                    }
+                    Log.d(TAG, "Video flow ended normally")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Video flow error: $e")
                 }
             }
 
             audioJob = scope.launch(Dispatchers.IO) {
-                audioFlow?.collect { frame ->
-                    val pba = ParsableByteArray(frame.payload)
-                    audioQueue?.sampleData(pba, frame.payload.size)
-                    val adjustedTimestamp = getAdjustedAudioTimestampUs(frame.timestampUs.toLong())
-                    // Log.d("MoQMediaSource", "Audio frame: raw=${frame.timestampUs} adj=$adjustedTimestamp size=${frame.payload.size}")
-                    audioQueue?.sampleMetadata(
-                        adjustedTimestamp,
-                        C.BUFFER_FLAG_KEY_FRAME,
-                        frame.payload.size,
-                        0,
-                        null
-                    )
-                    loadingCallback?.onContinueLoadingRequested(this@MoQMediaPeriod)
+                Log.d(TAG, "Audio flow collection started")
+                try {
+                    audioFlow?.collect { frame ->
+                        val pba = ParsableByteArray(frame.payload)
+                        audioQueue?.sampleData(pba, frame.payload.size)
+                        val adjustedTimestamp = getAdjustedAudioTimestampUs(frame.timestampUs.toLong())
+                        // Log.d("MoQMediaSource", "Audio frame: raw=${frame.timestampUs} adj=$adjustedTimestamp size=${frame.payload.size}")
+                        audioQueue?.sampleMetadata(
+                            adjustedTimestamp,
+                            C.BUFFER_FLAG_KEY_FRAME,
+                            frame.payload.size,
+                            0,
+                            null
+                        )
+                        loadingCallback?.onContinueLoadingRequested(this@MoQMediaPeriod)
+                    }
+                    Log.d(TAG, "Audio flow ended normally")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Audio flow error: $e")
                 }
             }
 
             callback.onPrepared(this)
+            Log.d(TAG, "Period prepared, ${trackGroups.length} track groups")
         }
 
         override fun selectTracks(
@@ -263,6 +289,7 @@ internal class MoQMediaSource(
         override fun reevaluateBuffer(positionUs: Long) {}
 
         fun release() {
+            Log.d(TAG, "Period release: cancelling video=${videoJob != null} audio=${audioJob != null}")
             videoJob?.cancel()
             audioJob?.cancel()
             videoQueue?.release()

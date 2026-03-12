@@ -18,6 +18,10 @@ class MoQPlayer(
     private val maxLatencyMs: ULong = 1000u,
     parentScope: CoroutineScope,
 ) {
+    companion object {
+        private const val TAG = "MoQPlayer"
+    }
+
     sealed class Event {
         object Playing : Event()
         object Paused : Event()
@@ -34,13 +38,16 @@ class MoQPlayer(
         private set
 
     fun start(): ExoPlayer {
+        Log.d(TAG, "start: ${tracks.size} tracks (maxLatencyMs=$maxLatencyMs)")
         releasePlayer()
 
         val videoInfo = tracks.filterIsInstance<MoQVideoTrackInfo>().firstOrNull()
         val audioInfo = tracks.filterIsInstance<MoQAudioTrackInfo>().firstOrNull()
+        Log.d(TAG, "Selected video='${videoInfo?.name}' audio='${audioInfo?.name}'")
 
         val videoFormat = videoInfo?.let { MediaFactory.makeVideoFormatMedia3(it.config) }
         val audioFormat = audioInfo?.let { MediaFactory.makeAudioFormatMedia3(it.config) }
+        Log.d(TAG, "Formats: video=${videoFormat?.sampleMimeType} ${videoFormat?.width}x${videoFormat?.height}, audio=${audioFormat?.sampleMimeType} ${audioFormat?.sampleRate}Hz")
 
         val videoFlow = videoInfo?.let {
             subscribeTrack(it.broadcast, it.name, maxLatencyMs)
@@ -51,15 +58,27 @@ class MoQPlayer(
 
         val source = MoQMediaSource(videoFormat, audioFormat, videoFlow, audioFlow, scope)
         val newPlayer = ExoPlayer.Builder(context).build()
+        Log.d(TAG, "ExoPlayer created")
 
         newPlayer.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                Log.e("MoQPlayer", "Player error: ${error.errorCodeName} cause=${error.cause}", error)
+                Log.e(TAG, "Player error: ${error.errorCodeName} cause=${error.cause}", error)
                 _events.tryEmit(Event.Error(error.errorCode, error.errorCodeName))
             }
 
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                val stateName = when (playbackState) {
+                    Player.STATE_IDLE -> "IDLE"
+                    Player.STATE_BUFFERING -> "BUFFERING"
+                    Player.STATE_READY -> "READY"
+                    Player.STATE_ENDED -> "ENDED"
+                    else -> "UNKNOWN($playbackState)"
+                }
+                Log.d(TAG, "Playback state: $stateName")
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                Log.d("MoQPlayer", "Player isPlaying=$isPlaying")
+                Log.d(TAG, "isPlaying=$isPlaying")
                 if (isPlaying) {
                     _events.tryEmit(Event.Playing)
                 }
@@ -75,20 +94,26 @@ class MoQPlayer(
     }
 
     fun pause() {
+        Log.d(TAG, "pause")
         releasePlayer()
         _events.tryEmit(Event.Paused)
     }
 
     fun resume(): ExoPlayer {
+        Log.d(TAG, "resume")
         return start()
     }
 
     fun stop() {
+        Log.d(TAG, "stop")
         releasePlayer()
         _events.tryEmit(Event.Stopped)
     }
 
     private fun releasePlayer() {
+        if (exoPlayer != null) {
+            Log.d(TAG, "Releasing ExoPlayer")
+        }
         exoPlayer?.stop()
         exoPlayer?.release()
         exoPlayer = null
