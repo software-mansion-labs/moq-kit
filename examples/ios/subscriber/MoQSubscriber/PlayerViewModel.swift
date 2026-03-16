@@ -1,30 +1,46 @@
+import AVFoundation
 import MoQKit
 import SwiftUI
+
+enum PlayerType: String, CaseIterable {
+    case realTime = "RealTime"
+    case avPlayer = "AVPlayer"
+}
 
 @MainActor
 final class BroadcastEntry: ObservableObject, Identifiable {
     let id: String
     @Published var info: MoQBroadcastInfo
     @Published var player: MoQAVPlayer?
+    @Published var realTimePlayer: MoQRealTimePlayer?
     @Published var offline: Bool = false
     @Published var isPlaying: Bool = false
+    @Published var audioLatencyMs: Double?
+    @Published var videoLatencyMs: Double?
 
     var eventTask: Task<Void, Never>?
+    private var latencyTimer: Timer?
 
     init(info: MoQBroadcastInfo) {
         self.id = info.path
         self.info = info
     }
 
-    func observeEvents(of player: MoQAVPlayer) {
+    var videoLayer: AVSampleBufferDisplayLayer? {
+        player?.videoLayer ?? realTimePlayer?.videoLayer
+    }
+
+    func observeEvents(of events: AsyncStream<MoQPlayerEvent>) {
         eventTask = Task {
-            for await event in player.events {
+            for await event in events {
                 switch event {
                 case .trackPlaying:
                     isPlaying = true
+                    startLatencyPolling()
                 case .allTracksStopped:
                     isPlaying = false
                     offline = true
+                    stopLatencyPolling()
                 default:
                     break
                 }
@@ -32,11 +48,33 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         }
     }
 
+    private func startLatencyPolling() {
+        guard latencyTimer == nil else { return }
+        latencyTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let info = self.realTimePlayer?.latency
+                self.audioLatencyMs = info?.audioMs
+                self.videoLatencyMs = info?.videoMs
+            }
+        }
+    }
+
+    private func stopLatencyPolling() {
+        latencyTimer?.invalidate()
+        latencyTimer = nil
+        audioLatencyMs = nil
+        videoLatencyMs = nil
+    }
+
     func stop() async {
         eventTask?.cancel()
         eventTask = nil
+        stopLatencyPolling()
         await player?.stopAll()
         player = nil
+        await realTimePlayer?.stopAll()
+        realTimePlayer = nil
         isPlaying = false
     }
 }
@@ -45,6 +83,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 final class PlayerViewModel: ObservableObject {
     @Published var sessionState: MoQSessionState = .idle
     @Published var broadcasts: [BroadcastEntry] = []
+    @Published var playerType: PlayerType = .realTime
 
     private var session: MoQSession?
     private var stateObserverTask: Task<Void, Never>?
@@ -57,11 +96,11 @@ final class PlayerViewModel: ObservableObject {
     var canStop: Bool {
         sessionState == .connecting || sessionState == .connected
     }
-    
+
     var canPause: Bool {
         true
     }
-    
+
     var canResume: Bool {
         true
     }
@@ -112,13 +151,24 @@ final class PlayerViewModel: ObservableObject {
                     }
                     var tracks: [any MoQTrackInfo] = []
                     if let v = info.videoTracks.first { tracks.append(v) }
-                    if let a = info.audioTracks.first { tracks.append(a) }
-                    let p = try? MoQAVPlayer(tracks: tracks, maxLatencyMs: 500)
-                    entry.player = p
-                    if let p {
-                        entry.observeEvents(of: p)
+                    // if let a = info.audioTracks.first { tracks.append(a) }
+
+                    switch self.playerType {
+                    case .avPlayer:
+                        let p = try? MoQAVPlayer(tracks: tracks, maxLatencyMs: 500)
+                        entry.player = p
+                        if let p {
+                            entry.observeEvents(of: p.events)
+                        }
+                        try? await p?.play()
+                    case .realTime:
+                        let p = try? MoQRealTimePlayer(tracks: tracks, targetBufferingMs: 100)
+                        entry.realTimePlayer = p
+                        if let p {
+                            entry.observeEvents(of: p.events)
+                        }
+                        try? await p?.play()
                     }
-                    try? await p?.play()
                 case .unavailable(let path):
                     if let entry = broadcasts.first(where: { $0.id == path }) {
                         await entry.stop()
@@ -152,20 +202,22 @@ final class PlayerViewModel: ObservableObject {
             await s?.close()
         }
     }
-    
+
     func pause() {
         broadcasts.forEach { entry in
             Task {
                 await entry.player?.pause()
+                await entry.realTimePlayer?.pause()
             }
         }
     }
-    
+
     func play() {
         broadcasts.forEach { entry in
             Task {
                 do {
                     try await entry.player?.play()
+                    try await entry.realTimePlayer?.play()
                 } catch {}
             }
         }

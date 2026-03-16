@@ -66,8 +66,24 @@ private struct BroadcastPlayerView: View {
                 Spacer()
             }
 
-            if let player = entry.player {
-                VideoLayerView(layer: player.videoLayer)
+            if entry.audioLatencyMs != nil || entry.videoLatencyMs != nil {
+                HStack(spacing: 12) {
+                    if let videoMs = entry.videoLatencyMs {
+                        Text("Video: \(Int(videoMs))ms")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if let audioMs = entry.audioLatencyMs {
+                        Text("Audio: \(Int(audioMs))ms")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+
+            if let layer = entry.videoLayer {
+                VideoLayerView(layer: layer)
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {

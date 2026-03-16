@@ -1,14 +1,15 @@
 import AVFoundation
 import CoreMedia
 
-
 // MARK: - SampleBufferFactory
 
 enum SampleBufferFactory {
 
     // MARK: - Video Format Descriptions
 
-    static func makeVideoFormatDescription(from config: MoqVideoRendition) throws -> CMFormatDescription {
+    static func makeVideoFormatDescription(from config: MoqVideoRendition) throws
+        -> CMFormatDescription
+    {
         guard let descData = config.description else {
             throw MoQSessionError.missingCodecDescription
         }
@@ -66,7 +67,9 @@ enum SampleBufferFactory {
 
     // MARK: - Audio Format Descriptions
 
-    static func makeAudioFormatDescription(from config: MoqAudioRendition) throws -> CMFormatDescription {
+    static func makeAudioFormatDescription(from config: MoqAudioRendition) throws
+        -> CMFormatDescription
+    {
         let codec = config.codec.lowercased()
 
         let formatID: AudioFormatID
@@ -131,12 +134,11 @@ enum SampleBufferFactory {
     // MARK: - Frame → CMSampleBuffer
 
     static func makeSampleBuffer(
-        from frame: MoQFrame,
+        payload: Data,
+        timestampUs: UInt64,
         formatDescription: CMFormatDescription,
         baseTimestampUs: UInt64
     ) throws -> CMSampleBuffer {
-        let payload = frame.payload
-
         // Create block buffer
         var blockBuffer: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
@@ -169,19 +171,23 @@ enum SampleBufferFactory {
         }
 
         // Build timing
-        let relativeUs = frame.timestampUs >= baseTimestampUs
-            ? frame.timestampUs - baseTimestampUs
+        let relativeUs =
+            timestampUs >= baseTimestampUs
+            ? timestampUs - baseTimestampUs
             : 0
         let pts = CMTime(value: CMTimeValue(relativeUs), timescale: 1_000_000)
-        
+
         var duration = CMTime.invalid
         let mediaType = CMFormatDescriptionGetMediaType(formatDescription)
         if mediaType == kCMMediaType_Audio {
-            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee {
+            if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?
+                .pointee
+            {
                 let framesPerPacket = asbd.mFramesPerPacket
                 let sampleRate = asbd.mSampleRate
                 if framesPerPacket > 0 && sampleRate > 0 {
-                    duration = CMTime(value: CMTimeValue(framesPerPacket), timescale: CMTimeScale(sampleRate))
+                    duration = CMTime(
+                        value: CMTimeValue(framesPerPacket), timescale: CMTimeScale(sampleRate))
                 }
             }
         }
@@ -211,6 +217,41 @@ enum SampleBufferFactory {
         }
 
         return sb
+    }
+
+    static func makeH264FormatDescriptionFromParameterSets(
+        sps: [Data], pps: [Data]
+    ) throws -> CMFormatDescription {
+        
+        let allSets = sps + pps
+        
+        // 1. Cast to NSData to tie the raw pointer lifetime to the object lifetime
+        let nsDataSets = allSets.map { $0 as NSData }
+        
+        // 2. Extract the pointers and sizes
+        let pointers = nsDataSets.map { $0.bytes.assumingMemoryBound(to: UInt8.self) }
+        let sizes = nsDataSets.map { $0.length }
+        
+        var formatDescription: CMFormatDescription?
+        
+        // 3. Swift automatically bridges [UnsafePointer<UInt8>] to UnsafePointer<UnsafePointer<UInt8>>
+        let status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
+            allocator: kCFAllocatorDefault,
+            parameterSetCount: pointers.count,
+            parameterSetPointers: pointers,
+            parameterSetSizes: sizes,
+            nalUnitHeaderLength: 4, // 4 is correct for standard AVCC formatting
+            formatDescriptionOut: &formatDescription
+        )
+        
+        // nsDataSets stays alive until the end of this function scope,
+        // ensuring our `pointers` were perfectly valid during the C function call.
+        
+        guard status == noErr, let fd = formatDescription else {
+            throw MoQSessionError.formatDescriptionFailed(status)
+        }
+        
+        return fd
     }
 }
 
@@ -333,7 +374,9 @@ private func parseHVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
             guard offset + 2 <= data.count else { throw MoQSessionError.missingCodecDescription }
             let length = Int(data[offset]) << 8 | Int(data[offset + 1])
             offset += 2
-            guard offset + length <= data.count else { throw MoQSessionError.missingCodecDescription }
+            guard offset + length <= data.count else {
+                throw MoQSessionError.missingCodecDescription
+            }
             parameterSets.append(data.subdata(in: offset..<(offset + length)))
             offset += length
         }

@@ -13,6 +13,7 @@ public enum MoQSessionError: Error, Sendable {
     case noBroadcastAvailable
     case noTracksSelected
     case invalidConfiguration(String)
+    case audioDecoderFailed(String)
     case connectionFailed(MoqError)
 }
 

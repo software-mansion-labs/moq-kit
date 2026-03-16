@@ -1,6 +1,13 @@
 import AVFoundation
 import CoreMedia
 
+// MARK: - LatencyInfo
+
+public struct LatencyInfo: Sendable {
+    public let audioMs: Double?
+    public let videoMs: Double?
+}
+
 // MARK: - MoQPlayerEvent
 
 public enum MoQPlayerEvent: Sendable {
@@ -99,7 +106,8 @@ public final class MoQAVPlayer {
                     do {
                         let baseUs = baseTimestamp.resolve(frame.timestampUs)
                         let sb = try SampleBufferFactory.makeSampleBuffer(
-                            from: frame, formatDescription: vFmt, baseTimestampUs: baseUs
+                            payload: frame.payload, timestampUs: frame.timestampUs,
+                            formatDescription: vFmt, baseTimestampUs: baseUs
                         )
                         videoTracer.record(ptsUs: frame.timestampUs)
                         if !layer.isReadyForMoreMediaData {
@@ -140,7 +148,8 @@ public final class MoQAVPlayer {
                     do {
                         let baseUs = baseTimestamp.resolve(frame.timestampUs)
                         let sb = try SampleBufferFactory.makeSampleBuffer(
-                            from: frame, formatDescription: aFmt, baseTimestampUs: baseUs
+                            payload: frame.payload, timestampUs: frame.timestampUs,
+                            formatDescription: aFmt, baseTimestampUs: baseUs
                         )
                         audioTracer.record(ptsUs: frame.timestampUs)
                         renderer.enqueue(sb)
@@ -415,22 +424,6 @@ private final class PacketTimingTracer: @unchecked Sendable {
             )
             self.reportCallback(msg)
         }
-    }
-}
-
-// MARK: - BaseTimestamp
-
-/// Thread-safe container for the first frame timestamp, shared between video and audio tasks.
-private final class BaseTimestamp: @unchecked Sendable {
-    private var value: UInt64?
-    private let lock = NSLock()
-
-    func resolve(_ timestampUs: UInt64) -> UInt64 {
-        lock.lock()
-        defer { lock.unlock() }
-        if let v = value { return v }
-        value = timestampUs
-        return timestampUs
     }
 }
 
