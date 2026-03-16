@@ -553,9 +553,16 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol MoqAnnouncedProtocol: AnyObject, Sendable {
     
     /**
-     * Get the next broadcast announcement. Returns `None` when the origin is closed.
+     * Cancel all current and future `next()` calls.
      */
-    func next() async throws  -> AnnouncedInfo?
+    func cancel() 
+    
+    /**
+     * Get the next broadcast announcement. Returns `None` when the origin is closed.
+     *
+     * Use `broadcast.closed()` to learn when a broadcast is unannounced.
+     */
+    func next() async throws  -> MoqAnnouncement?
     
 }
 open class MoqAnnounced: MoqAnnouncedProtocol, @unchecked Sendable {
@@ -612,9 +619,21 @@ open class MoqAnnounced: MoqAnnouncedProtocol, @unchecked Sendable {
 
     
     /**
-     * Get the next broadcast announcement. Returns `None` when the origin is closed.
+     * Cancel all current and future `next()` calls.
      */
-open func next()async throws  -> AnnouncedInfo?  {
+open func cancel()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqannounced_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Get the next broadcast announcement. Returns `None` when the origin is closed.
+     *
+     * Use `broadcast.closed()` to learn when a broadcast is unannounced.
+     */
+open func next()async throws  -> MoqAnnouncement?  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
@@ -626,7 +645,7 @@ open func next()async throws  -> AnnouncedInfo?  {
             pollFunc: ffi_moq_ffi_rust_future_poll_rust_buffer,
             completeFunc: ffi_moq_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_moq_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterOptionTypeAnnouncedInfo.lift,
+            liftFunc: FfiConverterOptionTypeMoqAnnouncement.lift,
             errorHandler: FfiConverterTypeMoqError_lift
         )
 }
@@ -681,22 +700,28 @@ public func FfiConverterTypeMoqAnnounced_lower(_ value: MoqAnnounced) -> UInt64 
 
 
 
-public protocol MoqBroadcastProtocol: AnyObject, Sendable {
+/**
+ * Waits for a specific broadcast to be announced.
+ */
+public protocol MoqAnnouncedBroadcastProtocol: AnyObject, Sendable {
     
     /**
-     * Create a catalog consumer for this broadcast.
-     */
-    func catalog() async throws  -> MoqCatalogStream
-    
-    /**
-     * Subscribe to a track by name, delivering frames in decode order.
+     * Wait until the broadcast is announced. Returns `Closed` if cancelled or the origin is closed.
      *
-     * `max_latency_ms` controls the maximum buffering before skipping a GoP.
+     * Use `broadcast.closed()` to learn when a broadcast is unannounced.
      */
-    func subscribeTrack(name: String, maxLatencyMs: UInt64) async throws  -> MoqTrack
+    func available() async throws  -> MoqBroadcastConsumer
+    
+    /**
+     * Cancel all current and future `available()` calls.
+     */
+    func cancel() 
     
 }
-open class MoqBroadcast: MoqBroadcastProtocol, @unchecked Sendable {
+/**
+ * Waits for a specific broadcast to be announced.
+ */
+open class MoqAnnouncedBroadcast: MoqAnnouncedBroadcastProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
     /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
@@ -733,7 +758,7 @@ open class MoqBroadcast: MoqBroadcastProtocol, @unchecked Sendable {
     @_documentation(visibility: private)
 #endif
     public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_moq_ffi_fn_clone_moqbroadcast(self.handle, $0) }
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqannouncedbroadcast(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
@@ -743,20 +768,22 @@ open class MoqBroadcast: MoqBroadcastProtocol, @unchecked Sendable {
             return
         }
 
-        try! rustCall { uniffi_moq_ffi_fn_free_moqbroadcast(handle, $0) }
+        try! rustCall { uniffi_moq_ffi_fn_free_moqannouncedbroadcast(handle, $0) }
     }
 
     
 
     
     /**
-     * Create a catalog consumer for this broadcast.
+     * Wait until the broadcast is announced. Returns `Closed` if cancelled or the origin is closed.
+     *
+     * Use `broadcast.closed()` to learn when a broadcast is unannounced.
      */
-open func catalog()async throws  -> MoqCatalogStream  {
+open func available()async throws  -> MoqBroadcastConsumer  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_moq_ffi_fn_method_moqbroadcast_catalog(
+                uniffi_moq_ffi_fn_method_moqannouncedbroadcast_available(
                     self.uniffiCloneHandle()
                     
                 )
@@ -764,31 +791,19 @@ open func catalog()async throws  -> MoqCatalogStream  {
             pollFunc: ffi_moq_ffi_rust_future_poll_u64,
             completeFunc: ffi_moq_ffi_rust_future_complete_u64,
             freeFunc: ffi_moq_ffi_rust_future_free_u64,
-            liftFunc: FfiConverterTypeMoqCatalogStream_lift,
+            liftFunc: FfiConverterTypeMoqBroadcastConsumer_lift,
             errorHandler: FfiConverterTypeMoqError_lift
         )
 }
     
     /**
-     * Subscribe to a track by name, delivering frames in decode order.
-     *
-     * `max_latency_ms` controls the maximum buffering before skipping a GoP.
+     * Cancel all current and future `available()` calls.
      */
-open func subscribeTrack(name: String, maxLatencyMs: UInt64)async throws  -> MoqTrack  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_moq_ffi_fn_method_moqbroadcast_subscribe_track(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(name),FfiConverterUInt64.lower(maxLatencyMs)
-                )
-            },
-            pollFunc: ffi_moq_ffi_rust_future_poll_u64,
-            completeFunc: ffi_moq_ffi_rust_future_complete_u64,
-            freeFunc: ffi_moq_ffi_rust_future_free_u64,
-            liftFunc: FfiConverterTypeMoqTrack_lift,
-            errorHandler: FfiConverterTypeMoqError_lift
-        )
+open func cancel()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqannouncedbroadcast_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
 }
     
 
@@ -799,24 +814,24 @@ open func subscribeTrack(name: String, maxLatencyMs: UInt64)async throws  -> Moq
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqBroadcast: FfiConverter {
+public struct FfiConverterTypeMoqAnnouncedBroadcast: FfiConverter {
     typealias FfiType = UInt64
-    typealias SwiftType = MoqBroadcast
+    typealias SwiftType = MoqAnnouncedBroadcast
 
-    public static func lift(_ handle: UInt64) throws -> MoqBroadcast {
-        return MoqBroadcast(unsafeFromHandle: handle)
+    public static func lift(_ handle: UInt64) throws -> MoqAnnouncedBroadcast {
+        return MoqAnnouncedBroadcast(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: MoqBroadcast) -> UInt64 {
+    public static func lower(_ value: MoqAnnouncedBroadcast) -> UInt64 {
         return value.uniffiCloneHandle()
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqBroadcast {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqAnnouncedBroadcast {
         let handle: UInt64 = try readInt(&buf)
         return try lift(handle)
     }
 
-    public static func write(_ value: MoqBroadcast, into buf: inout [UInt8]) {
+    public static func write(_ value: MoqAnnouncedBroadcast, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -825,15 +840,15 @@ public struct FfiConverterTypeMoqBroadcast: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqBroadcast_lift(_ handle: UInt64) throws -> MoqBroadcast {
-    return try FfiConverterTypeMoqBroadcast.lift(handle)
+public func FfiConverterTypeMoqAnnouncedBroadcast_lift(_ handle: UInt64) throws -> MoqAnnouncedBroadcast {
+    return try FfiConverterTypeMoqAnnouncedBroadcast.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqBroadcast_lower(_ value: MoqBroadcast) -> UInt64 {
-    return FfiConverterTypeMoqBroadcast.lower(value)
+public func FfiConverterTypeMoqAnnouncedBroadcast_lower(_ value: MoqAnnouncedBroadcast) -> UInt64 {
+    return FfiConverterTypeMoqAnnouncedBroadcast.lower(value)
 }
 
 
@@ -841,15 +856,26 @@ public func FfiConverterTypeMoqBroadcast_lower(_ value: MoqBroadcast) -> UInt64 
 
 
 
-public protocol MoqCatalogStreamProtocol: AnyObject, Sendable {
+/**
+ * A broadcast announcement from an origin.
+ */
+public protocol MoqAnnouncementProtocol: AnyObject, Sendable {
     
     /**
-     * Get the next catalog update. Returns `None` when the track ends.
+     * The broadcast consumer.
      */
-    func next() async throws  -> MoqCatalog?
+    func broadcast()  -> MoqBroadcastConsumer
+    
+    /**
+     * The path of the announced broadcast.
+     */
+    func path()  -> String
     
 }
-open class MoqCatalogStream: MoqCatalogStreamProtocol, @unchecked Sendable {
+/**
+ * A broadcast announcement from an origin.
+ */
+open class MoqAnnouncement: MoqAnnouncementProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
     /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
@@ -886,7 +912,7 @@ open class MoqCatalogStream: MoqCatalogStreamProtocol, @unchecked Sendable {
     @_documentation(visibility: private)
 #endif
     public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_moq_ffi_fn_clone_moqcatalogstream(self.handle, $0) }
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqannouncement(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
@@ -896,20 +922,467 @@ open class MoqCatalogStream: MoqCatalogStreamProtocol, @unchecked Sendable {
             return
         }
 
-        try! rustCall { uniffi_moq_ffi_fn_free_moqcatalogstream(handle, $0) }
+        try! rustCall { uniffi_moq_ffi_fn_free_moqannouncement(handle, $0) }
     }
 
     
 
     
     /**
-     * Get the next catalog update. Returns `None` when the track ends.
+     * The broadcast consumer.
+     */
+open func broadcast() -> MoqBroadcastConsumer  {
+    return try!  FfiConverterTypeMoqBroadcastConsumer_lift(try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqannouncement_broadcast(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * The path of the announced broadcast.
+     */
+open func path() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqannouncement_path(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqAnnouncement: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqAnnouncement
+
+    public static func lift(_ handle: UInt64) throws -> MoqAnnouncement {
+        return MoqAnnouncement(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqAnnouncement) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqAnnouncement {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqAnnouncement, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqAnnouncement_lift(_ handle: UInt64) throws -> MoqAnnouncement {
+    return try FfiConverterTypeMoqAnnouncement.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqAnnouncement_lower(_ value: MoqAnnouncement) -> UInt64 {
+    return FfiConverterTypeMoqAnnouncement.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqBroadcastConsumerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Subscribe to the catalog for this broadcast.
+     */
+    func subscribeCatalog() throws  -> MoqCatalogConsumer
+    
+    /**
+     * Subscribe to a media track by name, delivering frames in decode order.
+     *
+     * `max_latency_ms` controls the maximum buffering before skipping a GoP.
+     */
+    func subscribeMedia(name: String, maxLatencyMs: UInt64) throws  -> MoqMediaConsumer
+    
+}
+open class MoqBroadcastConsumer: MoqBroadcastConsumerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqbroadcastconsumer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqbroadcastconsumer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Subscribe to the catalog for this broadcast.
+     */
+open func subscribeCatalog()throws  -> MoqCatalogConsumer  {
+    return try  FfiConverterTypeMoqCatalogConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastconsumer_subscribe_catalog(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Subscribe to a media track by name, delivering frames in decode order.
+     *
+     * `max_latency_ms` controls the maximum buffering before skipping a GoP.
+     */
+open func subscribeMedia(name: String, maxLatencyMs: UInt64)throws  -> MoqMediaConsumer  {
+    return try  FfiConverterTypeMoqMediaConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastconsumer_subscribe_media(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterUInt64.lower(maxLatencyMs),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqBroadcastConsumer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqBroadcastConsumer
+
+    public static func lift(_ handle: UInt64) throws -> MoqBroadcastConsumer {
+        return MoqBroadcastConsumer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqBroadcastConsumer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqBroadcastConsumer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqBroadcastConsumer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqBroadcastConsumer_lift(_ handle: UInt64) throws -> MoqBroadcastConsumer {
+    return try FfiConverterTypeMoqBroadcastConsumer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqBroadcastConsumer_lower(_ value: MoqBroadcastConsumer) -> UInt64 {
+    return FfiConverterTypeMoqBroadcastConsumer.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqBroadcastProducerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Finish this publisher, finalizing the catalog stream.
+     */
+    func finish() throws 
+    
+    /**
+     * Create a new media track for this broadcast.
+     *
+     * `format` controls the encoding of `init` and frame payloads.
+     */
+    func publishMedia(format: String, `init`: Data) throws  -> MoqMediaProducer
+    
+}
+open class MoqBroadcastProducer: MoqBroadcastProducerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqbroadcastproducer(self.handle, $0) }
+    }
+    /**
+     * Create a new broadcast for publishing media tracks.
+     *
+     * NOTE: This will do nothing until published to an origin.
+     */
+public convenience init()throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_constructor_moqbroadcastproducer_new($0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqbroadcastproducer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Finish this publisher, finalizing the catalog stream.
+     */
+open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastproducer_finish(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Create a new media track for this broadcast.
+     *
+     * `format` controls the encoding of `init` and frame payloads.
+     */
+open func publishMedia(format: String, `init`: Data)throws  -> MoqMediaProducer  {
+    return try  FfiConverterTypeMoqMediaProducer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastproducer_publish_media(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(format),
+        FfiConverterData.lower(`init`),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqBroadcastProducer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqBroadcastProducer
+
+    public static func lift(_ handle: UInt64) throws -> MoqBroadcastProducer {
+        return MoqBroadcastProducer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqBroadcastProducer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqBroadcastProducer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqBroadcastProducer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqBroadcastProducer_lift(_ handle: UInt64) throws -> MoqBroadcastProducer {
+    return try FfiConverterTypeMoqBroadcastProducer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqBroadcastProducer_lower(_ value: MoqBroadcastProducer) -> UInt64 {
+    return FfiConverterTypeMoqBroadcastProducer.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqCatalogConsumerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Cancel all current and future `next()` calls.
+     */
+    func cancel() 
+    
+    /**
+     * Get the next catalog update. Returns `None` when the track ends or is closed.
+     */
+    func next() async throws  -> MoqCatalog?
+    
+}
+open class MoqCatalogConsumer: MoqCatalogConsumerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqcatalogconsumer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqcatalogconsumer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Cancel all current and future `next()` calls.
+     */
+open func cancel()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqcatalogconsumer_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Get the next catalog update. Returns `None` when the track ends or is closed.
      */
 open func next()async throws  -> MoqCatalog?  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
-                uniffi_moq_ffi_fn_method_moqcatalogstream_next(
+                uniffi_moq_ffi_fn_method_moqcatalogconsumer_next(
                     self.uniffiCloneHandle()
                     
                 )
@@ -930,24 +1403,24 @@ open func next()async throws  -> MoqCatalog?  {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqCatalogStream: FfiConverter {
+public struct FfiConverterTypeMoqCatalogConsumer: FfiConverter {
     typealias FfiType = UInt64
-    typealias SwiftType = MoqCatalogStream
+    typealias SwiftType = MoqCatalogConsumer
 
-    public static func lift(_ handle: UInt64) throws -> MoqCatalogStream {
-        return MoqCatalogStream(unsafeFromHandle: handle)
+    public static func lift(_ handle: UInt64) throws -> MoqCatalogConsumer {
+        return MoqCatalogConsumer(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: MoqCatalogStream) -> UInt64 {
+    public static func lower(_ value: MoqCatalogConsumer) -> UInt64 {
         return value.uniffiCloneHandle()
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqCatalogStream {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqCatalogConsumer {
         let handle: UInt64 = try readInt(&buf)
         return try lift(handle)
     }
 
-    public static func write(_ value: MoqCatalogStream, into buf: inout [UInt8]) {
+    public static func write(_ value: MoqCatalogConsumer, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -956,15 +1429,15 @@ public struct FfiConverterTypeMoqCatalogStream: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqCatalogStream_lift(_ handle: UInt64) throws -> MoqCatalogStream {
-    return try FfiConverterTypeMoqCatalogStream.lift(handle)
+public func FfiConverterTypeMoqCatalogConsumer_lift(_ handle: UInt64) throws -> MoqCatalogConsumer {
+    return try FfiConverterTypeMoqCatalogConsumer.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqCatalogStream_lower(_ value: MoqCatalogStream) -> UInt64 {
-    return FfiConverterTypeMoqCatalogStream.lower(value)
+public func FfiConverterTypeMoqCatalogConsumer_lower(_ value: MoqCatalogConsumer) -> UInt64 {
+    return FfiConverterTypeMoqCatalogConsumer.lower(value)
 }
 
 
@@ -972,22 +1445,37 @@ public func FfiConverterTypeMoqCatalogStream_lower(_ value: MoqCatalogStream) ->
 
 
 
-public protocol MoqMediaProtocol: AnyObject, Sendable {
+public protocol MoqClientProtocol: AnyObject, Sendable {
     
     /**
-     * Finish this media track and finalize encoding.
+     * Cancel all current and future `connect()` calls.
      */
-    func finish() throws 
+    func cancel() 
     
     /**
-     * Write a frame to this media track.
+     * Connect to a MoQ server and wait for the session to be established.
      *
-     * `timestamp_us` is the presentation timestamp in microseconds.
+     * Can be cancelled by calling `cancel()`.
      */
-    func writeFrame(payload: Data, timestampUs: UInt64) throws 
+    func connect(url: String) async throws  -> MoqSession
+    
+    /**
+     * Set the origin to consume remote broadcasts from the remote.
+     */
+    func setConsume(origin: MoqOriginProducer?) 
+    
+    /**
+     * Set the origin to publish local broadcasts to the remote.
+     */
+    func setPublish(origin: MoqOriginProducer?) 
+    
+    /**
+     * Disable TLS certificate verification (for development only).
+     */
+    func setTlsDisableVerify(disable: Bool) 
     
 }
-open class MoqMedia: MoqMediaProtocol, @unchecked Sendable {
+open class MoqClient: MoqClientProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
     /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
@@ -1024,7 +1512,198 @@ open class MoqMedia: MoqMediaProtocol, @unchecked Sendable {
     @_documentation(visibility: private)
 #endif
     public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_moq_ffi_fn_clone_moqmedia(self.handle, $0) }
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqclient(self.handle, $0) }
+    }
+    /**
+     * Create a new MoQ client with default configuration.
+     */
+public convenience init() {
+    let handle =
+        try! rustCall() {
+    uniffi_moq_ffi_fn_constructor_moqclient_new($0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqclient(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Cancel all current and future `connect()` calls.
+     */
+open func cancel()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqclient_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Connect to a MoQ server and wait for the session to be established.
+     *
+     * Can be cancelled by calling `cancel()`.
+     */
+open func connect(url: String)async throws  -> MoqSession  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqclient_connect(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(url)
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_u64,
+            completeFunc: ffi_moq_ffi_rust_future_complete_u64,
+            freeFunc: ffi_moq_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeMoqSession_lift,
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+    /**
+     * Set the origin to consume remote broadcasts from the remote.
+     */
+open func setConsume(origin: MoqOriginProducer?)  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqclient_set_consume(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeMoqOriginProducer.lower(origin),$0
+    )
+}
+}
+    
+    /**
+     * Set the origin to publish local broadcasts to the remote.
+     */
+open func setPublish(origin: MoqOriginProducer?)  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqclient_set_publish(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionTypeMoqOriginProducer.lower(origin),$0
+    )
+}
+}
+    
+    /**
+     * Disable TLS certificate verification (for development only).
+     */
+open func setTlsDisableVerify(disable: Bool)  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqclient_set_tls_disable_verify(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(disable),$0
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqClient: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqClient
+
+    public static func lift(_ handle: UInt64) throws -> MoqClient {
+        return MoqClient(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqClient) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqClient {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqClient, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqClient_lift(_ handle: UInt64) throws -> MoqClient {
+    return try FfiConverterTypeMoqClient.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqClient_lower(_ value: MoqClient) -> UInt64 {
+    return FfiConverterTypeMoqClient.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqMediaConsumerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Cancel all current and future `next()` calls.
+     */
+    func cancel() 
+    
+    /**
+     * Get the next frame. Returns `None` when the track ends or is closed.
+     */
+    func next() async throws  -> MoqFrame?
+    
+}
+open class MoqMediaConsumer: MoqMediaConsumerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqmediaconsumer(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
@@ -1034,7 +1713,155 @@ open class MoqMedia: MoqMediaProtocol, @unchecked Sendable {
             return
         }
 
-        try! rustCall { uniffi_moq_ffi_fn_free_moqmedia(handle, $0) }
+        try! rustCall { uniffi_moq_ffi_fn_free_moqmediaconsumer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Cancel all current and future `next()` calls.
+     */
+open func cancel()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqmediaconsumer_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Get the next frame. Returns `None` when the track ends or is closed.
+     */
+open func next()async throws  -> MoqFrame?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqmediaconsumer_next(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_moq_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_moq_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeMoqFrame.lift,
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqMediaConsumer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqMediaConsumer
+
+    public static func lift(_ handle: UInt64) throws -> MoqMediaConsumer {
+        return MoqMediaConsumer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqMediaConsumer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqMediaConsumer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqMediaConsumer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqMediaConsumer_lift(_ handle: UInt64) throws -> MoqMediaConsumer {
+    return try FfiConverterTypeMoqMediaConsumer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqMediaConsumer_lower(_ value: MoqMediaConsumer) -> UInt64 {
+    return FfiConverterTypeMoqMediaConsumer.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqMediaProducerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Finish this media track and finalize encoding.
+     */
+    func finish() throws 
+    
+    /**
+     * Write a frame to this media track.
+     *
+     * `timestamp_us` is the presentation timestamp in microseconds.
+     */
+    func writeFrame(payload: Data, timestampUs: UInt64) throws 
+    
+}
+open class MoqMediaProducer: MoqMediaProducerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqmediaproducer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqmediaproducer(handle, $0) }
     }
 
     
@@ -1044,7 +1871,7 @@ open class MoqMedia: MoqMediaProtocol, @unchecked Sendable {
      * Finish this media track and finalize encoding.
      */
 open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqmedia_finish(
+    uniffi_moq_ffi_fn_method_moqmediaproducer_finish(
             self.uniffiCloneHandle(),$0
     )
 }
@@ -1056,7 +1883,7 @@ open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift)
      * `timestamp_us` is the presentation timestamp in microseconds.
      */
 open func writeFrame(payload: Data, timestampUs: UInt64)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqmedia_write_frame(
+    uniffi_moq_ffi_fn_method_moqmediaproducer_write_frame(
             self.uniffiCloneHandle(),
         FfiConverterData.lower(payload),
         FfiConverterUInt64.lower(timestampUs),$0
@@ -1072,24 +1899,24 @@ open func writeFrame(payload: Data, timestampUs: UInt64)throws   {try rustCallWi
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqMedia: FfiConverter {
+public struct FfiConverterTypeMoqMediaProducer: FfiConverter {
     typealias FfiType = UInt64
-    typealias SwiftType = MoqMedia
+    typealias SwiftType = MoqMediaProducer
 
-    public static func lift(_ handle: UInt64) throws -> MoqMedia {
-        return MoqMedia(unsafeFromHandle: handle)
+    public static func lift(_ handle: UInt64) throws -> MoqMediaProducer {
+        return MoqMediaProducer(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: MoqMedia) -> UInt64 {
+    public static func lower(_ value: MoqMediaProducer) -> UInt64 {
         return value.uniffiCloneHandle()
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqMedia {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqMediaProducer {
         let handle: UInt64 = try readInt(&buf)
         return try lift(handle)
     }
 
-    public static func write(_ value: MoqMedia, into buf: inout [UInt8]) {
+    public static func write(_ value: MoqMediaProducer, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -1098,15 +1925,15 @@ public struct FfiConverterTypeMoqMedia: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqMedia_lift(_ handle: UInt64) throws -> MoqMedia {
-    return try FfiConverterTypeMoqMedia.lift(handle)
+public func FfiConverterTypeMoqMediaProducer_lift(_ handle: UInt64) throws -> MoqMediaProducer {
+    return try FfiConverterTypeMoqMediaProducer.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqMedia_lower(_ value: MoqMedia) -> UInt64 {
-    return FfiConverterTypeMoqMedia.lower(value)
+public func FfiConverterTypeMoqMediaProducer_lower(_ value: MoqMediaProducer) -> UInt64 {
+    return FfiConverterTypeMoqMediaProducer.lower(value)
 }
 
 
@@ -1114,25 +1941,20 @@ public func FfiConverterTypeMoqMedia_lower(_ value: MoqMedia) -> UInt64 {
 
 
 
-public protocol MoqOriginProtocol: AnyObject, Sendable {
+public protocol MoqOriginConsumerProtocol: AnyObject, Sendable {
     
     /**
-     * Subscribe to broadcast announcements on this origin.
+     * Subscribe to all broadcast announcements under a prefix.
      */
-    func announced()  -> MoqAnnounced
+    func announced(prefix: String) throws  -> MoqAnnounced
     
     /**
-     * Consume a broadcast from this origin by path.
+     * Wait for a specific broadcast to be announced by path.
      */
-    func consume(path: String) throws  -> MoqBroadcast
-    
-    /**
-     * Publish a broadcast to this origin under the given path.
-     */
-    func publish(path: String, broadcast: MoqPublisher) throws 
+    func announcedBroadcast(path: String) throws  -> MoqAnnouncedBroadcast
     
 }
-open class MoqOrigin: MoqOriginProtocol, @unchecked Sendable {
+open class MoqOriginConsumer: MoqOriginConsumerProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
     /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
@@ -1169,7 +1991,7 @@ open class MoqOrigin: MoqOriginProtocol, @unchecked Sendable {
     @_documentation(visibility: private)
 #endif
     public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_moq_ffi_fn_clone_moqorigin(self.handle, $0) }
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqoriginconsumer(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
@@ -1179,47 +2001,36 @@ open class MoqOrigin: MoqOriginProtocol, @unchecked Sendable {
             return
         }
 
-        try! rustCall { uniffi_moq_ffi_fn_free_moqorigin(handle, $0) }
+        try! rustCall { uniffi_moq_ffi_fn_free_moqoriginconsumer(handle, $0) }
     }
 
     
 
     
     /**
-     * Subscribe to broadcast announcements on this origin.
+     * Subscribe to all broadcast announcements under a prefix.
      */
-open func announced() -> MoqAnnounced  {
-    return try!  FfiConverterTypeMoqAnnounced_lift(try! rustCall() {
-    uniffi_moq_ffi_fn_method_moqorigin_announced(
-            self.uniffiCloneHandle(),$0
+open func announced(prefix: String)throws  -> MoqAnnounced  {
+    return try  FfiConverterTypeMoqAnnounced_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqoriginconsumer_announced(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(prefix),$0
     )
 })
 }
     
     /**
-     * Consume a broadcast from this origin by path.
+     * Wait for a specific broadcast to be announced by path.
      */
-open func consume(path: String)throws  -> MoqBroadcast  {
-    return try  FfiConverterTypeMoqBroadcast_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqorigin_consume(
+open func announcedBroadcast(path: String)throws  -> MoqAnnouncedBroadcast  {
+    return try  FfiConverterTypeMoqAnnouncedBroadcast_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqoriginconsumer_announced_broadcast(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(path),$0
     )
 })
 }
     
-    /**
-     * Publish a broadcast to this origin under the given path.
-     */
-open func publish(path: String, broadcast: MoqPublisher)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqorigin_publish(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(path),
-        FfiConverterTypeMoqPublisher_lower(broadcast),$0
-    )
-}
-}
-    
 
     
 }
@@ -1228,24 +2039,24 @@ open func publish(path: String, broadcast: MoqPublisher)throws   {try rustCallWi
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqOrigin: FfiConverter {
+public struct FfiConverterTypeMoqOriginConsumer: FfiConverter {
     typealias FfiType = UInt64
-    typealias SwiftType = MoqOrigin
+    typealias SwiftType = MoqOriginConsumer
 
-    public static func lift(_ handle: UInt64) throws -> MoqOrigin {
-        return MoqOrigin(unsafeFromHandle: handle)
+    public static func lift(_ handle: UInt64) throws -> MoqOriginConsumer {
+        return MoqOriginConsumer(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: MoqOrigin) -> UInt64 {
+    public static func lower(_ value: MoqOriginConsumer) -> UInt64 {
         return value.uniffiCloneHandle()
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqOrigin {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqOriginConsumer {
         let handle: UInt64 = try readInt(&buf)
         return try lift(handle)
     }
 
-    public static func write(_ value: MoqOrigin, into buf: inout [UInt8]) {
+    public static func write(_ value: MoqOriginConsumer, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -1254,15 +2065,15 @@ public struct FfiConverterTypeMoqOrigin: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqOrigin_lift(_ handle: UInt64) throws -> MoqOrigin {
-    return try FfiConverterTypeMoqOrigin.lift(handle)
+public func FfiConverterTypeMoqOriginConsumer_lift(_ handle: UInt64) throws -> MoqOriginConsumer {
+    return try FfiConverterTypeMoqOriginConsumer.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqOrigin_lower(_ value: MoqOrigin) -> UInt64 {
-    return FfiConverterTypeMoqOrigin.lower(value)
+public func FfiConverterTypeMoqOriginConsumer_lower(_ value: MoqOriginConsumer) -> UInt64 {
+    return FfiConverterTypeMoqOriginConsumer.lower(value)
 }
 
 
@@ -1270,17 +2081,20 @@ public func FfiConverterTypeMoqOrigin_lower(_ value: MoqOrigin) -> UInt64 {
 
 
 
-public protocol MoqPublisherProtocol: AnyObject, Sendable {
+public protocol MoqOriginProducerProtocol: AnyObject, Sendable {
     
     /**
-     * Create a new media track for this broadcast.
-     *
-     * `format` controls the encoding of `init` and frame payloads.
+     * Create a consumer for this origin.
      */
-    func mediaOrdered(format: String, `init`: Data) throws  -> MoqMedia
+    func consume()  -> MoqOriginConsumer
+    
+    /**
+     * Publish a broadcast to this origin under the given path.
+     */
+    func publish(path: String, broadcast: MoqBroadcastProducer) throws 
     
 }
-open class MoqPublisher: MoqPublisherProtocol, @unchecked Sendable {
+open class MoqOriginProducer: MoqOriginProducerProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
     /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
@@ -1317,9 +2131,19 @@ open class MoqPublisher: MoqPublisherProtocol, @unchecked Sendable {
     @_documentation(visibility: private)
 #endif
     public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_moq_ffi_fn_clone_moqpublisher(self.handle, $0) }
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqoriginproducer(self.handle, $0) }
     }
-    // No primary constructor declared for this class.
+    /**
+     * Create a new origin for publishing and/or consuming broadcasts.
+     */
+public convenience init() {
+    let handle =
+        try! rustCall() {
+    uniffi_moq_ffi_fn_constructor_moqoriginproducer_new($0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
 
     deinit {
         if handle == 0 {
@@ -1327,25 +2151,33 @@ open class MoqPublisher: MoqPublisherProtocol, @unchecked Sendable {
             return
         }
 
-        try! rustCall { uniffi_moq_ffi_fn_free_moqpublisher(handle, $0) }
+        try! rustCall { uniffi_moq_ffi_fn_free_moqoriginproducer(handle, $0) }
     }
 
     
 
     
     /**
-     * Create a new media track for this broadcast.
-     *
-     * `format` controls the encoding of `init` and frame payloads.
+     * Create a consumer for this origin.
      */
-open func mediaOrdered(format: String, `init`: Data)throws  -> MoqMedia  {
-    return try  FfiConverterTypeMoqMedia_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqpublisher_media_ordered(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(format),
-        FfiConverterData.lower(`init`),$0
+open func consume() -> MoqOriginConsumer  {
+    return try!  FfiConverterTypeMoqOriginConsumer_lift(try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqoriginproducer_consume(
+            self.uniffiCloneHandle(),$0
     )
 })
+}
+    
+    /**
+     * Publish a broadcast to this origin under the given path.
+     */
+open func publish(path: String, broadcast: MoqBroadcastProducer)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqoriginproducer_publish(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),
+        FfiConverterTypeMoqBroadcastProducer_lower(broadcast),$0
+    )
+}
 }
     
 
@@ -1356,24 +2188,24 @@ open func mediaOrdered(format: String, `init`: Data)throws  -> MoqMedia  {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqPublisher: FfiConverter {
+public struct FfiConverterTypeMoqOriginProducer: FfiConverter {
     typealias FfiType = UInt64
-    typealias SwiftType = MoqPublisher
+    typealias SwiftType = MoqOriginProducer
 
-    public static func lift(_ handle: UInt64) throws -> MoqPublisher {
-        return MoqPublisher(unsafeFromHandle: handle)
+    public static func lift(_ handle: UInt64) throws -> MoqOriginProducer {
+        return MoqOriginProducer(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: MoqPublisher) -> UInt64 {
+    public static func lower(_ value: MoqOriginProducer) -> UInt64 {
         return value.uniffiCloneHandle()
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqPublisher {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqOriginProducer {
         let handle: UInt64 = try readInt(&buf)
         return try lift(handle)
     }
 
-    public static func write(_ value: MoqPublisher, into buf: inout [UInt8]) {
+    public static func write(_ value: MoqOriginProducer, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -1382,15 +2214,15 @@ public struct FfiConverterTypeMoqPublisher: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqPublisher_lift(_ handle: UInt64) throws -> MoqPublisher {
-    return try FfiConverterTypeMoqPublisher.lift(handle)
+public func FfiConverterTypeMoqOriginProducer_lift(_ handle: UInt64) throws -> MoqOriginProducer {
+    return try FfiConverterTypeMoqOriginProducer.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqPublisher_lower(_ value: MoqPublisher) -> UInt64 {
-    return FfiConverterTypeMoqPublisher.lower(value)
+public func FfiConverterTypeMoqOriginProducer_lower(_ value: MoqOriginProducer) -> UInt64 {
+    return FfiConverterTypeMoqOriginProducer.lower(value)
 }
 
 
@@ -1401,14 +2233,14 @@ public func FfiConverterTypeMoqPublisher_lower(_ value: MoqPublisher) -> UInt64 
 public protocol MoqSessionProtocol: AnyObject, Sendable {
     
     /**
+     * Close the session with the given error code.
+     */
+    func cancel(code: UInt32) 
+    
+    /**
      * Wait until the session is closed.
      */
     func closed() async throws 
-    
-    /**
-     * Disconnect the session.
-     */
-    func disconnect() 
     
 }
 open class MoqSession: MoqSessionProtocol, @unchecked Sendable {
@@ -1465,6 +2297,17 @@ open class MoqSession: MoqSessionProtocol, @unchecked Sendable {
 
     
     /**
+     * Close the session with the given error code.
+     */
+open func cancel(code: UInt32)  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqsession_cancel(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(code),$0
+    )
+}
+}
+    
+    /**
      * Wait until the session is closed.
      */
 open func closed()async throws   {
@@ -1482,16 +2325,6 @@ open func closed()async throws   {
             liftFunc: { $0 },
             errorHandler: FfiConverterTypeMoqError_lift
         )
-}
-    
-    /**
-     * Disconnect the session.
-     */
-open func disconnect()  {try! rustCall() {
-    uniffi_moq_ffi_fn_method_moqsession_disconnect(
-            self.uniffiCloneHandle(),$0
-    )
-}
 }
     
 
@@ -1542,271 +2375,7 @@ public func FfiConverterTypeMoqSession_lower(_ value: MoqSession) -> UInt64 {
 
 
 
-
-
-public protocol MoqTrackProtocol: AnyObject, Sendable {
-    
-    /**
-     * Get the next frame. Returns `None` when the track ends or is closed.
-     */
-    func next() async throws  -> FrameData?
-    
-    /**
-     * Unsubscribe from this track, causing any pending `next()` call to return `None`.
-     */
-    func unsubscribe() 
-    
-}
-open class MoqTrack: MoqTrackProtocol, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_moq_ffi_fn_clone_moqtrack(self.handle, $0) }
-    }
-    // No primary constructor declared for this class.
-
-    deinit {
-        if handle == 0 {
-            // Mock objects have handle=0 don't try to free them
-            return
-        }
-
-        try! rustCall { uniffi_moq_ffi_fn_free_moqtrack(handle, $0) }
-    }
-
-    
-
-    
-    /**
-     * Get the next frame. Returns `None` when the track ends or is closed.
-     */
-open func next()async throws  -> FrameData?  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_moq_ffi_fn_method_moqtrack_next(
-                    self.uniffiCloneHandle()
-                    
-                )
-            },
-            pollFunc: ffi_moq_ffi_rust_future_poll_rust_buffer,
-            completeFunc: ffi_moq_ffi_rust_future_complete_rust_buffer,
-            freeFunc: ffi_moq_ffi_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterOptionTypeFrameData.lift,
-            errorHandler: FfiConverterTypeMoqError_lift
-        )
-}
-    
-    /**
-     * Unsubscribe from this track, causing any pending `next()` call to return `None`.
-     */
-open func unsubscribe()  {try! rustCall() {
-    uniffi_moq_ffi_fn_method_moqtrack_unsubscribe(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-
-    
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeMoqTrack: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = MoqTrack
-
-    public static func lift(_ handle: UInt64) throws -> MoqTrack {
-        return MoqTrack(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: MoqTrack) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqTrack {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: MoqTrack, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMoqTrack_lift(_ handle: UInt64) throws -> MoqTrack {
-    return try FfiConverterTypeMoqTrack.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMoqTrack_lower(_ value: MoqTrack) -> UInt64 {
-    return FfiConverterTypeMoqTrack.lower(value)
-}
-
-
-
-
-/**
- * A broadcast announced by an origin.
- */
-public struct AnnouncedInfo: Equatable, Hashable {
-    public var path: String
-    public var active: Bool
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(path: String, active: Bool) {
-        self.path = path
-        self.active = active
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension AnnouncedInfo: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeAnnouncedInfo: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AnnouncedInfo {
-        return
-            try AnnouncedInfo(
-                path: FfiConverterString.read(from: &buf), 
-                active: FfiConverterBool.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: AnnouncedInfo, into buf: inout [UInt8]) {
-        FfiConverterString.write(value.path, into: &buf)
-        FfiConverterBool.write(value.active, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAnnouncedInfo_lift(_ buf: RustBuffer) throws -> AnnouncedInfo {
-    return try FfiConverterTypeAnnouncedInfo.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeAnnouncedInfo_lower(_ value: AnnouncedInfo) -> RustBuffer {
-    return FfiConverterTypeAnnouncedInfo.lower(value)
-}
-
-
-/**
- * A decoded media frame.
- */
-public struct FrameData: Equatable, Hashable {
-    public var payload: Data
-    public var timestampUs: UInt64
-    public var keyframe: Bool
-
-    // Default memberwise initializers are never public by default, so we
-    // declare one manually.
-    public init(payload: Data, timestampUs: UInt64, keyframe: Bool) {
-        self.payload = payload
-        self.timestampUs = timestampUs
-        self.keyframe = keyframe
-    }
-
-    
-
-    
-}
-
-#if compiler(>=6)
-extension FrameData: Sendable {}
-#endif
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeFrameData: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FrameData {
-        return
-            try FrameData(
-                payload: FfiConverterData.read(from: &buf), 
-                timestampUs: FfiConverterUInt64.read(from: &buf), 
-                keyframe: FfiConverterBool.read(from: &buf)
-        )
-    }
-
-    public static func write(_ value: FrameData, into buf: inout [UInt8]) {
-        FfiConverterData.write(value.payload, into: &buf)
-        FfiConverterUInt64.write(value.timestampUs, into: &buf)
-        FfiConverterBool.write(value.keyframe, into: &buf)
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFrameData_lift(_ buf: RustBuffer) throws -> FrameData {
-    return try FfiConverterTypeFrameData.lift(buf)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeFrameData_lower(_ value: FrameData) -> RustBuffer {
-    return FfiConverterTypeFrameData.lower(value)
-}
-
-
-public struct MoqAudioRendition: Equatable, Hashable {
+public struct MoqAudio: Equatable, Hashable {
     public var codec: String
     public var description: Data?
     public var sampleRate: UInt32
@@ -1829,16 +2398,16 @@ public struct MoqAudioRendition: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension MoqAudioRendition: Sendable {}
+extension MoqAudio: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqAudioRendition: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqAudioRendition {
+public struct FfiConverterTypeMoqAudio: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqAudio {
         return
-            try MoqAudioRendition(
+            try MoqAudio(
                 codec: FfiConverterString.read(from: &buf), 
                 description: FfiConverterOptionData.read(from: &buf), 
                 sampleRate: FfiConverterUInt32.read(from: &buf), 
@@ -1847,7 +2416,7 @@ public struct FfiConverterTypeMoqAudioRendition: FfiConverterRustBuffer {
         )
     }
 
-    public static func write(_ value: MoqAudioRendition, into buf: inout [UInt8]) {
+    public static func write(_ value: MoqAudio, into buf: inout [UInt8]) {
         FfiConverterString.write(value.codec, into: &buf)
         FfiConverterOptionData.write(value.description, into: &buf)
         FfiConverterUInt32.write(value.sampleRate, into: &buf)
@@ -1860,37 +2429,33 @@ public struct FfiConverterTypeMoqAudioRendition: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqAudioRendition_lift(_ buf: RustBuffer) throws -> MoqAudioRendition {
-    return try FfiConverterTypeMoqAudioRendition.lift(buf)
+public func FfiConverterTypeMoqAudio_lift(_ buf: RustBuffer) throws -> MoqAudio {
+    return try FfiConverterTypeMoqAudio.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqAudioRendition_lower(_ value: MoqAudioRendition) -> RustBuffer {
-    return FfiConverterTypeMoqAudioRendition.lower(value)
+public func FfiConverterTypeMoqAudio_lower(_ value: MoqAudio) -> RustBuffer {
+    return FfiConverterTypeMoqAudio.lower(value)
 }
 
 
 public struct MoqCatalog: Equatable, Hashable {
-    public var video: [String: MoqVideoRendition]
-    public var audio: [String: MoqAudioRendition]
-    public var displayWidth: UInt32?
-    public var displayHeight: UInt32?
+    public var video: [String: MoqVideo]
+    public var audio: [String: MoqAudio]
+    public var display: MoqDimensions?
     public var rotation: Double?
     public var flip: Bool?
-    public var user: MoqUser?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(video: [String: MoqVideoRendition], audio: [String: MoqAudioRendition], displayWidth: UInt32?, displayHeight: UInt32?, rotation: Double?, flip: Bool?, user: MoqUser?) {
+    public init(video: [String: MoqVideo], audio: [String: MoqAudio], display: MoqDimensions?, rotation: Double?, flip: Bool?) {
         self.video = video
         self.audio = audio
-        self.displayWidth = displayWidth
-        self.displayHeight = displayHeight
+        self.display = display
         self.rotation = rotation
         self.flip = flip
-        self.user = user
     }
 
     
@@ -1909,24 +2474,20 @@ public struct FfiConverterTypeMoqCatalog: FfiConverterRustBuffer {
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqCatalog {
         return
             try MoqCatalog(
-                video: FfiConverterDictionaryStringTypeMoqVideoRendition.read(from: &buf), 
-                audio: FfiConverterDictionaryStringTypeMoqAudioRendition.read(from: &buf), 
-                displayWidth: FfiConverterOptionUInt32.read(from: &buf), 
-                displayHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                video: FfiConverterDictionaryStringTypeMoqVideo.read(from: &buf), 
+                audio: FfiConverterDictionaryStringTypeMoqAudio.read(from: &buf), 
+                display: FfiConverterOptionTypeMoqDimensions.read(from: &buf), 
                 rotation: FfiConverterOptionDouble.read(from: &buf), 
-                flip: FfiConverterOptionBool.read(from: &buf), 
-                user: FfiConverterOptionTypeMoqUser.read(from: &buf)
+                flip: FfiConverterOptionBool.read(from: &buf)
         )
     }
 
     public static func write(_ value: MoqCatalog, into buf: inout [UInt8]) {
-        FfiConverterDictionaryStringTypeMoqVideoRendition.write(value.video, into: &buf)
-        FfiConverterDictionaryStringTypeMoqAudioRendition.write(value.audio, into: &buf)
-        FfiConverterOptionUInt32.write(value.displayWidth, into: &buf)
-        FfiConverterOptionUInt32.write(value.displayHeight, into: &buf)
+        FfiConverterDictionaryStringTypeMoqVideo.write(value.video, into: &buf)
+        FfiConverterDictionaryStringTypeMoqAudio.write(value.audio, into: &buf)
+        FfiConverterOptionTypeMoqDimensions.write(value.display, into: &buf)
         FfiConverterOptionDouble.write(value.rotation, into: &buf)
         FfiConverterOptionBool.write(value.flip, into: &buf)
-        FfiConverterOptionTypeMoqUser.write(value.user, into: &buf)
     }
 }
 
@@ -1946,19 +2507,15 @@ public func FfiConverterTypeMoqCatalog_lower(_ value: MoqCatalog) -> RustBuffer 
 }
 
 
-public struct MoqUser: Equatable, Hashable {
-    public var id: String?
-    public var name: String?
-    public var avatar: String?
-    public var color: String?
+public struct MoqDimensions: Equatable, Hashable {
+    public var width: UInt32
+    public var height: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(id: String?, name: String?, avatar: String?, color: String?) {
-        self.id = id
-        self.name = name
-        self.avatar = avatar
-        self.color = color
+    public init(width: UInt32, height: UInt32) {
+        self.width = width
+        self.height = height
     }
 
     
@@ -1967,28 +2524,24 @@ public struct MoqUser: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension MoqUser: Sendable {}
+extension MoqDimensions: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqUser: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqUser {
+public struct FfiConverterTypeMoqDimensions: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqDimensions {
         return
-            try MoqUser(
-                id: FfiConverterOptionString.read(from: &buf), 
-                name: FfiConverterOptionString.read(from: &buf), 
-                avatar: FfiConverterOptionString.read(from: &buf), 
-                color: FfiConverterOptionString.read(from: &buf)
+            try MoqDimensions(
+                width: FfiConverterUInt32.read(from: &buf), 
+                height: FfiConverterUInt32.read(from: &buf)
         )
     }
 
-    public static func write(_ value: MoqUser, into buf: inout [UInt8]) {
-        FfiConverterOptionString.write(value.id, into: &buf)
-        FfiConverterOptionString.write(value.name, into: &buf)
-        FfiConverterOptionString.write(value.avatar, into: &buf)
-        FfiConverterOptionString.write(value.color, into: &buf)
+    public static func write(_ value: MoqDimensions, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.width, into: &buf)
+        FfiConverterUInt32.write(value.height, into: &buf)
     }
 }
 
@@ -1996,37 +2549,94 @@ public struct FfiConverterTypeMoqUser: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqUser_lift(_ buf: RustBuffer) throws -> MoqUser {
-    return try FfiConverterTypeMoqUser.lift(buf)
+public func FfiConverterTypeMoqDimensions_lift(_ buf: RustBuffer) throws -> MoqDimensions {
+    return try FfiConverterTypeMoqDimensions.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqUser_lower(_ value: MoqUser) -> RustBuffer {
-    return FfiConverterTypeMoqUser.lower(value)
+public func FfiConverterTypeMoqDimensions_lower(_ value: MoqDimensions) -> RustBuffer {
+    return FfiConverterTypeMoqDimensions.lower(value)
 }
 
 
-public struct MoqVideoRendition: Equatable, Hashable {
+/**
+ * A media frame.
+ */
+public struct MoqFrame: Equatable, Hashable {
+    public var payload: Data
+    public var timestampUs: UInt64
+    public var keyframe: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(payload: Data, timestampUs: UInt64, keyframe: Bool) {
+        self.payload = payload
+        self.timestampUs = timestampUs
+        self.keyframe = keyframe
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MoqFrame: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqFrame: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqFrame {
+        return
+            try MoqFrame(
+                payload: FfiConverterData.read(from: &buf), 
+                timestampUs: FfiConverterUInt64.read(from: &buf), 
+                keyframe: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MoqFrame, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.payload, into: &buf)
+        FfiConverterUInt64.write(value.timestampUs, into: &buf)
+        FfiConverterBool.write(value.keyframe, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqFrame_lift(_ buf: RustBuffer) throws -> MoqFrame {
+    return try FfiConverterTypeMoqFrame.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqFrame_lower(_ value: MoqFrame) -> RustBuffer {
+    return FfiConverterTypeMoqFrame.lower(value)
+}
+
+
+public struct MoqVideo: Equatable, Hashable {
     public var codec: String
     public var description: Data?
-    public var codedWidth: UInt32?
-    public var codedHeight: UInt32?
-    public var displayRatioWidth: UInt32?
-    public var displayRatioHeight: UInt32?
+    public var coded: MoqDimensions?
+    public var displayRatio: MoqDimensions?
     public var bitrate: UInt64?
     public var framerate: Double?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(codec: String, description: Data?, codedWidth: UInt32?, codedHeight: UInt32?, displayRatioWidth: UInt32?, displayRatioHeight: UInt32?, bitrate: UInt64?, framerate: Double?) {
+    public init(codec: String, description: Data?, coded: MoqDimensions?, displayRatio: MoqDimensions?, bitrate: UInt64?, framerate: Double?) {
         self.codec = codec
         self.description = description
-        self.codedWidth = codedWidth
-        self.codedHeight = codedHeight
-        self.displayRatioWidth = displayRatioWidth
-        self.displayRatioHeight = displayRatioHeight
+        self.coded = coded
+        self.displayRatio = displayRatio
         self.bitrate = bitrate
         self.framerate = framerate
     }
@@ -2037,34 +2647,30 @@ public struct MoqVideoRendition: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension MoqVideoRendition: Sendable {}
+extension MoqVideo: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeMoqVideoRendition: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqVideoRendition {
+public struct FfiConverterTypeMoqVideo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqVideo {
         return
-            try MoqVideoRendition(
+            try MoqVideo(
                 codec: FfiConverterString.read(from: &buf), 
                 description: FfiConverterOptionData.read(from: &buf), 
-                codedWidth: FfiConverterOptionUInt32.read(from: &buf), 
-                codedHeight: FfiConverterOptionUInt32.read(from: &buf), 
-                displayRatioWidth: FfiConverterOptionUInt32.read(from: &buf), 
-                displayRatioHeight: FfiConverterOptionUInt32.read(from: &buf), 
+                coded: FfiConverterOptionTypeMoqDimensions.read(from: &buf), 
+                displayRatio: FfiConverterOptionTypeMoqDimensions.read(from: &buf), 
                 bitrate: FfiConverterOptionUInt64.read(from: &buf), 
                 framerate: FfiConverterOptionDouble.read(from: &buf)
         )
     }
 
-    public static func write(_ value: MoqVideoRendition, into buf: inout [UInt8]) {
+    public static func write(_ value: MoqVideo, into buf: inout [UInt8]) {
         FfiConverterString.write(value.codec, into: &buf)
         FfiConverterOptionData.write(value.description, into: &buf)
-        FfiConverterOptionUInt32.write(value.codedWidth, into: &buf)
-        FfiConverterOptionUInt32.write(value.codedHeight, into: &buf)
-        FfiConverterOptionUInt32.write(value.displayRatioWidth, into: &buf)
-        FfiConverterOptionUInt32.write(value.displayRatioHeight, into: &buf)
+        FfiConverterOptionTypeMoqDimensions.write(value.coded, into: &buf)
+        FfiConverterOptionTypeMoqDimensions.write(value.displayRatio, into: &buf)
         FfiConverterOptionUInt64.write(value.bitrate, into: &buf)
         FfiConverterOptionDouble.write(value.framerate, into: &buf)
     }
@@ -2074,15 +2680,15 @@ public struct FfiConverterTypeMoqVideoRendition: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqVideoRendition_lift(_ buf: RustBuffer) throws -> MoqVideoRendition {
-    return try FfiConverterTypeMoqVideoRendition.lift(buf)
+public func FfiConverterTypeMoqVideo_lift(_ buf: RustBuffer) throws -> MoqVideo {
+    return try FfiConverterTypeMoqVideo.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeMoqVideoRendition_lower(_ value: MoqVideoRendition) -> RustBuffer {
-    return FfiConverterTypeMoqVideoRendition.lower(value)
+public func FfiConverterTypeMoqVideo_lower(_ value: MoqVideo) -> RustBuffer {
+    return FfiConverterTypeMoqVideo.lower(value)
 }
 
 
@@ -2093,8 +2699,30 @@ public enum MoqError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErro
 
     
     
-    case Error(msg: String
-    )
+    case Protocol(message: String)
+    
+    case Media(message: String)
+    
+    case Url(message: String)
+    
+    case TimeOverflow(message: String)
+    
+    case LogLevel(message: String)
+    
+    case Task(message: String)
+    
+    case Cancelled(message: String)
+    
+    case Closed(message: String)
+    
+    case Connect(message: String)
+    
+    case Codec(message: String)
+    
+    case Unauthorized(message: String)
+    
+    case Log(message: String)
+    
 
     
 
@@ -2124,11 +2752,56 @@ public struct FfiConverterTypeMoqError: FfiConverterRustBuffer {
         
 
         
-        case 1: return .Error(
-            msg: try FfiConverterString.read(from: &buf)
-            )
+        case 1: return .Protocol(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 2: return .Media(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .Url(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 4: return .TimeOverflow(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 5: return .LogLevel(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 6: return .Task(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 7: return .Cancelled(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 8: return .Closed(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 9: return .Connect(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 10: return .Codec(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 11: return .Unauthorized(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 12: return .Log(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
 
-         default: throw UniffiInternalError.unexpectedEnumCase
+        default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
@@ -2138,11 +2811,32 @@ public struct FfiConverterTypeMoqError: FfiConverterRustBuffer {
         
 
         
-        
-        case let .Error(msg):
+        case .Protocol(_ /* message is ignored*/):
             writeInt(&buf, Int32(1))
-            FfiConverterString.write(msg, into: &buf)
-            
+        case .Media(_ /* message is ignored*/):
+            writeInt(&buf, Int32(2))
+        case .Url(_ /* message is ignored*/):
+            writeInt(&buf, Int32(3))
+        case .TimeOverflow(_ /* message is ignored*/):
+            writeInt(&buf, Int32(4))
+        case .LogLevel(_ /* message is ignored*/):
+            writeInt(&buf, Int32(5))
+        case .Task(_ /* message is ignored*/):
+            writeInt(&buf, Int32(6))
+        case .Cancelled(_ /* message is ignored*/):
+            writeInt(&buf, Int32(7))
+        case .Closed(_ /* message is ignored*/):
+            writeInt(&buf, Int32(8))
+        case .Connect(_ /* message is ignored*/):
+            writeInt(&buf, Int32(9))
+        case .Codec(_ /* message is ignored*/):
+            writeInt(&buf, Int32(10))
+        case .Unauthorized(_ /* message is ignored*/):
+            writeInt(&buf, Int32(11))
+        case .Log(_ /* message is ignored*/):
+            writeInt(&buf, Int32(12))
+
+        
         }
     }
 }
@@ -2160,30 +2854,6 @@ public func FfiConverterTypeMoqError_lift(_ buf: RustBuffer) throws -> MoqError 
 #endif
 public func FfiConverterTypeMoqError_lower(_ value: MoqError) -> RustBuffer {
     return FfiConverterTypeMoqError.lower(value)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
-    typealias SwiftType = UInt32?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterUInt32.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterUInt32.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
 }
 
 #if swift(>=5.8)
@@ -2261,30 +2931,6 @@ fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
-    typealias SwiftType = String?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterString.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterString.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
 fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
     typealias SwiftType = Data?
 
@@ -2309,8 +2955,8 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeMoqOrigin: FfiConverterRustBuffer {
-    typealias SwiftType = MoqOrigin?
+fileprivate struct FfiConverterOptionTypeMoqAnnouncement: FfiConverterRustBuffer {
+    typealias SwiftType = MoqAnnouncement?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -2318,13 +2964,13 @@ fileprivate struct FfiConverterOptionTypeMoqOrigin: FfiConverterRustBuffer {
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeMoqOrigin.write(value, into: &buf)
+        FfiConverterTypeMoqAnnouncement.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeMoqOrigin.read(from: &buf)
+        case 1: return try FfiConverterTypeMoqAnnouncement.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -2333,8 +2979,8 @@ fileprivate struct FfiConverterOptionTypeMoqOrigin: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeAnnouncedInfo: FfiConverterRustBuffer {
-    typealias SwiftType = AnnouncedInfo?
+fileprivate struct FfiConverterOptionTypeMoqOriginProducer: FfiConverterRustBuffer {
+    typealias SwiftType = MoqOriginProducer?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -2342,37 +2988,13 @@ fileprivate struct FfiConverterOptionTypeAnnouncedInfo: FfiConverterRustBuffer {
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeAnnouncedInfo.write(value, into: &buf)
+        FfiConverterTypeMoqOriginProducer.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeAnnouncedInfo.read(from: &buf)
-        default: throw UniffiInternalError.unexpectedOptionalTag
-        }
-    }
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-fileprivate struct FfiConverterOptionTypeFrameData: FfiConverterRustBuffer {
-    typealias SwiftType = FrameData?
-
-    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
-        guard let value = value else {
-            writeInt(&buf, Int8(0))
-            return
-        }
-        writeInt(&buf, Int8(1))
-        FfiConverterTypeFrameData.write(value, into: &buf)
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
-        switch try readInt(&buf) as Int8 {
-        case 0: return nil
-        case 1: return try FfiConverterTypeFrameData.read(from: &buf)
+        case 1: return try FfiConverterTypeMoqOriginProducer.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -2405,8 +3027,8 @@ fileprivate struct FfiConverterOptionTypeMoqCatalog: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeMoqUser: FfiConverterRustBuffer {
-    typealias SwiftType = MoqUser?
+fileprivate struct FfiConverterOptionTypeMoqDimensions: FfiConverterRustBuffer {
+    typealias SwiftType = MoqDimensions?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -2414,13 +3036,13 @@ fileprivate struct FfiConverterOptionTypeMoqUser: FfiConverterRustBuffer {
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeMoqUser.write(value, into: &buf)
+        FfiConverterTypeMoqDimensions.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeMoqUser.read(from: &buf)
+        case 1: return try FfiConverterTypeMoqDimensions.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -2429,23 +3051,47 @@ fileprivate struct FfiConverterOptionTypeMoqUser: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterDictionaryStringTypeMoqAudioRendition: FfiConverterRustBuffer {
-    public static func write(_ value: [String: MoqAudioRendition], into buf: inout [UInt8]) {
+fileprivate struct FfiConverterOptionTypeMoqFrame: FfiConverterRustBuffer {
+    typealias SwiftType = MoqFrame?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMoqFrame.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMoqFrame.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringTypeMoqAudio: FfiConverterRustBuffer {
+    public static func write(_ value: [String: MoqAudio], into buf: inout [UInt8]) {
         let len = Int32(value.count)
         writeInt(&buf, len)
         for (key, value) in value {
             FfiConverterString.write(key, into: &buf)
-            FfiConverterTypeMoqAudioRendition.write(value, into: &buf)
+            FfiConverterTypeMoqAudio.write(value, into: &buf)
         }
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: MoqAudioRendition] {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: MoqAudio] {
         let len: Int32 = try readInt(&buf)
-        var dict = [String: MoqAudioRendition]()
+        var dict = [String: MoqAudio]()
         dict.reserveCapacity(Int(len))
         for _ in 0..<len {
             let key = try FfiConverterString.read(from: &buf)
-            let value = try FfiConverterTypeMoqAudioRendition.read(from: &buf)
+            let value = try FfiConverterTypeMoqAudio.read(from: &buf)
             dict[key] = value
         }
         return dict
@@ -2455,23 +3101,23 @@ fileprivate struct FfiConverterDictionaryStringTypeMoqAudioRendition: FfiConvert
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterDictionaryStringTypeMoqVideoRendition: FfiConverterRustBuffer {
-    public static func write(_ value: [String: MoqVideoRendition], into buf: inout [UInt8]) {
+fileprivate struct FfiConverterDictionaryStringTypeMoqVideo: FfiConverterRustBuffer {
+    public static func write(_ value: [String: MoqVideo], into buf: inout [UInt8]) {
         let len = Int32(value.count)
         writeInt(&buf, len)
         for (key, value) in value {
             FfiConverterString.write(key, into: &buf)
-            FfiConverterTypeMoqVideoRendition.write(value, into: &buf)
+            FfiConverterTypeMoqVideo.write(value, into: &buf)
         }
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: MoqVideoRendition] {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: MoqVideo] {
         let len: Int32 = try readInt(&buf)
-        var dict = [String: MoqVideoRendition]()
+        var dict = [String: MoqVideo]()
         dict.reserveCapacity(Int(len))
         for _ in 0..<len {
             let key = try FfiConverterString.read(from: &buf)
-            let value = try FfiConverterTypeMoqVideoRendition.read(from: &buf)
+            let value = try FfiConverterTypeMoqVideo.read(from: &buf)
             dict[key] = value
         }
         return dict
@@ -2526,50 +3172,15 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
     }
 }
 /**
- * Connect to a MoQ server.
- *
- * `publish` and `consume` are optional origins for the respective directions.
- */
-public func moqConnect(url: String, publish: MoqOrigin?, consume: MoqOrigin?)async throws  -> MoqSession  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_moq_ffi_fn_func_moq_connect(FfiConverterString.lower(url),FfiConverterOptionTypeMoqOrigin.lower(publish),FfiConverterOptionTypeMoqOrigin.lower(consume)
-                )
-            },
-            pollFunc: ffi_moq_ffi_rust_future_poll_u64,
-            completeFunc: ffi_moq_ffi_rust_future_complete_u64,
-            freeFunc: ffi_moq_ffi_rust_future_free_u64,
-            liftFunc: FfiConverterTypeMoqSession_lift,
-            errorHandler: FfiConverterTypeMoqError_lift
-        )
-}
-/**
  * Initialize logging with a level string: "error", "warn", "info", "debug", "trace", or "".
+ *
+ * Returns an error if called more than once.
  */
 public func moqLogLevel(level: String)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
     uniffi_moq_ffi_fn_func_moq_log_level(
         FfiConverterString.lower(level),$0
     )
 }
-}
-/**
- * Create a new origin for publishing and/or consuming broadcasts.
- */
-public func moqOriginCreate() -> MoqOrigin  {
-    return try!  FfiConverterTypeMoqOrigin_lift(try! rustCall() {
-    uniffi_moq_ffi_fn_func_moq_origin_create($0
-    )
-})
-}
-/**
- * Create a new broadcast for publishing media tracks.
- */
-public func moqPublishCreate()throws  -> MoqPublisher  {
-    return try  FfiConverterTypeMoqPublisher_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_func_moq_publish_create($0
-    )
-})
 }
 
 private enum InitializationResult {
@@ -2587,58 +3198,97 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_moq_ffi_checksum_func_moq_connect() != 2362) {
+    if (uniffi_moq_ffi_checksum_func_moq_log_level() != 27140) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_func_moq_log_level() != 55587) {
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_catalog() != 28366) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_func_moq_origin_create() != 47301) {
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_media() != 17857) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_func_moq_publish_create() != 6174) {
+    if (uniffi_moq_ffi_checksum_method_moqcatalogconsumer_cancel() != 1059) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqannounced_next() != 26814) {
+    if (uniffi_moq_ffi_checksum_method_moqcatalogconsumer_next() != 42881) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqbroadcast_catalog() != 38614) {
+    if (uniffi_moq_ffi_checksum_method_moqmediaconsumer_cancel() != 12542) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqbroadcast_subscribe_track() != 54522) {
+    if (uniffi_moq_ffi_checksum_method_moqmediaconsumer_next() != 26125) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqcatalogstream_next() != 33056) {
+    if (uniffi_moq_ffi_checksum_method_moqannounced_cancel() != 11787) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqmedia_finish() != 54605) {
+    if (uniffi_moq_ffi_checksum_method_moqannounced_next() != 30814) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqmedia_write_frame() != 44640) {
+    if (uniffi_moq_ffi_checksum_method_moqannouncedbroadcast_available() != 46046) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqorigin_announced() != 62231) {
+    if (uniffi_moq_ffi_checksum_method_moqannouncedbroadcast_cancel() != 63780) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqorigin_consume() != 1304) {
+    if (uniffi_moq_ffi_checksum_method_moqannouncement_broadcast() != 8318) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqorigin_publish() != 60848) {
+    if (uniffi_moq_ffi_checksum_method_moqannouncement_path() != 33642) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqpublisher_media_ordered() != 32403) {
+    if (uniffi_moq_ffi_checksum_method_moqoriginconsumer_announced() != 65430) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqsession_closed() != 18448) {
+    if (uniffi_moq_ffi_checksum_method_moqoriginconsumer_announced_broadcast() != 54838) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqsession_disconnect() != 6767) {
+    if (uniffi_moq_ffi_checksum_method_moqoriginproducer_consume() != 34292) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqtrack_next() != 58243) {
+    if (uniffi_moq_ffi_checksum_method_moqoriginproducer_publish() != 24937) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqtrack_unsubscribe() != 53690) {
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_finish() != 23327) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_publish_media() != 59397) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqmediaproducer_finish() != 13508) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqmediaproducer_write_frame() != 4813) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqclient_cancel() != 42343) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqclient_connect() != 27457) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqclient_set_consume() != 55200) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqclient_set_publish() != 56893) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqclient_set_tls_disable_verify() != 17397) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqsession_cancel() != 24930) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqsession_closed() != 41657) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_constructor_moqoriginproducer_new() != 8988) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_constructor_moqbroadcastproducer_new() != 4251) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_constructor_moqclient_new() != 62327) {
         return InitializationResult.apiChecksumMismatch
     }
 

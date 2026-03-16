@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var relayURL = "http://192.168.92.140:4443"
-    @State private var broadcastPath = "anon/bbb/ccc"
+    @State private var broadcastPath = "bbb"
     @StateObject private var player = PlayerViewModel()
 
     @State var paused: Bool = false

@@ -74,7 +74,7 @@ public final class MoQAVPlayer {
     public func play() async throws {
         guard videoTask == nil && audioTask == nil else { return }
 
-        try await subscribe()
+        try subscribe()
 
         let shouldSync = audioSubscription != nil && videoSubscription != nil
         if shouldSync {
@@ -243,7 +243,7 @@ public final class MoQAVPlayer {
 
     // MARK: - Private
 
-    private func subscribe() async throws {
+    private func subscribe() throws {
         for track in tracks {
             if let vInfo = track as? MoQVideoTrackInfo {
                 MoQLogger.player.debug(
@@ -259,7 +259,7 @@ public final class MoQAVPlayer {
                     )
                 }
                 do {
-                    videoSubscription = try await MoQMediaTrack(
+                    videoSubscription = try MoQMediaTrack(
                         broadcast: vInfo.broadcast, name: vInfo.name,
                         maxLatencyMs: maxLatencyMs)
                 } catch {
@@ -281,7 +281,7 @@ public final class MoQAVPlayer {
                     )
                 }
                 do {
-                    audioSubscription = try await MoQMediaTrack(
+                    audioSubscription = try MoQMediaTrack(
                         broadcast: aInfo.broadcast, name: aInfo.name,
                         maxLatencyMs: maxLatencyMs)
                 } catch {

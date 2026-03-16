@@ -10,7 +10,7 @@ final class AudioDecoder: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let inputFormat: AVAudioFormat
 
-    init(config: MoqAudioRendition) throws {
+    init(config: MoqAudio) throws {
         let codec = config.codec.lowercased()
 
         let formatID: AudioFormatID

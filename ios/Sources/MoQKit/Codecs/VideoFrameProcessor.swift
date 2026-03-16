@@ -11,7 +11,7 @@
         private var formatDescription: CMFormatDescription?
         private let lock = NSLock()
 
-        init(config: MoqVideoRendition) throws {
+        init(config: MoqVideo) throws {
             self.codec = config.codec.lowercased()
             self.isAvc3 = codec.hasPrefix("avc3")
 

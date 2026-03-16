@@ -38,24 +38,30 @@ public final class MoQSession {
     public let broadcasts: AsyncStream<MoQBroadcastEvent>
 
     private let url: String
+    private let prefix: String
 
     private let stateContinuation: AsyncStream<MoQSessionState>.Continuation
     private let broadcastsContinuation: AsyncStream<MoQBroadcastEvent>.Continuation
     private var currentState: MoQSessionState = .idle
 
     // Pipeline objects
-    private var origin: MoqOrigin?
+    private var client: MoqClient?
+    private var origin: MoqOriginProducer?
     private var session: MoqSession?
+    private var consumer: MoqOriginConsumer?
+    private var announced: MoqAnnounced?
 
     // Per-path broadcast state
     private var activeBroadcasts: [String: Task<Void, Never>] = [:]
+    private var catalogConsumers: [String: MoqCatalogConsumer] = [:]
 
     // Background tasks
     private var sessionMonitorTask: Task<Void, Never>?
     private var announcedTask: Task<Void, Never>?
 
-    public init(url: String) {
+    public init(url: String, prefix: String = "") {
         self.url = url
+        self.prefix = prefix
 
         var stateCont: AsyncStream<MoQSessionState>.Continuation!
         self.state = AsyncStream { stateCont = $0 }
@@ -79,12 +85,16 @@ public final class MoQSession {
         transition(to: .connecting)
 
         do {
-            // 1. Create origin
-            let origin = moqOriginCreate()
+            // 1. Create origin and client
+            let origin = MoqOriginProducer()
             self.origin = origin
 
-            // 2. Connect session with consume origin
-            let session = try await moqConnect(url: url, publish: nil, consume: origin)
+            let client = MoqClient()
+            client.setConsume(origin: origin)
+            self.client = client
+
+            // 2. Connect session
+            let session = try await client.connect(url: url)
             self.session = session
 
             // 3. Connection established
@@ -110,31 +120,39 @@ public final class MoQSession {
             }
 
             // 5. Watch announcements
-            let announced = origin.announced()
+            let consumer = origin.consume()
+            self.consumer = consumer
+            let announced = try consumer.announced(prefix: "")
+            self.announced = announced
+
             announcedTask = Task { [weak self] in
                 while let self, !Task.isCancelled {
                     do {
-                        guard let info = try await announced.next() else { break }
-                        let path = info.path
+                        print("waiting for announcements")
+                        guard let announcement = try await announced.next() else {
+                            print("leaving announcements")
+                            break
+                        }
+                        print("announcement")
+                        let path = announcement.path()
+                        let broadcast = announcement.broadcast()
 
                         // Cancel existing broadcast task for this path
                         self.activeBroadcasts[path]?.cancel()
                         self.activeBroadcasts.removeValue(forKey: path)
+                        self.catalogConsumers[path]?.cancel()
+                        self.catalogConsumers.removeValue(forKey: path)
 
-                        if info.active {
-                            MoQLogger.session.debug("Broadcast active: \(path)")
-                            do {
-                                try await self.handleActiveBroadcast(path: path, origin: origin)
-                            } catch {
-                                MoQLogger.session.error(
-                                    "handleActiveBroadcast failed for \(path): \(error)")
-                                self.transition(to: .error("\(error)"))
-                                await self.close()
-                                return
-                            }
-                        } else {
-                            MoQLogger.session.debug("Broadcast unavailable: \(path)")
-                            self.broadcastsContinuation.yield(.unavailable(path: path))
+                        MoQLogger.session.debug("Broadcast active: \(path)")
+                        do {
+                            try self.handleActiveBroadcast(
+                                path: path, broadcast: broadcast)
+                        } catch {
+                            MoQLogger.session.error(
+                                "handleActiveBroadcast failed for \(path): \(error)")
+                            self.transition(to: .error("\(error)"))
+                            await self.close()
+                            return
                         }
                     } catch {
                         MoQLogger.session.error("announced() failed: \(error)")
@@ -175,29 +193,37 @@ public final class MoQSession {
         sessionMonitorTask?.cancel()
         announcedTask?.cancel()
         for (_, task) in activeBroadcasts { task.cancel() }
+        for (_, consumer) in catalogConsumers { consumer.cancel() }
+        announced?.cancel()
+        client?.cancel()
         stateContinuation.finish()
         broadcastsContinuation.finish()
     }
 
     // MARK: - Private
 
-    private func handleActiveBroadcast(path: String, origin: MoqOrigin) async throws {
+    private func handleActiveBroadcast(path: String, broadcast: MoqBroadcastConsumer) throws {
         MoQLogger.session.debug("Subscribing to catalog for \(path)")
-        let broadcast = try origin.consume(path: path)
-        let catalogStream = try await broadcast.catalog()
+        let catalogConsumer = try broadcast.subscribeCatalog()
+        self.catalogConsumers[path] = catalogConsumer
 
         let task = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 do {
-                    guard let catalog = try await catalogStream.next() else { break }
+                    guard let catalog = try await catalogConsumer.next() else {
+                        MoQLogger.session.debug("Catalog stream ended for \(path)")
+                        self.broadcastsContinuation.yield(.unavailable(path: path))
+                        self.catalogConsumers.removeValue(forKey: path)
+                        break
+                    }
                     guard !Task.isCancelled else { break }
                     MoQLogger.session.debug("Catalog updated for \(path)")
                     let info = self.buildBroadcastInfo(
                         from: catalog, broadcast: broadcast, path: path)
                     self.broadcastsContinuation.yield(.available(info))
                 } catch {
-                    MoQLogger.session.error("Catalog error for \(path): \(error)")
+                    MoQLogger.session.error("subscribeCatalog() failed (\(path)): \(error)")
                     break
                 }
             }
@@ -214,7 +240,7 @@ public final class MoQSession {
 
     /// Build a `MoQBroadcastInfo` by enumerating all video and audio renditions in the catalog.
     private func buildBroadcastInfo(
-        from catalog: MoqCatalog, broadcast: MoqBroadcast, path: String
+        from catalog: MoqCatalog, broadcast: MoqBroadcastConsumer, path: String
     ) -> MoQBroadcastInfo {
         let videoTracks = catalog.video.map { (name, rendition) in
             MoQVideoTrackInfo(name: name, config: rendition, broadcast: broadcast)
@@ -237,8 +263,19 @@ public final class MoQSession {
         for (_, task) in activeBroadcasts { task.cancel() }
         activeBroadcasts.removeAll()
 
-        session?.disconnect()
+        for (_, consumer) in catalogConsumers { consumer.cancel() }
+        catalogConsumers.removeAll()
+
+        announced?.cancel()
+        announced = nil
+
+        session?.cancel(code: 0)
         session = nil
+
+        client?.cancel()
+        client = nil
+
+        consumer = nil
         origin = nil
     }
 }

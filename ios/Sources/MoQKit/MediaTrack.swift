@@ -12,20 +12,20 @@ public enum MoQTrackState: Sendable, Equatable {
 // MARK: - Media Track
 
 public final class MoQMediaTrack: @unchecked Sendable {
-    public let frames: AsyncStream<MoQFrame>
+    public let frames: AsyncStream<MoqFrame>
     public let state: AsyncStream<MoQTrackState>
 
-    private let track: MoqTrack
-    private let framesContinuation: AsyncStream<MoQFrame>.Continuation
+    private let track: MoqMediaConsumer
+    private let framesContinuation: AsyncStream<MoqFrame>.Continuation
     private let stateContinuation: AsyncStream<MoQTrackState>.Continuation
     private var readTask: Task<Void, Never>?
 
-    init(broadcast: MoqBroadcast, name: String, maxLatencyMs: UInt64) async throws {
-        let track = try await broadcast.subscribeTrack(name: name, maxLatencyMs: maxLatencyMs)
+    init(broadcast: MoqBroadcastConsumer, name: String, maxLatencyMs: UInt64) throws {
+        let track = try broadcast.subscribeMedia(name: name, maxLatencyMs: maxLatencyMs)
         self.track = track
 
-        var framesCont: AsyncStream<MoQFrame>.Continuation!
-        let framesStream = AsyncStream<MoQFrame> { framesCont = $0 }
+        var framesCont: AsyncStream<MoqFrame>.Continuation!
+        let framesStream = AsyncStream<MoqFrame> { framesCont = $0 }
 
         var stateCont: AsyncStream<MoQTrackState>.Continuation!
         let stateStream = AsyncStream<MoQTrackState> { stateCont = $0 }
@@ -46,7 +46,7 @@ public final class MoQMediaTrack: @unchecked Sendable {
 
             while !Task.isCancelled {
                 do {
-                    guard let frameData = try await track.next() else {
+                    guard let frame = try await track.next() else {
                         stateCont.yield(.closed)
                         return
                     }
@@ -54,12 +54,7 @@ public final class MoQMediaTrack: @unchecked Sendable {
                         stateCont.yield(.active)
                         isFirstFrame = false
                     }
-                    framesCont.yield(
-                        MoQFrame(
-                            payload: frameData.payload,
-                            timestampUs: frameData.timestampUs,
-                            keyframe: frameData.keyframe
-                        ))
+                    framesCont.yield(frame)
                 } catch {
                     stateCont.yield(.error(error.localizedDescription))
                     return
@@ -69,7 +64,7 @@ public final class MoQMediaTrack: @unchecked Sendable {
     }
 
     public func close() {
-        track.unsubscribe()
+        track.cancel()
         readTask?.cancel()
         stateContinuation.yield(.closed)
         stateContinuation.finish()
@@ -77,7 +72,7 @@ public final class MoQMediaTrack: @unchecked Sendable {
     }
 
     deinit {
-        track.unsubscribe()
+        track.cancel()
         readTask?.cancel()
         stateContinuation.finish()
         framesContinuation.finish()

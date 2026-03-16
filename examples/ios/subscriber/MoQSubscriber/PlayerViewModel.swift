@@ -151,7 +151,7 @@ final class PlayerViewModel: ObservableObject {
                     }
                     var tracks: [any MoQTrackInfo] = []
                     if let v = info.videoTracks.first { tracks.append(v) }
-                    // if let a = info.audioTracks.first { tracks.append(a) }
+                    if let a = info.audioTracks.first { tracks.append(a) }
 
                     switch self.playerType {
                     case .avPlayer:

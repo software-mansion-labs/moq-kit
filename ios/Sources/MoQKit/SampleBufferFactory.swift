@@ -7,7 +7,7 @@ enum SampleBufferFactory {
 
     // MARK: - Video Format Descriptions
 
-    static func makeVideoFormatDescription(from config: MoqVideoRendition) throws
+    static func makeVideoFormatDescription(from config: MoqVideo) throws
         -> CMFormatDescription
     {
         guard let descData = config.description else {
@@ -67,7 +67,7 @@ enum SampleBufferFactory {
 
     // MARK: - Audio Format Descriptions
 
-    static func makeAudioFormatDescription(from config: MoqAudioRendition) throws
+    static func makeAudioFormatDescription(from config: MoqAudio) throws
         -> CMFormatDescription
     {
         let codec = config.codec.lowercased()

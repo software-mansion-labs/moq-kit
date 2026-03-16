@@ -91,7 +91,7 @@
         public func play() async throws {
             guard videoTask == nil && audioTask == nil else { return }
 
-            try await subscribe()
+            try subscribe()
 
             let targetUs = targetBufferingMs * 1000
             
@@ -227,7 +227,6 @@
                                 // Video-only mode: insert into jitter buffer for CADisplayLink to consume
                                 vj.insert(item: sb, timestampUs: frame.timestampUs)
                             } else {
-                                print("pushing frame mate")
                                 videoLatency.record(ptsUs: frame.timestampUs)
                                 layer.enqueue(sb)
                             }
@@ -347,7 +346,7 @@
 
         // MARK: - Private
 
-        private func subscribe() async throws {
+        private func subscribe() throws {
             for track in tracks {
                 if let vInfo = track as? MoQVideoTrackInfo {
                     MoQLogger.player.debug(
@@ -361,7 +360,7 @@
                             "Failed to create video frame processor for \(vInfo.name): \(error)")
                     }
                     do {
-                        videoSubscription = try await MoQMediaTrack(
+                        videoSubscription = try MoQMediaTrack(
                             broadcast: vInfo.broadcast, name: vInfo.name,
                             maxLatencyMs: targetBufferingMs)
                     } catch {
@@ -372,7 +371,7 @@
                     MoQLogger.player.debug(
                         "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription)")
                     do {
-                        audioSubscription = try await MoQMediaTrack(
+                        audioSubscription = try MoQMediaTrack(
                             broadcast: aInfo.broadcast, name: aInfo.name,
                             maxLatencyMs: targetBufferingMs)
                     } catch {

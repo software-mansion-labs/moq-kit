@@ -114,7 +114,7 @@
         private let sharedBaseTs: BaseTimestamp
 
         init(
-            config: MoqAudioRendition,
+            config: MoqAudio,
             targetBufferingUs: UInt64,
             sharedBaseTs: BaseTimestamp,
             latencyTracker: LatencyTracker
