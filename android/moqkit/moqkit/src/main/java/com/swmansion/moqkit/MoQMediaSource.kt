@@ -29,14 +29,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
-import uniffi.moq.FrameData
+import uniffi.moq.MoqFrame
 import java.net.URI
 
 internal class MoQMediaSource(
     private val videoFormat: Format?,
     private val audioFormat: Format?,
-    private val videoFlow: Flow<FrameData>?,
-    private val audioFlow: Flow<FrameData>?,
+    private val videoFlow: Flow<MoqFrame>?,
+    private val audioFlow: Flow<MoqFrame>?,
     private val scope: CoroutineScope,
 ) : BaseMediaSource() {
     companion object {

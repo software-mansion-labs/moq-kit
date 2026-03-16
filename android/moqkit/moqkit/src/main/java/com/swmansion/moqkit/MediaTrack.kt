@@ -5,23 +5,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import uniffi.moq.FrameData
-import uniffi.moq.MoqBroadcast
+import uniffi.moq.MoqBroadcastConsumer
+import uniffi.moq.MoqFrame
 
 private const val TAG = "MediaTrack"
 
 fun subscribeTrack(
-    broadcast: MoqBroadcast,
+    broadcast: MoqBroadcastConsumer,
     name: String,
     maxLatencyMs: ULong = 1000u,
-): Flow<FrameData> = flow {
-    var track: uniffi.moq.MoqTrack? = null
+): Flow<MoqFrame> = flow {
+    var consumer: uniffi.moq.MoqMediaConsumer? = null
     try {
         Log.d(TAG, "Subscribing to track '$name' (maxLatencyMs=$maxLatencyMs)")
-        track = broadcast.subscribeTrack(name, maxLatencyMs)
+        consumer = broadcast.subscribeMedia(name, maxLatencyMs)
         Log.d(TAG, "Track '$name' subscribed successfully")
         while (true) {
-            val frame = track.next() ?: break
+            val frame = consumer.next() ?: break
             emit(frame)
         }
         Log.d(TAG, "Track '$name' stream ended")
@@ -30,6 +30,7 @@ fun subscribeTrack(
         throw e
     } finally {
         Log.d(TAG, "Unsubscribing from track '$name'")
-        track?.unsubscribe()
+        consumer?.cancel()
+        consumer?.close()
     }
 }.flowOn(Dispatchers.IO)

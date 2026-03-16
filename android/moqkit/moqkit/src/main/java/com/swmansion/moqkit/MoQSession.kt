@@ -11,12 +11,14 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import uniffi.moq.MoqBroadcast
-import uniffi.moq.MoqOrigin
+import uniffi.moq.MoqAnnounced
+import uniffi.moq.MoqBroadcastConsumer
+import uniffi.moq.MoqCatalogConsumer
+import uniffi.moq.MoqClient
+import uniffi.moq.MoqOriginConsumer
+import uniffi.moq.MoqOriginProducer
 import android.util.Log
 import uniffi.moq.MoqSession as UniMoqSession
-import uniffi.moq.moqConnect
-import uniffi.moq.moqOriginCreate
 
 class MoQSession(
     private val url: String,
@@ -42,23 +44,31 @@ class MoQSession(
     val broadcasts: SharedFlow<MoQBroadcastEvent> = _broadcasts
 
     private var session: UniMoqSession? = null
-    private var origin: MoqOrigin? = null
+    private var client: MoqClient? = null
+    private var origin: MoqOriginProducer? = null
+    private var consumer: MoqOriginConsumer? = null
+    private var announced: MoqAnnounced? = null
     private var monitorJob: Job? = null
     private var announcedJob: Job? = null
 
-    // Per-path broadcast state: path → catalogWatchJob
+    // Per-path broadcast state: path -> catalogWatchJob
     private val activeBroadcasts = mutableMapOf<String, Job>()
+    private val catalogConsumers = mutableMapOf<String, MoqCatalogConsumer>()
 
     suspend fun connect() {
         check(_state.value == State.Idle) { "Session already started" }
         _state.value = State.Connecting
         Log.d(TAG, "Connecting to $url")
         try {
-            val newOrigin = moqOriginCreate()
+            val newOrigin = MoqOriginProducer()
             origin = newOrigin
             Log.d(TAG, "Origin created")
 
-            val newSession = moqConnect(url, publish = null, consume = newOrigin)
+            val newClient = MoqClient()
+            client = newClient
+            newClient.setConsume(newOrigin)
+
+            val newSession = newClient.connect(url)
             session = newSession
             _state.value = State.Connected
             Log.d(TAG, "Connected successfully")
@@ -81,28 +91,32 @@ class MoQSession(
             }
 
             // Watch announcements
-            val announced = newOrigin.announced()
+            val newConsumer = newOrigin.consume()
+            consumer = newConsumer
+            val newAnnounced = newConsumer.announced("")
+            announced = newAnnounced
+
             announcedJob = scope.launch {
                 Log.d(TAG, "Watching for announcements")
                 try {
                     while (true) {
-                        val info = announced.next() ?: break
-                        val path = info.path
-                        Log.d(TAG, "Announcement: path='$path' active=${info.active}")
+                        val announcement = newAnnounced.next() ?: break
+                        val path = announcement.path()
+                        Log.d(TAG, "Announcement: path='$path'")
 
                         // Cancel existing broadcast for this path
                         activeBroadcasts.remove(path)?.let {
                             Log.d(TAG, "Cancelling previous broadcast for '$path'")
                             it.cancel()
                         }
-
-                        if (info.active) {
-                            val broadcast = newOrigin.consume(path)
-                            val job = scope.launch { watchCatalog(path, broadcast) }
-                            activeBroadcasts[path] = job
-                        } else {
-                            _broadcasts.emit(MoQBroadcastEvent.Unavailable(path))
+                        catalogConsumers.remove(path)?.let {
+                            it.cancel()
+                            it.close()
                         }
+
+                        val broadcast = announcement.broadcast()
+                        val job = scope.launch { watchCatalog(path, broadcast) }
+                        activeBroadcasts[path] = job
                     }
                     Log.d(TAG, "Announcement stream ended")
                 } catch (e: Exception) {
@@ -117,39 +131,47 @@ class MoQSession(
         }
     }
 
-    private suspend fun watchCatalog(path: String, broadcast: MoqBroadcast) {
+    private suspend fun watchCatalog(path: String, broadcast: MoqBroadcastConsumer) {
         Log.d(TAG, "Watching catalog for '$path'")
+        var catalogConsumer: MoqCatalogConsumer? = null
         try {
-            val catalogStream = broadcast.catalog()
-            try {
-                while (true) {
-                    val catalog = catalogStream.next() ?: break
-                    val videoTracks = catalog.video.map { (name, rendition) ->
-                        MoQVideoTrackInfo(name = name, config = rendition, broadcast = broadcast)
-                    }
-                    val audioTracks = catalog.audio.map { (name, rendition) ->
-                        MoQAudioTrackInfo(name = name, config = rendition, broadcast = broadcast)
-                    }
-                    Log.d(TAG, "Catalog update for '$path': ${videoTracks.size} video, ${audioTracks.size} audio tracks")
-                    for (v in videoTracks) {
-                        Log.d(TAG, "  Video track '${v.name}': codec=${v.config.codec} ${v.config.codedWidth}x${v.config.codedHeight}")
-                    }
-                    for (a in audioTracks) {
-                        Log.d(TAG, "  Audio track '${a.name}': codec=${a.config.codec} ${a.config.sampleRate}Hz ${a.config.channelCount}ch")
-                    }
-                    _broadcasts.emit(MoQBroadcastEvent.Available(MoQBroadcastInfo(path, videoTracks, audioTracks)))
+            catalogConsumer = broadcast.subscribeCatalog()
+            catalogConsumers[path] = catalogConsumer
+            while (true) {
+                val catalog = catalogConsumer.next() ?: break
+                val videoTracks = catalog.video.map { (name, rendition) ->
+                    MoQVideoTrackInfo(name = name, config = rendition, broadcast = broadcast)
                 }
-                Log.d(TAG, "Catalog stream ended for '$path'")
-            } finally {
-                catalogStream.close()
+                val audioTracks = catalog.audio.map { (name, rendition) ->
+                    MoQAudioTrackInfo(name = name, config = rendition, broadcast = broadcast)
+                }
+                Log.d(TAG, "Catalog update for '$path': ${videoTracks.size} video, ${audioTracks.size} audio tracks")
+                for (v in videoTracks) {
+                    Log.d(TAG, "  Video track '${v.name}': codec=${v.config.codec} ${v.config.coded?.width}x${v.config.coded?.height}")
+                }
+                for (a in audioTracks) {
+                    Log.d(TAG, "  Audio track '${a.name}': codec=${a.config.codec} ${a.config.sampleRate}Hz ${a.config.channelCount}ch")
+                }
+                _broadcasts.emit(MoQBroadcastEvent.Available(MoQBroadcastInfo(path, videoTracks, audioTracks)))
             }
+            Log.d(TAG, "Catalog stream ended for '$path'")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to watch catalog for '$path': $e")
+        } finally {
+            // Only clean up if we still own the consumer (tearDown may have already taken it)
+            if (catalogConsumers.remove(path) != null) {
+                try {
+                    catalogConsumer?.cancel()
+                    catalogConsumer?.close()
+                } catch (_: IllegalStateException) {
+                    // Already destroyed by tearDown
+                }
+            }
             _broadcasts.emit(MoQBroadcastEvent.Unavailable(path))
         }
     }
 
-    suspend fun close() {
+    fun close() {
         val wasConnected = _state.compareAndSet(State.Connected, State.Closed)
         val wasConnecting = if (!wasConnected) _state.compareAndSet(State.Connecting, State.Closed) else false
         val wasError = if (!wasConnected && !wasConnecting) {
@@ -165,20 +187,42 @@ class MoQSession(
         tearDown()
     }
 
-    private suspend fun tearDown() {
+    private fun tearDown() {
         Log.d(TAG, "Tearing down: ${activeBroadcasts.size} active broadcasts")
-        for ((path, job) in activeBroadcasts) {
-            Log.d(TAG, "Cancelling broadcast '$path'")
-            job.cancel()
-        }
+
+        // Cancel per-broadcast jobs and catalog consumers
+        // Snapshot and clear maps first so coroutine finally blocks see empty maps
+        val jobs = activeBroadcasts.values.toList()
         activeBroadcasts.clear()
+        val catalogs = catalogConsumers.values.toList()
+        catalogConsumers.clear()
+        jobs.forEach { it.cancel() }
+        catalogs.forEach { it.cancel(); it.close() }
+
+        // Cancel background jobs
         monitorJob?.cancel()
         announcedJob?.cancel()
-        session?.disconnect()
+
+        // Cancel and close UniFFI objects (reverse creation order)
+        announced?.cancel()
+        announced?.close()
+        announced = null
+
+        consumer?.close()
+        consumer = null
+
+        session?.cancel(0u)
         session?.close()
-        scope.cancel()
         session = null
+
+        client?.cancel()
+        client?.close()
+        client = null
+
+        origin?.close()
         origin = null
+
+        scope.cancel()
         Log.d(TAG, "Teardown complete")
     }
 }

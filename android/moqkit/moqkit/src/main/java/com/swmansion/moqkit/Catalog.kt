@@ -1,8 +1,8 @@
 package com.swmansion.moqkit
 
-import uniffi.moq.MoqAudioRendition
-import uniffi.moq.MoqBroadcast
-import uniffi.moq.MoqVideoRendition
+import uniffi.moq.MoqAudio
+import uniffi.moq.MoqBroadcastConsumer
+import uniffi.moq.MoqVideo
 
 // MARK: - Track Info Types
 
@@ -12,14 +12,14 @@ interface MoQTrackInfo {
 
 data class MoQVideoTrackInfo(
     override val name: String,
-    val config: MoqVideoRendition,
-    val broadcast: MoqBroadcast,
+    val config: MoqVideo,
+    val broadcast: MoqBroadcastConsumer,
 ) : MoQTrackInfo
 
 data class MoQAudioTrackInfo(
     override val name: String,
-    val config: MoqAudioRendition,
-    val broadcast: MoqBroadcast,
+    val config: MoqAudio,
+    val broadcast: MoqBroadcastConsumer,
 ) : MoQTrackInfo
 
 data class MoQBroadcastInfo(

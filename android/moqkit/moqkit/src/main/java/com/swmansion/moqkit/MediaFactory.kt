@@ -6,18 +6,18 @@ import android.media.MediaFormat
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
-import uniffi.moq.MoqAudioRendition
-import uniffi.moq.MoqVideoRendition
+import uniffi.moq.MoqAudio
+import uniffi.moq.MoqVideo
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 internal object MediaFactory {
-    fun makeVideoFormat(config: MoqVideoRendition): MediaFormat? {
+    fun makeVideoFormat(config: MoqVideo): MediaFormat? {
         val mime = videoMime(config.codec) ?: return null
         val desc = config.description ?: return null
 
-        val width = config.codedWidth?.toInt() ?: 1920
-        val height = config.codedHeight?.toInt() ?: 1080
+        val width = config.coded?.width?.toInt() ?: 1920
+        val height = config.coded?.height?.toInt() ?: 1080
         val format = MediaFormat.createVideoFormat(mime, width, height)
 
         when (mime) {
@@ -27,7 +27,7 @@ internal object MediaFactory {
         return format
     }
 
-    fun makeAudioFormat(config: MoqAudioRendition): MediaFormat? {
+    fun makeAudioFormat(config: MoqAudio): MediaFormat? {
         val mime = audioMime(config.codec) ?: return null
         val desc = config.description
 
@@ -62,12 +62,12 @@ internal object MediaFactory {
         return ByteBuffer.wrap(csd)
     }
 
-    fun makeVideoFormatMedia3(config: MoqVideoRendition): Format? {
+    fun makeVideoFormatMedia3(config: MoqVideo): Format? {
         val mime = videoMimeMedia3(config.codec) ?: return null
         val desc = config.description ?: return null
 
-        val width = config.codedWidth?.toInt() ?: 1920
-        val height = config.codedHeight?.toInt() ?: 1080
+        val width = config.coded?.width?.toInt() ?: 1920
+        val height = config.coded?.height?.toInt() ?: 1080
         val csd = when (mime) {
             MimeTypes.VIDEO_H264 -> buildAvccCsd(desc)
             MimeTypes.VIDEO_H265 -> buildHvccCsd(desc)
@@ -82,7 +82,7 @@ internal object MediaFactory {
             .build()
     }
 
-    fun makeAudioFormatMedia3(config: MoqAudioRendition): Format? {
+    fun makeAudioFormatMedia3(config: MoqAudio): Format? {
         val mime = audioMimeMedia3(config.codec) ?: return null
         val desc: ByteArray = when (mime) {
             MimeTypes.AUDIO_AAC -> config.description
