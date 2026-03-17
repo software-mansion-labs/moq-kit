@@ -114,17 +114,8 @@
         /// Enqueue decoded PCM into the ring buffer. Thread-safe — called from the ingest task.
         func enqueue(pcm: AVAudioPCMBuffer, timestampUs: UInt64) {
             let frameCount = Int(pcm.frameLength)
-            guard frameCount > 0 else { return }
-
-            var channelData: [[Float32]] = []
-            for ch in 0..<ringState.channels {
-                if let src = pcm.floatChannelData?[ch] {
-                    channelData.append(
-                        Array(UnsafeBufferPointer(start: src, count: frameCount)))
-                }
-            }
-
-            ringState.write(timestampUs: timestampUs, data: channelData)
+            guard frameCount > 0, let channelData = pcm.floatChannelData else { return }
+            ringState.write(timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
         }
 
         func start() throws {
@@ -171,9 +162,13 @@
             lock.deallocate()
         }
 
-        func write(timestampUs: UInt64, data: [[Float32]]) {
+        func write(
+            timestampUs: UInt64,
+            channelData: UnsafePointer<UnsafeMutablePointer<Float32>>,
+            frameCount: Int
+        ) {
             os_unfair_lock_lock(lock)
-            ringBuffer.write(timestampUs: timestampUs, data: data)
+            ringBuffer.write(timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
             os_unfair_lock_unlock(lock)
         }
 

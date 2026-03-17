@@ -40,6 +40,58 @@ struct AudioRingBuffer {
         buffer[0].count
     }
 
+    // MARK: - Bulk copy helpers
+
+    /// Copy `count` samples from `src` into ring buffer `channel` starting at logical `pos`.
+    /// Splits at the wrap point — at most 2 memcpy operations.
+    private mutating func ringCopy(channel: Int, pos: Int, src: UnsafePointer<Float32>, count: Int) {
+        let cap = buffer[channel].count
+        let start = pos % cap
+        let firstChunk = min(count, cap - start)
+
+        buffer[channel].withUnsafeMutableBufferPointer { dst in
+            dst.baseAddress!.advanced(by: start)
+                .update(from: src, count: firstChunk)
+            if firstChunk < count {
+                dst.baseAddress!
+                    .update(from: src.advanced(by: firstChunk), count: count - firstChunk)
+            }
+        }
+    }
+
+    /// Copy `count` samples from ring buffer `channel` starting at logical `pos` into `dst`.
+    private func ringRead(channel: Int, pos: Int, dst: UnsafeMutablePointer<Float32>, count: Int) {
+        let cap = buffer[channel].count
+        let start = pos % cap
+        let firstChunk = min(count, cap - start)
+
+        buffer[channel].withUnsafeBufferPointer { src in
+            dst.update(from: src.baseAddress!.advanced(by: start), count: firstChunk)
+            if firstChunk < count {
+                dst.advanced(by: firstChunk)
+                    .update(from: src.baseAddress!, count: count - firstChunk)
+            }
+        }
+    }
+
+    /// Zero-fill `count` samples in ring buffer `channel` starting at logical `pos`.
+    private mutating func ringZero(channel: Int, pos: Int, count: Int) {
+        let cap = buffer[channel].count
+        let start = pos % cap
+        let firstChunk = min(count, cap - start)
+
+        buffer[channel].withUnsafeMutableBufferPointer { dst in
+            dst.baseAddress!.advanced(by: start)
+                .initialize(repeating: 0, count: firstChunk)
+            if firstChunk < count {
+                dst.baseAddress!
+                    .initialize(repeating: 0, count: count - firstChunk)
+            }
+        }
+    }
+
+    // MARK: - Write / Read / Resize / Reset
+
     /// Resize the buffer to match a new latency target. Preserves the most recent samples.
     /// Triggers a stall to refill.
     mutating func resize(latencyMs: Double) {
@@ -53,11 +105,8 @@ struct AudioRingBuffer {
         if samplesToKeep > 0 {
             let copyStart = writeIndex - samplesToKeep
             for channel in 0..<channels {
-                let src = buffer[channel]
-                for i in 0..<samplesToKeep {
-                    let srcPos = (copyStart + i) % src.count
-                    let dstPos = i % newCapacity
-                    newBuffer[channel][dstPos] = src[srcPos]
+                newBuffer[channel].withUnsafeMutableBufferPointer { dst in
+                    ringRead(channel: channel, pos: copyStart, dst: dst.baseAddress!, count: samplesToKeep)
                 }
             }
         }
@@ -68,20 +117,20 @@ struct AudioRingBuffer {
     }
 
     /// Write samples at the position determined by the timestamp.
-    /// Handles gaps (zero-fill), old samples (skip), and overflow (discard oldest, exit stall).
-    mutating func write(timestampUs: UInt64, data: [[Float32]]) {
-        precondition(data.count == channels, "wrong number of channels")
-
+    /// Accepts raw channel pointers directly from `AVAudioPCMBuffer.floatChannelData`.
+    mutating func write(
+        timestampUs: UInt64,
+        channelData: UnsafePointer<UnsafeMutablePointer<Float32>>,
+        frameCount: Int
+    ) {
         var start = Int(round(Double(timestampUs) / 1_000_000.0 * Double(rate)))
-        var samples = data[0].count
+        var samples = frameCount
 
         // Ignore samples that are too old (before the read index)
         let offset = readIndex - start
         if offset > samples {
-            // All samples are too old, ignore them
             return
         } else if offset > 0 {
-            // Some samples are too old, skip them
             samples -= offset
             start += offset
         }
@@ -91,7 +140,6 @@ struct AudioRingBuffer {
         // Check if we need to discard old samples to prevent overflow
         let overflow = end - readIndex - buffer[0].count
         if overflow >= 0 {
-            // Discard old samples and exit stalled mode
             stalled = false
             readIndex += overflow
         }
@@ -100,25 +148,17 @@ struct AudioRingBuffer {
         if start > writeIndex {
             let gapSize = min(start - writeIndex, buffer[0].count)
             for channel in 0..<channels {
-                for i in 0..<gapSize {
-                    let writePos = (writeIndex + i) % buffer[channel].count
-                    buffer[channel][writePos] = 0
-                }
+                ringZero(channel: channel, pos: writeIndex, count: gapSize)
             }
         }
 
         // Write the actual samples
+        let srcOffset = frameCount - samples
         for channel in 0..<channels {
-            let src = data[channel]
-            let srcStart = src.count - samples
-
-            for i in 0..<samples {
-                let writePos = (start + i) % buffer[channel].count
-                buffer[channel][writePos] = src[srcStart + i]
-            }
+            let src = UnsafePointer(channelData[channel])
+            ringCopy(channel: channel, pos: start, src: src.advanced(by: srcOffset), count: samples)
         }
 
-        // Update write index, but only if we're moving forward
         if end > writeIndex {
             writeIndex = end
         }
@@ -130,7 +170,9 @@ struct AudioRingBuffer {
         readIndex = 0
         stalled = true
         for channel in 0..<channels {
-            buffer[channel] = [Float32](repeating: 0, count: buffer[channel].count)
+            buffer[channel].withUnsafeMutableBufferPointer { buf in
+                buf.baseAddress!.initialize(repeating: 0, count: buf.count)
+            }
         }
     }
 
@@ -146,17 +188,11 @@ struct AudioRingBuffer {
         for channel in 0..<channels {
             precondition(
                 output[channel].count == output[0].count, "mismatching number of samples")
-            let src = buffer[channel]
-            for i in 0..<samples {
-                let readPos = (readIndex + i) % src.count
-                output[channel][i] = src[readPos]
+            output[channel].withUnsafeMutableBufferPointer { dst in
+                ringRead(channel: channel, pos: readIndex, dst: dst.baseAddress!, count: samples)
             }
         }
 
-        if samples < output[0].count {
-            print("will stall motherfucketr")
-
-        }
         readIndex += samples
         return samples
     }
