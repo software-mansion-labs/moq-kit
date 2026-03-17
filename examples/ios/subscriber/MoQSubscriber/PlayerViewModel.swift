@@ -86,6 +86,7 @@ final class PlayerViewModel: ObservableObject {
     @Published var playerType: PlayerType = .realTime
 
     private var session: MoQSession?
+    private var targetLatencyMs: UInt64 = 200
     private var stateObserverTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
 
@@ -125,7 +126,8 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func connect(url: String) {
+    func connect(url: String, targetLatencyMs: UInt64 = 200) {
+        self.targetLatencyMs = targetLatencyMs
         let s = MoQSession(url: url)
         session = s
 
@@ -155,14 +157,14 @@ final class PlayerViewModel: ObservableObject {
                     
                     switch self.playerType {
                     case .avPlayer:
-                        let p = try? MoQAVPlayer(tracks: tracks, maxLatencyMs: 500)
+                        let p = try? MoQAVPlayer(tracks: tracks, maxLatencyMs: self.targetLatencyMs)
                         entry.player = p
                         if let p {
                             entry.observeEvents(of: p.events)
                         }
                         try? await p?.play()
                     case .realTime:
-                        let p = try? MoQRealTimePlayer(tracks: tracks, targetBufferingMs: 200)
+                        let p = try? MoQRealTimePlayer(tracks: tracks, targetBufferingMs: self.targetLatencyMs)
                         entry.realTimePlayer = p
                         if let p {
                             entry.observeEvents(of: p.events)

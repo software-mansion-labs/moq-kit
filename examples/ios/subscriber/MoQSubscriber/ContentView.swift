@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var relayURL = "http://192.168.92.228:4443"
     @State private var broadcastPath = "bbb"
+    @State private var targetLatencyMs = "200"
     @StateObject private var player = PlayerViewModel()
 
     @State var paused: Bool = false
@@ -29,6 +30,7 @@ struct ContentView: View {
                 ConnectionControlsView(
                     relayURL: $relayURL,
                     broadcastPath: $broadcastPath,
+                    targetLatencyMs: $targetLatencyMs,
                     canConnect: canConnect,
                     canStop: canStop,
                     canPause: canPause,
@@ -54,7 +56,8 @@ struct ContentView: View {
     }
 
     private func connectAll() {
-        player.connect(url: relayURL)
+        let latency = UInt64(targetLatencyMs) ?? 200
+        player.connect(url: relayURL, targetLatencyMs: latency)
     }
 
     private func stopAll() {
