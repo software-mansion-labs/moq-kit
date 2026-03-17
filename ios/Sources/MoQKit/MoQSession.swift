@@ -150,9 +150,6 @@ public final class MoQSession {
                         } catch {
                             MoQLogger.session.error(
                                 "handleActiveBroadcast failed for \(path): \(error)")
-                            self.transition(to: .error("\(error)"))
-                            await self.close()
-                            return
                         }
                     } catch {
                         MoQLogger.session.error("announced() failed: \(error)")
@@ -224,6 +221,7 @@ public final class MoQSession {
                     self.broadcastsContinuation.yield(.available(info))
                 } catch {
                     MoQLogger.session.error("subscribeCatalog() failed (\(path)): \(error)")
+                    self.catalogConsumers.removeValue(forKey: path)
                     break
                 }
             }

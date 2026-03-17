@@ -1,11 +1,13 @@
+import CoreMedia
 import Foundation
 
-/// Tracks wall-clock intervals between packet enqueues to detect stalls, bursts, and OOO timestamps.
-/// Also measures end-to-end latency by comparing wall-clock progression against PTS progression.
+/// Tracks wall-clock intervals between packet arrivals to detect stalls, bursts, and OOO timestamps.
+/// Measures end-to-end latency by comparing the latest recorded PTS against the shared CMTimebase.
 final class PacketTimingTracer: @unchecked Sendable {
     enum TrackKind: String { case video, audio }
 
     private let kind: TrackKind
+    private let timebase: CMTimebase
     private let stallFactor: Double
     private let burstFactor: Double
     private let reportInterval: Int
@@ -28,20 +30,19 @@ final class PacketTimingTracer: @unchecked Sendable {
     private var minGapMs: Double = .greatestFiniteMagnitude
     private var maxOooDeltaMs: Double = 0
 
-    // Latency tracking (absorbed from LatencyTracker)
-    private var baseWallNs: UInt64?
-    private var basePtsUs: UInt64?
-    private var maxOffset: Int64 = .min
-    private var currentLatencyMs: Double = 0
+    // Latency: latest PTS we've seen
+    private var latestPtsUs: UInt64 = 0
 
     init(
         kind: TrackKind,
+        timebase: CMTimebase,
         stallFactor: Double = 2.0,
         burstFactor: Double = 0.3,
         reportInterval: Int = 120,
         reportCallback: @escaping (String) -> Void
     ) {
         self.kind = kind
+        self.timebase = timebase
         self.stallFactor = stallFactor
         self.burstFactor = burstFactor
         self.reportInterval = reportInterval
@@ -49,10 +50,18 @@ final class PacketTimingTracer: @unchecked Sendable {
     }
 
     /// Current end-to-end latency in milliseconds.
+    /// Computed as the difference between the latest received PTS and the current timebase position.
     var latencyMs: Double {
         lock.lock()
-        defer { lock.unlock() }
-        return currentLatencyMs
+        let pts = latestPtsUs
+        lock.unlock()
+
+        let timebaseTime = CMTimebaseGetTime(timebase)
+        let timebaseUs = UInt64(max(0, timebaseTime.seconds * 1_000_000))
+
+        guard pts > 0, timebaseUs > 0 else { return 0 }
+        guard pts > timebaseUs else { return 0 }
+        return Double(pts - timebaseUs) / 1000.0
     }
 
     /// Record a packet arrival, updating both timing diagnostics and latency measurement.
@@ -61,18 +70,9 @@ final class PacketTimingTracer: @unchecked Sendable {
 
         lock.lock()
 
-        // --- Latency calibration (burst-aware anchor) ---
-        let wallUs = Int64(nowNs / 1000)
-        let offset = Int64(ptsUs) - wallUs
-        if offset > maxOffset {
-            maxOffset = offset
-            baseWallNs = nowNs
-            basePtsUs = ptsUs
-            currentLatencyMs = 0
-        } else if let baseWall = baseWallNs, let basePts = basePtsUs {
-            let wallElapsedMs = Double(nowNs - baseWall) / 1_000_000.0
-            let ptsElapsedMs = Double(Int64(ptsUs) - Int64(basePts)) / 1000.0
-            currentLatencyMs = wallElapsedMs - ptsElapsedMs
+        // --- Latency: track latest PTS ---
+        if ptsUs > latestPtsUs {
+            latestPtsUs = ptsUs
         }
 
         // --- Packet timing diagnostics ---
@@ -147,12 +147,11 @@ final class PacketTimingTracer: @unchecked Sendable {
         }
     }
 
-    /// Reset all timing stats and latency anchor.
+    /// Reset all timing stats and latency.
     func reset() {
         lock.lock()
         defer { lock.unlock() }
 
-        // Timing stats
         lastWallNs = nil
         lastPtsUs = nil
         highestPtsUs = nil
@@ -166,11 +165,6 @@ final class PacketTimingTracer: @unchecked Sendable {
         maxGapMs = 0
         minGapMs = .greatestFiniteMagnitude
         maxOooDeltaMs = 0
-
-        // Latency anchor
-        baseWallNs = nil
-        basePtsUs = nil
-        maxOffset = .min
-        currentLatencyMs = 0
+        latestPtsUs = 0
     }
 }

@@ -4,10 +4,11 @@
 
     // MARK: - AudioRenderer
 
-    /// Owns the full audio playback pipeline: ring buffer, AVAudioEngine, and CMTimebase.
+    /// Audio playback pipeline: ring buffer, AVAudioEngine, and external CMTimebase.
     ///
-    /// The ring buffer handles timestamp-based positioning, stall management, gap filling,
-    /// and overflow — replacing the need for a separate jitter buffer.
+    /// Always acts as the master clock — the render callback drives the shared timebase
+    /// by setting its time to the current ring buffer read position and toggling its rate
+    /// between 0 (underflow) and 1 (playing).
     ///
     /// Thread safety: `enqueue(pcm:timestampUs:)` is called from the ingest task,
     /// while the render callback reads from the audio thread. Both paths are serialized
@@ -22,31 +23,19 @@
 
         init(
             config: MoqAudio,
-            latencyMs: Int
+            timebase: CMTimebase,
+            targetLatencyMs: Int
         ) throws {
             let decoder = try AudioDecoder(config: config)
             self.decoder = decoder
+            self.timebase = timebase
 
             let channelCount = Int(config.channelCount)
             let sampleRate = Int(config.sampleRate)
 
             let ringState = RingState(
-                rate: sampleRate, channels: channelCount, latencyMs: Double(latencyMs))
+                rate: sampleRate, channels: channelCount, latencyMs: Double(targetLatencyMs))
             self.ringState = ringState
-
-            // CMTimebase sourced from host clock, rate=0 initially
-            var tb: CMTimebase?
-            CMTimebaseCreateWithSourceClock(
-                allocator: kCFAllocatorDefault,
-                sourceClock: CMClockGetHostTimeClock(),
-                timebaseOut: &tb
-            )
-            guard let timebase = tb else {
-                throw MoQSessionError.audioDecoderFailed("Failed to create CMTimebase")
-            }
-            CMTimebaseSetTime(timebase, time: .zero)
-            CMTimebaseSetRate(timebase, rate: 0)
-            self.timebase = timebase
 
             let bytesPerSample = MemoryLayout<Float32>.size
             var timebaseStarted = false

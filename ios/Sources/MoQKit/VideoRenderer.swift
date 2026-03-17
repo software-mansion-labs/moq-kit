@@ -3,8 +3,12 @@ import CoreMedia
 
 // MARK: - VideoRenderer
 
-/// Owns the full video playback pipeline: frame processor, jitter buffer, display layer interaction,
-/// and timebase management for video-only mode.
+/// Video playback pipeline: frame processor, jitter buffer, display layer interaction,
+/// and optional timebase ownership for video-only mode.
+///
+/// Takes an external `CMTimebase`. When `isTimebaseOwner` is true (video-only mode),
+/// the renderer starts the timebase once the jitter buffer reaches playing state.
+/// When false (audio+video mode), the audio renderer drives the shared timebase.
 ///
 /// Thread safety: `insert(...)` is called from the ingest task, while the
 /// `requestMediaDataWhenReady` callback drains on `enqueueQueue`. The jitter buffer
@@ -15,51 +19,31 @@ final class VideoRenderer: @unchecked Sendable {
 
     private let processor: VideoFrameProcessor
     private let jitterBuffer: JitterBuffer<CMSampleBuffer>
-    private let tracer: PacketTimingTracer
     private let enqueueQueue: DispatchQueue
-    private let ownsTimebase: Bool
+    private let isTimebaseOwner: Bool
     private var timebaseStarted: Bool
 
     var canProcess: Bool { processor.canProcess }
 
     init(
         config: MoqVideo,
-        externalTimebase: CMTimebase?,
+        timebase: CMTimebase,
+        isTimebaseOwner: Bool,
         targetBufferingMs: UInt64,
-        layer: AVSampleBufferDisplayLayer,
-        tracer: PacketTimingTracer
+        layer: AVSampleBufferDisplayLayer
     ) throws {
         self.layer = layer
+        self.timebase = timebase
+        self.isTimebaseOwner = isTimebaseOwner
         self.processor = try VideoFrameProcessor(config: config)
         self.jitterBuffer = JitterBuffer<CMSampleBuffer>(
             targetBufferingUs: targetBufferingMs * 1000)
-        self.tracer = tracer
         self.enqueueQueue = DispatchQueue(
             label: "com.moqkit.video-enqueue", qos: .userInteractive)
 
-        if let ext = externalTimebase {
-            self.timebase = ext
-            layer.controlTimebase = ext
-            self.ownsTimebase = false
-            self.timebaseStarted = true
-        } else {
-            var tb: CMTimebase?
-            CMTimebaseCreateWithSourceClock(
-                allocator: kCFAllocatorDefault,
-                sourceClock: CMClockGetHostTimeClock(),
-                timebaseOut: &tb
-            )
-            guard let tb else {
-                throw MoQSessionError.invalidConfiguration(
-                    "Failed to create CMTimebase")
-            }
-            CMTimebaseSetTime(tb, time: .zero)
-            CMTimebaseSetRate(tb, rate: 0)
-            self.timebase = tb
-            layer.controlTimebase = tb
-            self.ownsTimebase = true
-            self.timebaseStarted = false
-        }
+        layer.controlTimebase = timebase
+        // If we don't own the timebase, assume it's already being driven (by audio)
+        self.timebaseStarted = !isTimebaseOwner
     }
 
     /// Arms `requestMediaDataWhenReady` and registers the jitter buffer data-available callback.
@@ -67,9 +51,8 @@ final class VideoRenderer: @unchecked Sendable {
         let layer = self.layer
         let jitter = self.jitterBuffer
         let queue = self.enqueueQueue
-        let tracer = self.tracer
         let videoTimebase = self.timebase
-        let ownsTimebase = self.ownsTimebase
+        let isTimebaseOwner = self.isTimebaseOwner
 
         // Capture timebaseStarted as a mutable local for the closure (video-only mode)
         var timebaseStarted = self.timebaseStarted
@@ -81,7 +64,7 @@ final class VideoRenderer: @unchecked Sendable {
                 guard let layer else { return }
 
                 // Start timebase once buffer has enough depth (video-only mode)
-                if ownsTimebase && !timebaseStarted && jitter.state == .playing {
+                if isTimebaseOwner && !timebaseStarted && jitter.state == .playing {
                     timebaseStarted = true
                     CMTimebaseSetRate(videoTimebase, rate: 1.0)
                 }
@@ -93,8 +76,9 @@ final class VideoRenderer: @unchecked Sendable {
                         layer.stopRequestingMediaData()
                         return
                     }
-                    if !playable { continue }  // drop late frames
-                    tracer.record(ptsUs: entry.timestampUs)
+                    if !playable {
+                        self.doNotDisplaySample(entry.item)
+                    }
                     layer.enqueue(entry.item)
                 }
             }
@@ -107,28 +91,23 @@ final class VideoRenderer: @unchecked Sendable {
         queue.async { armVideoEnqueue() }
 
         MoQLogger.player.debug(
-            "VideoRenderer started (ownsTimebase=\(ownsTimebase))")
+            "VideoRenderer started (isTimebaseOwner=\(isTimebaseOwner))")
     }
 
     /// Stops requesting media data, removes jitter buffer callback, pauses timebase if owned.
     func stop() {
         jitterBuffer.setOnDataAvailable(nil)
         layer.stopRequestingMediaData()
-        if ownsTimebase {
+        if isTimebaseOwner {
             CMTimebaseSetRate(timebase, rate: 0)
         }
-        timebaseStarted = !ownsTimebase
+        timebaseStarted = !isTimebaseOwner
     }
 
     /// Flushes the jitter buffer and removes the displayed image.
     func flush() {
         jitterBuffer.flush()
         layer.flushAndRemoveImage()
-    }
-
-    /// Resets the packet timing tracer.
-    func resetTracer() {
-        tracer.reset()
     }
 
     /// Process and insert a video frame into the jitter buffer. Thread-safe.
@@ -140,9 +119,22 @@ final class VideoRenderer: @unchecked Sendable {
                 payload: payload, timestampUs: timestampUs,
                 keyframe: keyframe)
         else { return false }
-        tracer.record(ptsUs: timestampUs)
         jitterBuffer.insert(item: sb, timestampUs: timestampUs)
         return true
+    }
+    
+    private func doNotDisplaySample(_ sampleBuffer: CMSampleBuffer) {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) else {
+            return
+        }
+        
+        let dictPtr = CFArrayGetValueAtIndex(attachments, 0)
+        let mutableDict = unsafeBitCast(dictPtr, to: CFMutableDictionary.self)
+        
+        let key = Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque()
+        let value = Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+        
+        CFDictionarySetValue(mutableDict, key, value)
     }
 }
 

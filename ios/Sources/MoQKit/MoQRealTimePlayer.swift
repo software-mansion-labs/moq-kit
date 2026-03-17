@@ -28,12 +28,8 @@ public final class MoQRealTimePlayer {
     private var audioTask: Task<Void, Never>?
     private var coordinatorTask: Task<Void, Never>?
 
-    private let audioTracer = PacketTimingTracer(kind: .audio) { report in
-        MoQLogger.player.debug("\(report)")
-    }
-    private let videoTracer = PacketTimingTracer(kind: .video) { report in
-        MoQLogger.player.debug("\(report)")
-    }
+    nonisolated(unsafe) private var audioTracer: PacketTimingTracer?
+    nonisolated(unsafe) private var videoTracer: PacketTimingTracer?
 
     private let mode: Mode
 
@@ -81,8 +77,8 @@ public final class MoQRealTimePlayer {
 
     public nonisolated var latency: LatencyInfo {
         LatencyInfo(
-            audioMs: hasAudioTrack ? audioTracer.latencyMs : nil,
-            videoMs: hasVideoTrack ? videoTracer.latencyMs : nil
+            audioMs: hasAudioTrack ? audioTracer?.latencyMs : nil,
+            videoMs: hasVideoTrack ? videoTracer?.latencyMs : nil
         )
     }
 
@@ -91,9 +87,22 @@ public final class MoQRealTimePlayer {
 
         try subscribe()
 
-        try setupAudioRenderer()
-        try setupVideoRenderer()
-        
+        let timebase = try Self.createTimebase()
+
+        if hasAudioTrack {
+            audioTracer = PacketTimingTracer(kind: .audio, timebase: timebase) { report in
+                MoQLogger.player.debug("\(report)")
+            }
+        }
+        if hasVideoTrack {
+            videoTracer = PacketTimingTracer(kind: .video, timebase: timebase) { report in
+                MoQLogger.player.debug("\(report)")
+            }
+        }
+
+        try setupAudioRenderer(timebase: timebase)
+        try setupVideoRenderer(timebase: timebase)
+
         startIngestTasks()
     }
 
@@ -134,8 +143,8 @@ public final class MoQRealTimePlayer {
         videoRenderer?.stop()
         videoRenderer?.flush()
 
-        audioTracer.reset()
-        videoTracer.reset()
+        audioTracer?.reset()
+        videoTracer?.reset()
 
         videoSubscription?.close()
         audioSubscription?.close()
@@ -145,6 +154,8 @@ public final class MoQRealTimePlayer {
         if permanent {
             audioRenderer = nil
             videoRenderer = nil
+            audioTracer = nil
+            videoTracer = nil
 
             try? AVAudioSession.sharedInstance().setActive(false)
 
@@ -154,30 +165,46 @@ public final class MoQRealTimePlayer {
 
     // MARK: - Private: play() helpers
 
-    private func setupAudioRenderer() throws {
+    private nonisolated static func createTimebase() throws -> CMTimebase {
+        var tb: CMTimebase?
+        CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &tb
+        )
+        guard let tb else {
+            throw MoQSessionError.invalidConfiguration("Failed to create CMTimebase")
+        }
+        CMTimebaseSetTime(tb, time: .zero)
+        CMTimebaseSetRate(tb, rate: 0)
+        return tb
+    }
+
+    private func setupAudioRenderer(timebase: CMTimebase) throws {
         guard let aInfo = tracks.compactMap({ $0 as? MoQAudioTrackInfo }).first else {
             return
         }
-        
+
         let renderer = try AudioRenderer(
             config: aInfo.config,
-            latencyMs: Int(targetBufferingMs)
+            timebase: timebase,
+            targetLatencyMs: Int(targetBufferingMs)
         )
         try renderer.start()
         self.audioRenderer = renderer
     }
 
-    private func setupVideoRenderer() throws {
+    private func setupVideoRenderer(timebase: CMTimebase) throws {
         guard let vInfo = tracks.compactMap({ $0 as? MoQVideoTrackInfo }).first else {
             return
         }
 
         let renderer = try VideoRenderer(
             config: vInfo.config,
-            externalTimebase: audioRenderer?.timebase,
+            timebase: timebase,
+            isTimebaseOwner: mode == .videoOnly,
             targetBufferingMs: targetBufferingMs,
-            layer: videoLayer,
-            tracer: videoTracer
+            layer: videoLayer
         )
         renderer.start()
         self.videoRenderer = renderer
@@ -186,6 +213,7 @@ public final class MoQRealTimePlayer {
     private func startIngestTasks() {
         let continuation = eventsContinuation
         let audioTracer = self.audioTracer
+        let videoTracer = self.videoTracer
 
         // Audio ingest task
         if let aTrack = audioSubscription, let renderer = audioRenderer {
@@ -202,13 +230,13 @@ public final class MoQRealTimePlayer {
                             MoQLogger.player.debug(
                                 "Audio discontinuity detected, flushing")
                             renderer.flush()
-                            audioTracer.reset()
+                            audioTracer?.reset()
                         }
                         lastPtsUs = frame.timestampUs
 
+                        audioTracer?.record(ptsUs: frame.timestampUs)
                         let pcm = try renderer.decoder.decode(payload: frame.payload)
                         renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
-                        audioTracer.record(ptsUs: frame.timestampUs)
 
                         if firstFrame {
                             firstFrame = false
@@ -240,10 +268,11 @@ public final class MoQRealTimePlayer {
                             MoQLogger.player.debug(
                                 "Video discontinuity detected, flushing")
                             renderer.flush()
-                            renderer.resetTracer()
+                            videoTracer?.reset()
                         }
                         lastPtsUs = frame.timestampUs
 
+                        videoTracer?.record(ptsUs: frame.timestampUs)
                         let inserted = try renderer.insert(
                             payload: frame.payload, timestampUs: frame.timestampUs,
                             keyframe: frame.keyframe)

@@ -95,9 +95,9 @@ public final class MoQAVPlayer {
         )
 
         if let vTrack = videoSubscription, let vFmt = videoFormatDescription {
-            let videoTracer = PacketTimingTracer(kind: .video, reportCallback: { report in
+            let videoTracer = PacketTimingTracer(kind: .video, timebase: sync.timebase) { report in
                 MoQLogger.player.debug("\(report)")
-            })
+            }
 
             videoTask = Task.detached {
                 var firstFrame = true
@@ -136,9 +136,9 @@ public final class MoQAVPlayer {
         }
 
         if let aTrack = audioSubscription, let aFmt = audioFormatDescription {
-            let audioTracer = PacketTimingTracer(kind: .audio, reportCallback: { report in
+            let audioTracer = PacketTimingTracer(kind: .audio, timebase: sync.timebase) { report in
                 MoQLogger.player.debug("\(report)")
-            })
+            }
 
             audioTask = Task.detached {
                 var firstFrame = true
