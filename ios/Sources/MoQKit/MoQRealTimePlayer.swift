@@ -15,7 +15,7 @@ public final class MoQRealTimePlayer {
     public let events: AsyncStream<MoQPlayerEvent>
 
     private let tracks: [any MoQTrackInfo]
-    private let targetBufferingMs: UInt64
+    private var targetBufferingMs: UInt64
     private let eventsContinuation: AsyncStream<MoQPlayerEvent>.Continuation
 
     private var audioRenderer: AudioRenderer?
@@ -74,6 +74,12 @@ public final class MoQRealTimePlayer {
     }
 
     // MARK: - Public API
+
+    public func updateTargetLatency(ms: UInt64) {
+        targetBufferingMs = ms
+        audioRenderer?.updateTargetLatency(ms: Int(ms))
+        videoRenderer?.updateTargetBuffering(ms: ms)
+    }
 
     public nonisolated var latency: LatencyInfo {
         LatencyInfo(

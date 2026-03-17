@@ -3,7 +3,7 @@ import SwiftUI
 struct ConnectionControlsView: View {
     @Binding var relayURL: String
     @Binding var broadcastPath: String
-    @Binding var targetLatencyMs: String
+    @Binding var targetLatencyMs: Double
     let canConnect: Bool
     let canStop: Bool
     let canPause: Bool
@@ -25,9 +25,17 @@ struct ConnectionControlsView: View {
                 .autocapitalization(.none)
                 .disableAutocorrection(true)
 
-            TextField("Target Latency (ms)", text: $targetLatencyMs)
-                .textFieldStyle(.roundedBorder)
-                .keyboardType(.numberPad)
+            VStack(spacing: 4) {
+                HStack {
+                    Text("Target Latency")
+                        .font(.subheadline)
+                    Spacer()
+                    Text("\(Int(targetLatencyMs)) ms")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $targetLatencyMs, in: 50...2000, step: 50)
+            }
 
             HStack(spacing: 12) {
                 Button("Connect") { onConnect() }

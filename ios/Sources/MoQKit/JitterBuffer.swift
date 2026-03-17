@@ -21,7 +21,7 @@ final class JitterBuffer<T>: @unchecked Sendable {
     }
 
     private let hostClock = CMClockGetHostTimeClock()
-    private let targetBufferingUs: UInt64
+    private var targetBufferingUs: UInt64
     private var maxOffset: Int64
     private let lock = UnfairLock()
     private var entries: [Entry] = []
@@ -99,6 +99,12 @@ final class JitterBuffer<T>: @unchecked Sendable {
 
             return (entry, playable)
         }
+    }
+
+    /// Update the target buffering depth. Takes effect on next buffering→playing transition
+    /// and immediately affects dequeue playability decisions.
+    func updateTargetBuffering(us: UInt64) {
+        lock.withLock { targetBufferingUs = us }
     }
 
     /// Clear all entries and reset to buffering state.

@@ -110,6 +110,11 @@ final class VideoRenderer: @unchecked Sendable {
         layer.flushAndRemoveImage()
     }
 
+    /// Update the target buffering depth in milliseconds.
+    func updateTargetBuffering(ms: UInt64) {
+        jitterBuffer.updateTargetBuffering(us: ms * 1000)
+    }
+
     /// Process and insert a video frame into the jitter buffer. Thread-safe.
     func insert(
         payload: Data, timestampUs: UInt64, keyframe: Bool

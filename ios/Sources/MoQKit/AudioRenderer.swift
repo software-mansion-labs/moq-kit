@@ -140,6 +140,10 @@
             MoQLogger.player.debug("AudioRenderer stopped")
         }
 
+        func updateTargetLatency(ms: Int) {
+            ringState.resize(latencyMs: Double(ms))
+        }
+
         func flush() {
             ringState.reset()
         }
@@ -181,6 +185,12 @@
             let ts = ringBuffer.timestampUs
             os_unfair_lock_unlock(lock)
             return (framesRead, ts)
+        }
+
+        func resize(latencyMs: Double) {
+            os_unfair_lock_lock(lock)
+            ringBuffer.resize(latencyMs: latencyMs)
+            os_unfair_lock_unlock(lock)
         }
 
         func reset() {

@@ -205,6 +205,13 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
+    func updateTargetLatency(ms: UInt64) {
+        targetLatencyMs = ms
+        for entry in broadcasts {
+            entry.realTimePlayer?.updateTargetLatency(ms: ms)
+        }
+    }
+
     func pause() {
         broadcasts.forEach { entry in
             Task {
