@@ -152,7 +152,7 @@ final class PlayerViewModel: ObservableObject {
                     var tracks: [any MoQTrackInfo] = []
                     if let v = info.videoTracks.first { tracks.append(v) }
                     if let a = info.audioTracks.first { tracks.append(a) }
-
+                    
                     switch self.playerType {
                     case .avPlayer:
                         let p = try? MoQAVPlayer(tracks: tracks, maxLatencyMs: 500)
@@ -162,7 +162,7 @@ final class PlayerViewModel: ObservableObject {
                         }
                         try? await p?.play()
                     case .realTime:
-                        let p = try? MoQRealTimePlayer(tracks: tracks, targetBufferingMs: 100)
+                        let p = try? MoQRealTimePlayer(tracks: tracks, targetBufferingMs: 200)
                         entry.realTimePlayer = p
                         if let p {
                             entry.observeEvents(of: p.events)

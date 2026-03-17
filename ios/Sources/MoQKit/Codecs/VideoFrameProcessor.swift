@@ -44,7 +44,7 @@
 
         /// Process a raw frame payload into a CMSampleBuffer.
         /// Returns nil if format description isn't available yet (avc3 waiting for first keyframe).
-        func process(payload: Data, timestampUs: UInt64, keyframe: Bool, baseTimestampUs: UInt64)
+        func process(payload: Data, timestampUs: UInt64, keyframe: Bool)
             throws -> CMSampleBuffer?
         {
             var processedPayload = payload
@@ -93,7 +93,7 @@
 
             return try SampleBufferFactory.makeSampleBuffer(
                 payload: processedPayload, timestampUs: timestampUs,
-                formatDescription: fmt, baseTimestampUs: baseTimestampUs)
+                formatDescription: fmt)
         }
     }
 

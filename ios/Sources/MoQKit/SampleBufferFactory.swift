@@ -137,45 +137,38 @@ enum SampleBufferFactory {
         payload: Data,
         timestampUs: UInt64,
         formatDescription: CMFormatDescription,
-        baseTimestampUs: UInt64
     ) throws -> CMSampleBuffer {
-        // Create block buffer
+        // Zero-copy block buffer: pass Data's backing memory directly
+        let nsData = payload as NSData
+        let retained = Unmanaged.passRetained(nsData)
+        var customBlockSource = CMBlockBufferCustomBlockSource(
+            version: kCMBlockBufferCustomBlockSourceVersion,
+            AllocateBlock: nil,
+            FreeBlock: { refcon, _, _ in
+                guard let refcon else { return }
+                Unmanaged<NSData>.fromOpaque(refcon).release()
+            },
+            refCon: retained.toOpaque()
+        )
+
         var blockBuffer: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
             allocator: kCFAllocatorDefault,
-            memoryBlock: nil,
-            blockLength: payload.count,
+            memoryBlock: UnsafeMutableRawPointer(mutating: nsData.bytes),
+            blockLength: nsData.length,
             blockAllocator: kCFAllocatorDefault,
-            customBlockSource: nil,
+            customBlockSource: &customBlockSource,
             offsetToData: 0,
-            dataLength: payload.count,
+            dataLength: nsData.length,
             flags: 0,
             blockBufferOut: &blockBuffer
         )
         guard status == noErr, let block = blockBuffer else {
+            retained.release()  // clean up on failure
             throw MoQSessionError.sampleBufferFailed(status)
         }
 
-        // Copy frame payload into block buffer
-        status = payload.withUnsafeBytes { rawBuf -> OSStatus in
-            let buf = rawBuf.bindMemory(to: UInt8.self)
-            return CMBlockBufferReplaceDataBytes(
-                with: buf.baseAddress!,
-                blockBuffer: block,
-                offsetIntoDestination: 0,
-                dataLength: payload.count
-            )
-        }
-        guard status == noErr else {
-            throw MoQSessionError.sampleBufferFailed(status)
-        }
-
-        // Build timing
-        let relativeUs =
-            timestampUs >= baseTimestampUs
-            ? timestampUs - baseTimestampUs
-            : 0
-        let pts = CMTime(value: CMTimeValue(relativeUs), timescale: 1_000_000)
+        let pts = CMTime(value: CMTimeValue(timestampUs), timescale: 1_000_000)
 
         var duration = CMTime.invalid
         let mediaType = CMFormatDescriptionGetMediaType(formatDescription)
@@ -222,35 +215,35 @@ enum SampleBufferFactory {
     static func makeH264FormatDescriptionFromParameterSets(
         sps: [Data], pps: [Data]
     ) throws -> CMFormatDescription {
-        
+
         let allSets = sps + pps
-        
+
         // 1. Cast to NSData to tie the raw pointer lifetime to the object lifetime
         let nsDataSets = allSets.map { $0 as NSData }
-        
+
         // 2. Extract the pointers and sizes
         let pointers = nsDataSets.map { $0.bytes.assumingMemoryBound(to: UInt8.self) }
         let sizes = nsDataSets.map { $0.length }
-        
+
         var formatDescription: CMFormatDescription?
-        
+
         // 3. Swift automatically bridges [UnsafePointer<UInt8>] to UnsafePointer<UnsafePointer<UInt8>>
         let status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
             allocator: kCFAllocatorDefault,
             parameterSetCount: pointers.count,
             parameterSetPointers: pointers,
             parameterSetSizes: sizes,
-            nalUnitHeaderLength: 4, // 4 is correct for standard AVCC formatting
+            nalUnitHeaderLength: 4,  // 4 is correct for standard AVCC formatting
             formatDescriptionOut: &formatDescription
         )
-        
+
         // nsDataSets stays alive until the end of this function scope,
         // ensuring our `pointers` were perfectly valid during the C function call.
-        
+
         guard status == noErr, let fd = formatDescription else {
             throw MoQSessionError.formatDescriptionFailed(status)
         }
-        
+
         return fd
     }
 }
