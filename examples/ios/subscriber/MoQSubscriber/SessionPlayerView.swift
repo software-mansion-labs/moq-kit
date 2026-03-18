@@ -1,10 +1,11 @@
+import MoQKit
 import SwiftUI
 
 struct SessionPlayerView: View {
     @ObservedObject var viewModel: PlayerViewModel
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 12) {
             HStack {
                 Circle()
                     .fill(viewModel.stateColor)
@@ -16,13 +17,15 @@ struct SessionPlayerView: View {
             }
 
             if viewModel.broadcasts.isEmpty {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.black)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .overlay {
-                        Text("No Broadcasts")
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
+                VideoCardView {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.black)
+                        .aspectRatio(16 / 9, contentMode: .fit)
+                        .overlay {
+                            Text("No Broadcasts")
+                                .foregroundStyle(.white.opacity(0.5))
+                        }
+                }
             } else {
                 ForEach(viewModel.broadcasts) { entry in
                     BroadcastPlayerView(entry: entry)
@@ -32,69 +35,253 @@ struct SessionPlayerView: View {
     }
 }
 
+// MARK: - Video Card
+
+private struct VideoCardView<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(.background)
+                    .shadow(color: .black.opacity(0.15), radius: 8, y: 4)
+            )
+    }
+}
+
+// MARK: - Broadcast Player
+
 private struct BroadcastPlayerView: View {
     @ObservedObject var entry: BroadcastEntry
 
     var body: some View {
-        VStack(spacing: 4) {
-            HStack {
-                if entry.offline {
-                    Text("Broadcast offline")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+        VStack(spacing: 12) {
+            // Video card
+            VideoCardView {
+                if let layer = entry.videoLayer {
+                    VideoLayerView(layer: layer)
+                        .aspectRatio(16 / 9, contentMode: .fit)
                 } else {
-                    Text(entry.info.videoTracks.first.map { "\($0.config.codec)" } ?? "")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.black)
+                        .aspectRatio(16 / 9, contentMode: .fit)
+                        .overlay {
+                            if entry.offline {
+                                Label("Broadcast Offline", systemImage: "wifi.slash")
+                                    .foregroundStyle(.orange)
+                            } else {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                        }
                 }
-                Spacer()
             }
 
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
+            // Track info pills
+            if !entry.offline {
+                HStack(spacing: 8) {
                     if let video = entry.info.videoTracks.first {
-                        Text("Video: \(video.name) (\(video.config.codec))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        InfoPill(text: video.config.codec)
                     }
                     if let audio = entry.info.audioTracks.first {
-                        Text("Audio: \(audio.name) (\(audio.config.codec) \(audio.config.sampleRate) Hz)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-            }
-
-            if entry.audioLatencyMs != nil || entry.videoLatencyMs != nil {
-                HStack(spacing: 12) {
-                    if let videoMs = entry.videoLatencyMs {
-                        Text("Video: \(Int(videoMs))ms")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let audioMs = entry.audioLatencyMs {
-                        Text("Audio: \(Int(audioMs))ms")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        InfoPill(text: "\(audio.config.codec) \(audio.config.sampleRate) Hz")
                     }
                     Spacer()
                 }
             }
 
-            if let layer = entry.videoLayer {
-                VideoLayerView(layer: layer)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            } else {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.black)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .overlay {
-                        Text("No Video")
-                            .foregroundStyle(.white.opacity(0.5))
-                    }
+            // Expandable stats
+            if let stats = entry.playbackStats {
+                StatsCardView(stats: stats)
             }
+        }
+    }
+}
+
+// MARK: - Info Pill
+
+private struct InfoPill: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption2)
+            .fontWeight(.medium)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.fill.tertiary, in: Capsule())
+    }
+}
+
+// MARK: - Stats Card
+
+private struct StatsCardView: View {
+    let stats: PlaybackStats
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header — always visible
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Label("Playback Stats", systemImage: "chart.bar.fill")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Spacer()
+                    summaryView
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Divider()
+                    .padding(.vertical, 8)
+
+                VStack(spacing: 10) {
+                    // Latency section
+                    if stats.videoLatencyMs != nil || stats.audioLatencyMs != nil {
+                        StatsSection(title: "Latency") {
+                            if let ms = stats.videoLatencyMs {
+                                StatRow(label: "Video", value: "\(Int(ms)) ms", color: latencyColor(ms))
+                            }
+                            if let ms = stats.audioLatencyMs {
+                                StatRow(label: "Audio", value: "\(Int(ms)) ms", color: latencyColor(ms))
+                            }
+                        }
+                    }
+
+                    // Throughput section
+                    if stats.videoBitrateKbps != nil || stats.audioBitrateKbps != nil || stats.videoFps != nil {
+                        StatsSection(title: "Throughput") {
+                            if let kbps = stats.videoBitrateKbps {
+                                StatRow(label: "Video bitrate", value: formatBitrate(kbps))
+                            }
+                            if let kbps = stats.audioBitrateKbps {
+                                StatRow(label: "Audio bitrate", value: formatBitrate(kbps))
+                            }
+                            if let fps = stats.videoFps {
+                                StatRow(label: "Frame rate", value: "\(Int(fps)) fps")
+                            }
+                        }
+                    }
+
+                    // Startup section
+                    if stats.timeToFirstVideoFrameMs != nil || stats.timeToFirstAudioFrameMs != nil {
+                        StatsSection(title: "Startup") {
+                            if let ms = stats.timeToFirstVideoFrameMs {
+                                StatRow(label: "First video frame", value: "\(Int(ms)) ms")
+                            }
+                            if let ms = stats.timeToFirstAudioFrameMs {
+                                StatRow(label: "First audio frame", value: "\(Int(ms)) ms")
+                            }
+                        }
+                    }
+
+                    // Health section
+                    if hasHealthStats {
+                        StatsSection(title: "Health") {
+                            if let s = stats.videoStalls, s.count > 0 {
+                                StatRow(label: "Video stalls", value: "\(s.count) (\(Int(s.totalDurationMs)) ms)", color: .orange)
+                            }
+                            if let s = stats.audioStalls, s.count > 0 {
+                                StatRow(label: "Audio stalls", value: "\(s.count) (\(Int(s.totalDurationMs)) ms)", color: .orange)
+                            }
+                            if let d = stats.videoFramesDropped, d > 0 {
+                                StatRow(label: "Video frames dropped", value: "\(d)", color: .red)
+                            }
+                            if let d = stats.audioFramesDropped, d > 0 {
+                                StatRow(label: "Audio frames dropped", value: "\(d)", color: .red)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    // Compact summary shown in the collapsed header
+    @ViewBuilder
+    private var summaryView: some View {
+        HStack(spacing: 8) {
+            if let ms = stats.videoLatencyMs {
+                Text("\(Int(ms)) ms")
+                    .foregroundStyle(latencyColor(ms))
+            }
+            if let fps = stats.videoFps {
+                Text("\(Int(fps)) fps")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.caption)
+    }
+
+    private var hasHealthStats: Bool {
+        (stats.videoStalls.map { $0.count > 0 } ?? false)
+            || (stats.audioStalls.map { $0.count > 0 } ?? false)
+            || (stats.videoFramesDropped.map { $0 > 0 } ?? false)
+            || (stats.audioFramesDropped.map { $0 > 0 } ?? false)
+    }
+
+    private func latencyColor(_ ms: Double) -> Color {
+        if ms < 150 { return .green }
+        if ms < 500 { return .orange }
+        return .red
+    }
+
+    private func formatBitrate(_ kbps: Double) -> String {
+        if kbps >= 1000 {
+            return String(format: "%.1f Mbps", kbps / 1000)
+        }
+        return "\(Int(kbps)) kbps"
+    }
+}
+
+// MARK: - Stats Helpers
+
+private struct StatsSection<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .fontWeight(.semibold)
+                .foregroundStyle(.tertiary)
+                .textCase(.uppercase)
+            content
+        }
+    }
+}
+
+private struct StatRow: View {
+    let label: String
+    let value: String
+    var color: Color = .primary
+
+    var body: some View {
+        HStack {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value)
+                .font(.caption)
+                .fontDesign(.monospaced)
+                .foregroundStyle(color)
         }
     }
 }

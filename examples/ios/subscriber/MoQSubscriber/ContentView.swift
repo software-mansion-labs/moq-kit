@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var relayURL = "http://192.168.92.140:4443"
+    @State private var relayURL = "http://192.168.92.161:4443"
     @State private var broadcastPath = "bbb"
     @State private var targetLatencyMs: Double = 200
     @StateObject private var player = PlayerViewModel()

@@ -15,11 +15,10 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var realTimePlayer: MoQRealTimePlayer?
     @Published var offline: Bool = false
     @Published var isPlaying: Bool = false
-    @Published var audioLatencyMs: Double?
-    @Published var videoLatencyMs: Double?
+    @Published var playbackStats: PlaybackStats?
 
     var eventTask: Task<Void, Never>?
-    private var latencyTimer: Timer?
+    private var statsTimer: Timer?
 
     init(info: MoQBroadcastInfo) {
         self.id = info.path
@@ -36,11 +35,11 @@ final class BroadcastEntry: ObservableObject, Identifiable {
                 switch event {
                 case .trackPlaying:
                     isPlaying = true
-                    startLatencyPolling()
+                    startStatsPolling()
                 case .allTracksStopped:
                     isPlaying = false
                     offline = true
-                    stopLatencyPolling()
+                    stopStatsPolling()
                 default:
                     break
                 }
@@ -48,29 +47,26 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         }
     }
 
-    private func startLatencyPolling() {
-        guard latencyTimer == nil else { return }
-        latencyTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+    private func startStatsPolling() {
+        guard statsTimer == nil else { return }
+        statsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                let info = self.realTimePlayer?.latency
-                self.audioLatencyMs = info?.audioMs
-                self.videoLatencyMs = info?.videoMs
+                self.playbackStats = self.realTimePlayer?.stats
             }
         }
     }
 
-    private func stopLatencyPolling() {
-        latencyTimer?.invalidate()
-        latencyTimer = nil
-        audioLatencyMs = nil
-        videoLatencyMs = nil
+    private func stopStatsPolling() {
+        statsTimer?.invalidate()
+        statsTimer = nil
+        playbackStats = nil
     }
 
     func stop() async {
         eventTask?.cancel()
         eventTask = nil
-        stopLatencyPolling()
+        stopStatsPolling()
         await player?.stopAll()
         player = nil
         await realTimePlayer?.stopAll()

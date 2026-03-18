@@ -22,6 +22,9 @@ final class VideoRenderer: @unchecked Sendable {
     private let enqueueQueue: DispatchQueue
     private let isTimebaseOwner: Bool
     private var timebaseStarted: Bool
+    private let metrics: PlaybackMetricsAccumulator
+    private var lastEnqueuedPTS: CMTime = .invalid
+    private var pendingStallCheck: DispatchWorkItem?
 
     var canProcess: Bool { processor.canProcess }
 
@@ -30,11 +33,13 @@ final class VideoRenderer: @unchecked Sendable {
         timebase: CMTimebase,
         isTimebaseOwner: Bool,
         targetBufferingMs: UInt64,
-        layer: AVSampleBufferDisplayLayer
+        layer: AVSampleBufferDisplayLayer,
+        metrics: PlaybackMetricsAccumulator
     ) throws {
         self.layer = layer
         self.timebase = timebase
         self.isTimebaseOwner = isTimebaseOwner
+        self.metrics = metrics
         self.processor = try VideoFrameProcessor(config: config)
         self.jitterBuffer = JitterBuffer<CMSampleBuffer>(
             targetBufferingUs: targetBufferingMs * 1000)
@@ -53,6 +58,7 @@ final class VideoRenderer: @unchecked Sendable {
         let queue = self.enqueueQueue
         let videoTimebase = self.timebase
         let isTimebaseOwner = self.isTimebaseOwner
+        let metricsRef = self.metrics
 
         // Capture timebaseStarted as a mutable local for the closure (video-only mode)
         var timebaseStarted = self.timebaseStarted
@@ -74,18 +80,46 @@ final class VideoRenderer: @unchecked Sendable {
                     let (entry, playable) = jitter.dequeue()
                     guard let entry else {
                         layer.stopRequestingMediaData()
+
+                        // Check if the display layer still has frames to show
+                        let currentTime = CMTimebaseGetTime(videoTimebase)
+                        if self.lastEnqueuedPTS.isValid && currentTime < self.lastEnqueuedPTS {
+                            // Layer still has frames — schedule a deferred stall check
+                            let remaining = CMTimeSubtract(self.lastEnqueuedPTS, currentTime)
+                            let delaySec = CMTimeGetSeconds(remaining)
+                            let workItem = DispatchWorkItem { [weak self] in
+                                self?.pendingStallCheck = nil
+                                metricsRef.videoStallBegan()
+                            }
+                            self.pendingStallCheck = workItem
+                            queue.asyncAfter(
+                                deadline: .now() + delaySec, execute: workItem)
+                        } else {
+                            metricsRef.videoStallBegan()
+                        }
                         return
                     }
                     if !playable {
                         self.doNotDisplaySample(entry.item)
+                        metricsRef.recordVideoFrameDropped()
+                    } else {
+                        metricsRef.recordVideoFrameDisplayed()
                     }
                     layer.enqueue(entry.item)
+                    self.lastEnqueuedPTS = CMTime(
+                        value: CMTimeValue(entry.timestampUs),
+                        timescale: 1_000_000)
                 }
             }
         }
 
         jitter.setOnDataAvailable {
-            queue.async { armVideoEnqueue() }
+            queue.async {
+                self.pendingStallCheck?.cancel()
+                self.pendingStallCheck = nil
+                metricsRef.videoStallEnded()
+                armVideoEnqueue()
+            }
         }
 
         queue.async { armVideoEnqueue() }
@@ -102,12 +136,22 @@ final class VideoRenderer: @unchecked Sendable {
             CMTimebaseSetRate(timebase, rate: 0)
         }
         timebaseStarted = !isTimebaseOwner
+        enqueueQueue.async {
+            self.pendingStallCheck?.cancel()
+            self.pendingStallCheck = nil
+            self.lastEnqueuedPTS = .invalid
+        }
     }
 
     /// Flushes the jitter buffer and removes the displayed image.
     func flush() {
         jitterBuffer.flush()
         layer.flushAndRemoveImage()
+        enqueueQueue.async {
+            self.pendingStallCheck?.cancel()
+            self.pendingStallCheck = nil
+            self.lastEnqueuedPTS = .invalid
+        }
     }
 
     /// Update the target buffering depth in milliseconds.

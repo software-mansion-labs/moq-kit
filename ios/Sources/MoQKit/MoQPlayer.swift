@@ -1,11 +1,31 @@
 import AVFoundation
 import CoreMedia
 
-// MARK: - LatencyInfo
+// MARK: - PlaybackStats
 
-public struct LatencyInfo: Sendable {
-    public let audioMs: Double?
-    public let videoMs: Double?
+public struct PlaybackStats: Sendable {
+    public let audioLatencyMs: Double?
+    public let videoLatencyMs: Double?
+
+    public let audioStalls: StallStats?
+    public let videoStalls: StallStats?
+
+    public let audioBitrateKbps: Double?
+    public let videoBitrateKbps: Double?
+
+    public let timeToFirstAudioFrameMs: Double?
+    public let timeToFirstVideoFrameMs: Double?
+
+    public let videoFps: Double?
+
+    public let audioFramesDropped: UInt64?
+    public let videoFramesDropped: UInt64?
+}
+
+public struct StallStats: Sendable {
+    public let count: UInt64
+    public let totalDurationMs: Double
+    public let rebufferingRatio: Double
 }
 
 // MARK: - MoQPlayerEvent
@@ -157,7 +177,8 @@ public final class MoQAVPlayer {
                         }
                         if playbackStarted.setIfFirst() && shouldSync {
                             await MainActor.run {
-                                sync.setRate(1.0, time: CMTime(value: 0, timescale: 1_000_000)) }
+                                sync.setRate(1.0, time: CMTime(value: 0, timescale: 1_000_000))
+                            }
                         }
                     } catch {
                         MoQLogger.player.error("Audio frame processing error: \(error)")

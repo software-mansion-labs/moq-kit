@@ -118,19 +118,30 @@ struct AudioRingBuffer {
 
     /// Write samples at the position determined by the timestamp.
     /// Accepts raw channel pointers directly from `AVAudioPCMBuffer.floatChannelData`.
+    /// Returns the number of samples discarded (too-old + overflow).
+    @discardableResult
     mutating func write(
         timestampUs: UInt64,
         channelData: UnsafePointer<UnsafeMutablePointer<Float32>>,
         frameCount: Int
-    ) {
+    ) -> Int {
         var start = Int(round(Double(timestampUs) / 1_000_000.0 * Double(rate)))
         var samples = frameCount
+        var discarded = 0
+
+        // First write after init/reset: anchor indices to the incoming timestamp
+        // so we don't treat the gap from 0 as overflow.
+        if stalled && writeIndex == 0 && readIndex == 0 {
+            readIndex = start
+            writeIndex = start
+        }
 
         // Ignore samples that are too old (before the read index)
         let offset = readIndex - start
         if offset > samples {
-            return
+            return samples
         } else if offset > 0 {
+            discarded += offset
             samples -= offset
             start += offset
         }
@@ -141,6 +152,7 @@ struct AudioRingBuffer {
         let overflow = end - readIndex - buffer[0].count
         if overflow >= 0 {
             stalled = false
+            discarded += overflow
             readIndex += overflow
         }
 
@@ -162,6 +174,8 @@ struct AudioRingBuffer {
         if end > writeIndex {
             writeIndex = end
         }
+
+        return discarded
     }
 
     /// Reset all state, clearing the buffer and re-entering stalled mode.

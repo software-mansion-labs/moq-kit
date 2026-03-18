@@ -20,21 +20,25 @@
         private let engine: AVAudioEngine
         private let sourceNode: AVAudioSourceNode
         private let ringState: RingState
+        private let metrics: PlaybackMetricsAccumulator
 
         init(
             config: MoqAudio,
             timebase: CMTimebase,
-            targetLatencyMs: Int
+            targetLatencyMs: Int,
+            metrics: PlaybackMetricsAccumulator
         ) throws {
             let decoder = try AudioDecoder(config: config)
             self.decoder = decoder
             self.timebase = timebase
+            self.metrics = metrics
 
             let channelCount = Int(config.channelCount)
             let sampleRate = Int(config.sampleRate)
 
             let ringState = RingState(
-                rate: sampleRate, channels: channelCount, latencyMs: Double(targetLatencyMs))
+                rate: sampleRate, channels: channelCount, latencyMs: Double(targetLatencyMs),
+                metrics: metrics)
             self.ringState = ringState
 
             let bytesPerSample = MemoryLayout<Float32>.size
@@ -45,6 +49,7 @@
                 [Float32](repeating: 0, count: 1024)
             }
 
+            let metricsRef = metrics
             let sourceNode = AVAudioSourceNode(format: decoder.outputFormat) {
                 _, _, frameCount, audioBufferList -> OSStatus in
                 let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
@@ -87,12 +92,14 @@
                     if !timebaseStarted {
                         timebaseStarted = true
                         CMTimebaseSetRate(timebase, rate: 1.0)
+                        metricsRef.audioStallEnded()
                     }
                 } else {
                     // Full underflow: pause timebase to prevent drift
                     if timebaseStarted {
                         timebaseStarted = false
                         CMTimebaseSetRate(timebase, rate: 0)
+                        metricsRef.audioStallBegan()
                     }
                 }
 
@@ -115,7 +122,9 @@
         func enqueue(pcm: AVAudioPCMBuffer, timestampUs: UInt64) {
             let frameCount = Int(pcm.frameLength)
             guard frameCount > 0, let channelData = pcm.floatChannelData else { return }
-            ringState.write(timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
+            ringState.decodeFrameSize = frameCount
+            ringState.write(
+                timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
         }
 
         func start() throws {
@@ -147,11 +156,15 @@
     private final class RingState: @unchecked Sendable {
         private var ringBuffer: AudioRingBuffer
         private let lock: UnsafeMutablePointer<os_unfair_lock>
+        private let metrics: PlaybackMetricsAccumulator
 
         let channels: Int
+        /// Approximate number of samples per decoded frame (set once from first decode).
+        var decodeFrameSize: Int = 1024
 
-        init(rate: Int, channels: Int, latencyMs: Double) {
+        init(rate: Int, channels: Int, latencyMs: Double, metrics: PlaybackMetricsAccumulator) {
             self.channels = channels
+            self.metrics = metrics
             self.ringBuffer = AudioRingBuffer(rate: rate, channels: channels, latencyMs: latencyMs)
             self.lock = .allocate(capacity: 1)
             self.lock.initialize(to: os_unfair_lock())
@@ -168,8 +181,17 @@
             frameCount: Int
         ) {
             os_unfair_lock_lock(lock)
-            ringBuffer.write(timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
+            let discarded = ringBuffer.write(
+                timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
             os_unfair_lock_unlock(lock)
+
+            if discarded > 0 {
+                let droppedFrames = discarded / max(decodeFrameSize, 1)
+                print(
+                    "discarded audio \(discarded), frames = \(droppedFrames); decode size = \(decodeFrameSize)"
+                )
+                metrics.recordAudioFramesDropped(droppedFrames)
+            }
         }
 
         func read(
