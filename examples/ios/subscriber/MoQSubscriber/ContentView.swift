@@ -42,14 +42,6 @@ struct ContentView: View {
                     onResume: resumeAll
                 )
 
-                Picker("Player", selection: $player.playerType) {
-                    ForEach(PlayerType.allCases, id: \.self) { type in
-                        Text(type.rawValue).tag(type)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .disabled(!player.canConnect)
-
                 SessionPlayerView(viewModel: player)
             }
             .padding()

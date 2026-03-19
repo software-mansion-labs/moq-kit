@@ -53,7 +53,6 @@ final class VideoRenderer: @unchecked Sendable {
 
     /// Arms `requestMediaDataWhenReady` and registers the jitter buffer data-available callback.
     func start() {
-        let layer = self.layer
         let jitter = self.jitterBuffer
         let queue = self.enqueueQueue
         let videoTimebase = self.timebase
@@ -63,11 +62,13 @@ final class VideoRenderer: @unchecked Sendable {
         // Capture timebaseStarted as a mutable local for the closure (video-only mode)
         var timebaseStarted = self.timebaseStarted
 
-        let armVideoEnqueue: @Sendable () -> Void = { [weak layer] in
-            guard let layer else { return }
+        let armVideoEnqueue: @Sendable () -> Void = { [weak self] in
+            guard let self else { return }
+            let layer = self.layer
 
-            layer.requestMediaDataWhenReady(on: queue) { [weak layer] in
-                guard let layer else { return }
+            layer.requestMediaDataWhenReady(on: queue) { [weak self] in
+                guard let self else { return }
+                let layer = self.layer
 
                 // Start timebase once buffer has enough depth (video-only mode)
                 if isTimebaseOwner && !timebaseStarted && jitter.state == .playing {

@@ -2,17 +2,11 @@ import AVFoundation
 import MoQKit
 import SwiftUI
 
-enum PlayerType: String, CaseIterable {
-    case realTime = "RealTime"
-    case avPlayer = "AVPlayer"
-}
-
 @MainActor
 final class BroadcastEntry: ObservableObject, Identifiable {
     let id: String
     @Published var info: MoQBroadcastInfo
-    @Published var player: MoQAVPlayer?
-    @Published var realTimePlayer: MoQRealTimePlayer?
+    @Published var player: MoQPlayer?
     @Published var offline: Bool = false
     @Published var isPlaying: Bool = false
     @Published var playbackStats: PlaybackStats?
@@ -26,7 +20,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     var videoLayer: AVSampleBufferDisplayLayer? {
-        player?.videoLayer ?? realTimePlayer?.videoLayer
+        player?.videoLayer
     }
 
     func observeEvents(of events: AsyncStream<MoQPlayerEvent>) {
@@ -49,10 +43,11 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     private func startStatsPolling() {
         guard statsTimer == nil else { return }
+        
         statsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.playbackStats = self.realTimePlayer?.stats
+                self.playbackStats = self.player?.stats
             }
         }
     }
@@ -69,8 +64,6 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         stopStatsPolling()
         await player?.stopAll()
         player = nil
-        await realTimePlayer?.stopAll()
-        realTimePlayer = nil
         isPlaying = false
     }
 }
@@ -79,7 +72,6 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 final class PlayerViewModel: ObservableObject {
     @Published var sessionState: MoQSessionState = .idle
     @Published var broadcasts: [BroadcastEntry] = []
-    @Published var playerType: PlayerType = .realTime
 
     private var session: MoQSession?
     private var targetLatencyMs: UInt64 = 200
@@ -151,22 +143,14 @@ final class PlayerViewModel: ObservableObject {
                     if let v = info.videoTracks.first { tracks.append(v) }
                     if let a = info.audioTracks.first { tracks.append(a) }
                     
-                    switch self.playerType {
-                    case .avPlayer:
-                        let p = try? MoQAVPlayer(tracks: tracks, maxLatencyMs: self.targetLatencyMs)
-                        entry.player = p
-                        if let p {
-                            entry.observeEvents(of: p.events)
-                        }
-                        try? await p?.play()
-                    case .realTime:
-                        let p = try? MoQRealTimePlayer(tracks: tracks, targetBufferingMs: self.targetLatencyMs)
-                        entry.realTimePlayer = p
-                        if let p {
-                            entry.observeEvents(of: p.events)
-                        }
-                        try? await p?.play()
+                    let p = try? MoQPlayer(tracks: tracks, targetBufferingMs: self.targetLatencyMs)
+                    entry.player = p
+                    
+                    if let p {
+                        entry.observeEvents(of: p.events)
                     }
+                    try? await p?.play()
+                    
                 case .unavailable(let path):
                     if let entry = broadcasts.first(where: { $0.id == path }) {
                         await entry.stop()
@@ -204,7 +188,7 @@ final class PlayerViewModel: ObservableObject {
     func updateTargetLatency(ms: UInt64) {
         targetLatencyMs = ms
         for entry in broadcasts {
-            entry.realTimePlayer?.updateTargetLatency(ms: ms)
+            entry.player?.updateTargetLatency(ms: ms)
         }
     }
 
@@ -212,7 +196,6 @@ final class PlayerViewModel: ObservableObject {
         broadcasts.forEach { entry in
             Task {
                 await entry.player?.pause()
-                await entry.realTimePlayer?.pause()
             }
         }
     }
@@ -222,7 +205,6 @@ final class PlayerViewModel: ObservableObject {
             Task {
                 do {
                     try await entry.player?.play()
-                    try await entry.realTimePlayer?.play()
                 } catch {}
             }
         }
