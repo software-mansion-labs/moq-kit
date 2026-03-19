@@ -2,28 +2,28 @@ package com.swmansion.moqkit
 
 import android.util.Log
 
-private const val TAG = "VideoJitterBuffer"
+private const val TAG = "JitterBuffer"
 
 /**
- * Sorted jitter buffer for video decoder output buffer indices.
- * Port of iOS JitterBuffer<CMSampleBuffer>, specialized for MediaCodec buffer indices.
+ * Sorted jitter buffer for media frames.
+ * Port of iOS JitterBuffer<CMSampleBuffer>, generic over item type.
  *
- * Manages buffering→playing state transitions and playability decisions
+ * Manages buffering->playing state transitions and playability decisions
  * based on wall-clock-to-PTS offset tracking.
  */
-internal class VideoJitterBuffer(
+internal class JitterBuffer<T>(
     private var targetBufferingUs: Long,
 ) {
     enum class State { BUFFERING, PLAYING }
 
-    data class Entry(
-        val bufferIndex: Int,
+    data class Entry<T>(
+        val item: T,
         val timestampUs: Long,
         var offsetUs: Long,
     )
 
     private val lock = Object()
-    private val entries = mutableListOf<Entry>()
+    private val entries = mutableListOf<Entry<T>>()
     private var mode = State.BUFFERING
     private var maxOffset = Long.MIN_VALUE
     private var onDataAvailable: (() -> Unit)? = null
@@ -35,10 +35,10 @@ internal class VideoJitterBuffer(
     }
 
     /**
-     * Insert a decoded frame's buffer index, sorted by timestamp.
-     * Tracks wall-clock-to-PTS offset and transitions buffering→playing.
+     * Insert an item, sorted by timestamp.
+     * Tracks wall-clock-to-PTS offset and transitions buffering->playing.
      */
-    fun insert(bufferIndex: Int, timestampUs: Long) {
+    fun insert(item: T, timestampUs: Long) {
         val notify: Boolean
         synchronized(lock) {
             val offset = timestampUs - wallClockTimeUs()
@@ -52,7 +52,7 @@ internal class VideoJitterBuffer(
             }
 
             val wasEmpty = entries.isEmpty()
-            val entry = Entry(bufferIndex, timestampUs, offset)
+            val entry = Entry(item, timestampUs, offset)
 
             // Sorted insert by timestampUs (ascending)
             val index = entries.indexOfFirst { it.timestampUs > timestampUs }
@@ -62,7 +62,7 @@ internal class VideoJitterBuffer(
                 entries.add(entry)
             }
 
-            // Transition buffering → playing when we have enough depth
+            // Transition buffering -> playing when we have enough depth
             if (mode == State.BUFFERING && entries.size >= 2) {
                 val oldest = entries.first().timestampUs
                 val newest = entries.last().timestampUs
@@ -92,7 +92,7 @@ internal class VideoJitterBuffer(
      * @param mediaTimeUs When non-null, uses audio hardware clock for the drop decision
      *                    instead of wall-clock estimate.
      */
-    fun dequeue(mediaTimeUs: Long? = null): Pair<Entry?, Boolean> {
+    fun dequeue(mediaTimeUs: Long? = null): Pair<Entry<T>?, Boolean> {
         synchronized(lock) {
             if (mode != State.PLAYING || entries.isEmpty()) return null to false
 
@@ -124,17 +124,14 @@ internal class VideoJitterBuffer(
     }
 
     /**
-     * Drain all entries, returning them for release.
-     * Resets to buffering state. Does NOT reset maxOffset (caller handles codec flush).
+     * Discard all entries and reset to buffering state.
      */
-    fun flush(): List<Entry> {
+    fun flush() {
         synchronized(lock) {
-            val drained = entries.toList()
             entries.clear()
             mode = State.BUFFERING
             maxOffset = Long.MIN_VALUE
             onStartBuffering?.invoke()
-            return drained
         }
     }
 

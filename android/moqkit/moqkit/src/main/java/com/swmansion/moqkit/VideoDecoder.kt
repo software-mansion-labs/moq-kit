@@ -12,23 +12,22 @@ private const val TAG = "VideoDecoder"
 /**
  * Wraps MediaCodec in async callback mode for decoding compressed video.
  * Configured with a Surface for hardware-accelerated rendering.
- * Does NOT auto-release output buffers — caller controls release timing for scheduled display.
+ * Does NOT auto-release output buffers -- caller controls release timing for scheduled display.
+ *
+ * Input is driven externally: when an input buffer becomes available, [onInputBufferAvailable]
+ * is invoked so the caller can fill it via [fillInputBuffer].
  *
  * Threading: Callbacks run on a dedicated HandlerThread.
  */
 internal class VideoDecoder(
     format: MediaFormat,
     surface: Surface,
+    private val onInputBufferAvailable: (bufferIndex: Int) -> Unit,
     private val onOutputBufferAvailable: (bufferIndex: Int, timestampUs: Long) -> Unit,
 ) {
     private val codec: MediaCodec
     val handlerThread = HandlerThread("MoQ-VideoDecoder").apply { start() }
     val handler = Handler(handlerThread.looper)
-
-    // Input management: synchronized on `inputLock`
-    private val inputLock = Object()
-    private val pendingInput = ArrayDeque<Pair<ByteArray, Long>>()
-    private val availableInputBuffers = ArrayDeque<Int>()
 
     init {
         val mime = format.getString(MediaFormat.KEY_MIME)!!
@@ -36,14 +35,7 @@ internal class VideoDecoder(
 
         codec.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                synchronized(inputLock) {
-                    val pending = pendingInput.removeFirstOrNull()
-                    if (pending != null) {
-                        fillInputBuffer(index, pending.first, pending.second)
-                    } else {
-                        availableInputBuffers.addLast(index)
-                    }
-                }
+                onInputBufferAvailable(index)
             }
 
             override fun onOutputBufferAvailable(
@@ -72,15 +64,15 @@ internal class VideoDecoder(
         Log.d(TAG, "VideoDecoder started")
     }
 
-    /** Submit a compressed video frame (Annex B format) for decoding. */
-    fun submitFrame(payload: ByteArray, timestampUs: Long) {
-        synchronized(inputLock) {
-            val bufferIndex = availableInputBuffers.removeFirstOrNull()
-            if (bufferIndex != null) {
-                fillInputBuffer(bufferIndex, payload, timestampUs)
-            } else {
-                pendingInput.addLast(payload to timestampUs)
-            }
+    /** Fill an input buffer with a compressed video frame (Annex B format). */
+    fun fillInputBuffer(index: Int, payload: ByteArray, timestampUs: Long) {
+        try {
+            val inputBuffer = codec.getInputBuffer(index) ?: return
+            inputBuffer.clear()
+            inputBuffer.put(payload)
+            codec.queueInputBuffer(index, 0, payload.size, timestampUs, 0)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error filling input buffer: $e")
         }
     }
 
@@ -102,12 +94,8 @@ internal class VideoDecoder(
         }
     }
 
-    /** Flush the codec and clear pending input. */
+    /** Flush the codec and restart. */
     fun flush() {
-        synchronized(inputLock) {
-            pendingInput.clear()
-            availableInputBuffers.clear()
-        }
         codec.flush()
         codec.start()
         Log.d(TAG, "VideoDecoder flushed")
@@ -122,16 +110,5 @@ internal class VideoDecoder(
         } catch (_: Exception) {}
         handlerThread.quitSafely()
         Log.d(TAG, "VideoDecoder released")
-    }
-
-    private fun fillInputBuffer(index: Int, payload: ByteArray, timestampUs: Long) {
-        try {
-            val inputBuffer = codec.getInputBuffer(index) ?: return
-            inputBuffer.clear()
-            inputBuffer.put(payload)
-            codec.queueInputBuffer(index, 0, payload.size, timestampUs, 0)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error filling input buffer: $e")
-        }
     }
 }
