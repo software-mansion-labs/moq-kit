@@ -65,32 +65,18 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             modifier = Modifier.fillMaxWidth(),
         )
 
-        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-            PlayerMode.entries.forEachIndexed { index, mode ->
-                SegmentedButton(
-                    selected = vm.playerMode == mode,
-                    onClick = { vm.switchPlayerMode(mode) },
-                    shape = SegmentedButtonDefaults.itemShape(index, PlayerMode.entries.size),
-                ) {
-                    Text(if (mode == PlayerMode.Regular) "Regular" else "Real-time")
-                }
-            }
-        }
-
-        if (vm.playerMode == PlayerMode.RealTime) {
-            Column {
-                Text(
-                    text = "Target latency: ${vm.targetLatencyMs} ms",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Slider(
-                    value = vm.targetLatencyMs.toFloat(),
-                    onValueChange = { vm.updateTargetLatency(it.toInt()) },
-                    valueRange = 50f..2000f,
-                    steps = (2000 - 50) / 50 - 1,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
+        Column {
+            Text(
+                text = "Target latency: ${vm.targetLatencyMs} ms",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Slider(
+                value = vm.targetLatencyMs.toFloat(),
+                onValueChange = { vm.updateTargetLatency(it.toInt()) },
+                valueRange = 50f..2000f,
+                steps = (2000 - 50) / 50 - 1,
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -202,39 +188,27 @@ private fun BroadcastCard(entry: BroadcastEntry) {
                 }
             }
 
-            if (entry.player != null) {
-                AndroidView(
-                    factory = { ctx -> PlayerView(ctx).also { it.useController = false } },
-                    update = { pv -> pv.player = entry.player },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Black),
-                )
-            } else if (entry.realTimePlayer != null) {
-                val rtPlayer = entry.realTimePlayer
-                AndroidView(
-                    factory = { ctx ->
-                        SurfaceView(ctx).also { sv ->
-                            sv.holder.addCallback(object : SurfaceHolder.Callback {
-                                override fun surfaceCreated(holder: SurfaceHolder) {
-                                    rtPlayer?.setSurface(holder.surface)
-                                }
-                                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                    rtPlayer?.setSurface(null)
-                                }
-                            })
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Black),
-                )
-            }
+            val player = entry.player
+            AndroidView(
+                factory = { ctx ->
+                    SurfaceView(ctx).also { sv ->
+                        sv.holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                player?.setSurface(holder.surface)
+                            }
+                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                player?.setSurface(null)
+                            }
+                        })
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black),
+            )
 
             entry.playbackStats?.let { stats ->
                 StatsCard(stats)
