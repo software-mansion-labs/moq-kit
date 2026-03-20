@@ -156,7 +156,7 @@ internal class MoQMediaSource(
                 Log.d(TAG, "Video flow collection started")
                 try {
                     videoFlow?.collect { frame ->
-                        val annexB = frame.payload.avccToAnnexB()
+                        val annexB = frame.payload.prefixLengthToAnnexB()
                         val pba = ParsableByteArray(annexB)
                         videoQueue?.sampleData(pba, annexB.size)
                         val flags = if (frame.keyframe) C.BUFFER_FLAG_KEY_FRAME else 0

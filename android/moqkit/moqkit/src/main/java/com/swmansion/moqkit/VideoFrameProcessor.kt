@@ -8,12 +8,12 @@ import java.nio.ByteBuffer
 private const val TAG = "VideoFrameProcessor"
 
 /**
- * Selects the right payload transform and CSD extraction strategy based on the video codec.
+ * Selects the right payload transform and CSD extraction strategy based on the video config.
  *
- * - AVC1/HEV1/HVC1: AVCC length-prefixed payloads → convert to Annex B; CSD from config record.
- * - AVC3 with description: payloads are already Annex B → passthrough; CSD from config record.
- * - AVC3 without description: payloads are already Annex B → passthrough; CSD extracted in-band
- *   from the first keyframe containing SPS/PPS.
+ * - **Has description** (avc1/hev1/hvc1): payloads are AVCC/HVCC length-prefixed → convert to
+ *   Annex B via [avccToAnnexB]; CSD parsed from the config record by [MediaFactory].
+ * - **No description** (avc3/hev3): payloads are already Annex B → passthrough; CSD extracted
+ *   in-band from the first keyframe containing parameter sets.
  *
  * Consumers call [processPayload] and get back ready-to-decode Annex B bytes.
  */
@@ -26,22 +26,18 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
     val isReady: Boolean get() = format != null
 
     init {
-        val codec = config.codec.lowercase()
-        val isAvc3 = codec.startsWith("avc3")
+        transform = if (config.description != null) { payload -> payload.prefixLengthToAnnexB() }
+                     else { payload -> payload }
 
-        transform = if (isAvc3) { payload -> payload } else { payload -> payload.avccToAnnexB() }
-
-        if (isAvc3 && config.description == null) {
-            // Deferred: will extract SPS/PPS from the first keyframe
-            Log.d(TAG, "AVC3 stream without description — deferring CSD extraction")
-        } else {
-            // Immediate: build format from config record
+        if (config.description != null) {
             format = MediaFactory.makeVideoFormat(config)
             if (format != null) {
-                Log.d(TAG, "Format ready immediately: ${format}")
+                Log.d(TAG, "Format ready immediately: $format")
             } else {
                 Log.w(TAG, "makeVideoFormat returned null for codec=${config.codec}")
             }
+        } else {
+            Log.d(TAG, "No description — deferring CSD extraction for codec=${config.codec}")
         }
     }
 
@@ -52,27 +48,54 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
      * Process a compressed video frame payload.
      *
      * @return Annex B bytes ready for MediaCodec, or null if the frame should be dropped
-     *         (e.g., waiting for a keyframe with SPS/PPS).
+     *         (e.g., waiting for a keyframe with parameter sets).
      */
     fun processPayload(payload: ByteArray, keyframe: Boolean): ByteArray? {
         if (!isReady) {
-            if (!keyframe) return null // Can't extract CSD from non-keyframe
-
-            val params = AnnexBUtils.extractParameterSets(payload)
-            if (params == null) {
-                Log.d(TAG, "Keyframe lacks SPS/PPS, dropping")
+            Log.i(TAG, "Video processor not ready")
+            if (!keyframe) {
+                Log.w(TAG, "Expected a keyframe when in not-ready state")
                 return null
             }
 
-            Log.d(TAG, "Extracted in-band SPS (${params.sps.size}B) + PPS (${params.pps.size}B)")
-            val mime = MediaFormat.MIMETYPE_VIDEO_AVC
+            val mime = MediaFactory.videoMime(config.codec)
+            if (mime == null) {
+                Log.w(TAG, "Unsupported codec for in-band CSD: ${config.codec}")
+                return null
+            }
+
             val width = config.coded?.width?.toInt() ?: 1920
             val height = config.coded?.height?.toInt() ?: 1080
             val fmt = MediaFormat.createVideoFormat(mime, width, height)
-            fmt.setByteBuffer("csd-0", ByteBuffer.wrap(params.sps))
-            fmt.setByteBuffer("csd-1", ByteBuffer.wrap(params.pps))
+
+            when (mime) {
+                MediaFormat.MIMETYPE_VIDEO_AVC -> {
+                    val params = AnnexBUtils.extractH264ParameterSets(payload)
+                    if (params == null) {
+                        Log.d(TAG, "Keyframe lacks H.264 SPS/PPS, dropping")
+                        return null
+                    }
+                    Log.d(TAG, "Extracted in-band SPS (${params.sps.size}B) + PPS (${params.pps.size}B)")
+                    fmt.setByteBuffer("csd-0", ByteBuffer.wrap(params.sps))
+                    fmt.setByteBuffer("csd-1", ByteBuffer.wrap(params.pps))
+                }
+                MediaFormat.MIMETYPE_VIDEO_HEVC -> {
+                    val csd = AnnexBUtils.extractH265ParameterSets(payload)
+                    if (csd == null) {
+                        Log.d(TAG, "Keyframe lacks H.265 VPS/SPS/PPS, dropping")
+                        return null
+                    }
+                    Log.d(TAG, "Extracted in-band HEVC parameter sets (${csd.size}B)")
+                    fmt.setByteBuffer("csd-0", ByteBuffer.wrap(csd))
+                }
+                else -> {
+                    Log.e(TAG, "Unknown mime type $mime")
+                    return null
+                }
+            }
+
             format = fmt
-            Log.d(TAG, "AVC3 format now ready: $fmt")
+            Log.d(TAG, "Format now ready: $fmt")
         }
 
         return transform(payload)

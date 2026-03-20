@@ -102,7 +102,7 @@ internal object MediaFactory {
             .build()
     }
 
-    private fun videoMime(codec: String): String? = when {
+    fun videoMime(codec: String): String? = when {
         codec.startsWith("avc") -> MediaFormat.MIMETYPE_VIDEO_AVC
         codec.startsWith("hev") || codec.startsWith("hvc") -> MediaFormat.MIMETYPE_VIDEO_HEVC
         else -> null
@@ -249,23 +249,4 @@ internal object MediaFactory {
         System.arraycopy(src, offset, buf, 4, length)
         return buf
     }
-}
-
-// Convert AVCC frame payload (4-byte big-endian NAL length prefix per NAL unit)
-// to Annex B format (0x00 0x00 0x00 0x01 start codes) required by MediaCodec
-internal fun ByteArray.avccToAnnexB(): ByteArray {
-    val out = ByteArrayOutputStream(size)
-    var pos = 0
-    while (pos + 4 <= size) {
-        val nalLen = ((this[pos].toInt() and 0xFF) shl 24) or
-            ((this[pos + 1].toInt() and 0xFF) shl 16) or
-            ((this[pos + 2].toInt() and 0xFF) shl 8) or
-            (this[pos + 3].toInt() and 0xFF)
-        pos += 4
-        if (pos + nalLen > size) break
-        out.write(byteArrayOf(0, 0, 0, 1))
-        out.write(this, pos, nalLen)
-        pos += nalLen
-    }
-    return out.toByteArray()
 }

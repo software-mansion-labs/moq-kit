@@ -147,10 +147,10 @@ class MoQSession(
                 }
                 Log.d(TAG, "Catalog update for '$path': ${videoTracks.size} video, ${audioTracks.size} audio tracks")
                 for (v in videoTracks) {
-                    Log.d(TAG, "  Video track '${v.name}': codec=${v.config.codec} ${v.config.coded?.width}x${v.config.coded?.height}")
+                    Log.d(TAG, "  Video track '${v.name}': codec=${v.config.codec} container=${v.config.container} ${v.config.coded?.width}x${v.config.coded?.height}")
                 }
                 for (a in audioTracks) {
-                    Log.d(TAG, "  Audio track '${a.name}': codec=${a.config.codec} ${a.config.sampleRate}Hz ${a.config.channelCount}ch")
+                    Log.d(TAG, "  Audio track '${a.name}': codec=${a.config.codec} container=${a.config.container} ${a.config.sampleRate}Hz ${a.config.channelCount}ch")
                 }
                 _broadcasts.emit(MoQBroadcastEvent.Available(MoQBroadcastInfo(path, videoTracks, audioTracks)))
             }
