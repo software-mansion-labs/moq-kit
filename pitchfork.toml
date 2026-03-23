@@ -7,3 +7,9 @@ run = "mise run publish-stream --name bbb/shrek"
 [daemons.publish-another-shrek]
 run = "mise run publish-stream --name bbb/another-shrek"
 
+[daemons.stream-obs-h264]
+run = "mise run stream-obs moq-local-h264"
+
+[daemons.stream-obs-h265]
+run = "mise run stream-obs moq-local-h265"
+

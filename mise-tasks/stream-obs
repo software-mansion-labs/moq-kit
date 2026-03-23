@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# mise description="Start OBS stream and monitor it; stop cleanly on signal"
+set -euo pipefail
+
+PROFILE=${1:-"localhost"}
+
+cleanup() {
+  echo "Stopping OBS stream..."
+  obs-cmd streaming stop
+  exit 0
+}
+
+trap cleanup SIGINT SIGTERM
+
+echo "Switching OBS profile"
+obs-cmd profile switch "$PROFILE"
+
+echo "Setting the streaming service"
+obs-cmd stream-service set --service-type moq_service --server http://localhost:4443/anon/bbb/shrek
+
+echo "Starting OBS stream..."
+obs-cmd streaming start
+
+while true; do
+  sleep 1
+  status=$(obs-cmd streaming status)
+  if ! echo "$status" | grep -q "Active: true"; then
+    echo "Stream is no longer active. Exiting."
+    exit 1
+  fi
+done
