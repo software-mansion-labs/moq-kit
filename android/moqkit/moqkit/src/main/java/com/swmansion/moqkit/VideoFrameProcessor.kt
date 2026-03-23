@@ -19,6 +19,7 @@ private const val TAG = "VideoFrameProcessor"
  */
 internal class VideoFrameProcessor(private val config: MoqVideo) {
 
+    private val isAv1 = config.codec.startsWith("av0")
     private val transform: (ByteArray) -> ByteArray
     private var format: MediaFormat? = null
 
@@ -26,7 +27,10 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
     val isReady: Boolean get() = format != null
 
     init {
-        transform = if (config.description != null) { payload -> payload.prefixLengthToAnnexB() }
+        // AV1 temporal units are never length-prefixed — always pass through unchanged.
+        // H.264/H.265 with an out-of-band description arrive length-prefixed (AVCC/HVCC)
+        // and must be converted to Annex B for MediaCodec.
+        transform = if (!isAv1 && config.description != null) { payload -> payload.prefixLengthToAnnexB() }
                      else { payload -> payload }
 
         if (config.description != null) {
@@ -87,6 +91,15 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
                     }
                     Log.d(TAG, "Extracted in-band HEVC parameter sets (${csd.size}B)")
                     fmt.setByteBuffer("csd-0", ByteBuffer.wrap(csd))
+                }
+                MediaFormat.MIMETYPE_VIDEO_AV1 -> {
+                    val seqHeader = AV1Utils.extractSequenceHeader(payload)
+                    if (seqHeader == null) {
+                        Log.d(TAG, "Keyframe lacks AV1 sequence header, dropping")
+                        return null
+                    }
+                    Log.d(TAG, "Extracted in-band AV1 sequence header (${seqHeader.size}B)")
+                    fmt.setByteBuffer("csd-0", ByteBuffer.wrap(AV1Utils.buildMinimalAv1c(seqHeader)))
                 }
                 else -> {
                     Log.e(TAG, "Unknown mime type $mime")

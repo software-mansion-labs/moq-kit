@@ -23,6 +23,7 @@ internal object MediaFactory {
         when (mime) {
             MediaFormat.MIMETYPE_VIDEO_AVC -> parseAvcc(desc, format)
             MediaFormat.MIMETYPE_VIDEO_HEVC -> parseHvcc(desc, format)
+            MediaFormat.MIMETYPE_VIDEO_AV1 -> format.setByteBuffer("csd-0", ByteBuffer.wrap(desc))
         }
         return format
     }
@@ -71,6 +72,7 @@ internal object MediaFactory {
         val csd = when (mime) {
             MimeTypes.VIDEO_H264 -> buildAvccCsd(desc)
             MimeTypes.VIDEO_H265 -> buildHvccCsd(desc)
+            MimeTypes.VIDEO_AV1 -> listOf(desc)
             else -> emptyList()
         }
 
@@ -105,6 +107,7 @@ internal object MediaFactory {
     fun videoMime(codec: String): String? = when {
         codec.startsWith("avc") -> MediaFormat.MIMETYPE_VIDEO_AVC
         codec.startsWith("hev") || codec.startsWith("hvc") -> MediaFormat.MIMETYPE_VIDEO_HEVC
+        codec.startsWith("av0") -> MediaFormat.MIMETYPE_VIDEO_AV1
         else -> null
     }
 
@@ -117,6 +120,7 @@ internal object MediaFactory {
     private fun videoMimeMedia3(codec: String): String? = when {
         codec.startsWith("avc") -> MimeTypes.VIDEO_H264
         codec.startsWith("hev") || codec.startsWith("hvc") -> MimeTypes.VIDEO_H265
+        codec.startsWith("av0") -> MimeTypes.VIDEO_AV1
         else -> null
     }
 
