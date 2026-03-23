@@ -2381,15 +2381,17 @@ public struct MoqAudio: Equatable, Hashable {
     public var sampleRate: UInt32
     public var channelCount: UInt32
     public var bitrate: UInt64?
+    public var container: Container
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(codec: String, description: Data?, sampleRate: UInt32, channelCount: UInt32, bitrate: UInt64?) {
+    public init(codec: String, description: Data?, sampleRate: UInt32, channelCount: UInt32, bitrate: UInt64?, container: Container) {
         self.codec = codec
         self.description = description
         self.sampleRate = sampleRate
         self.channelCount = channelCount
         self.bitrate = bitrate
+        self.container = container
     }
 
     
@@ -2412,7 +2414,8 @@ public struct FfiConverterTypeMoqAudio: FfiConverterRustBuffer {
                 description: FfiConverterOptionData.read(from: &buf), 
                 sampleRate: FfiConverterUInt32.read(from: &buf), 
                 channelCount: FfiConverterUInt32.read(from: &buf), 
-                bitrate: FfiConverterOptionUInt64.read(from: &buf)
+                bitrate: FfiConverterOptionUInt64.read(from: &buf), 
+                container: FfiConverterTypeContainer.read(from: &buf)
         )
     }
 
@@ -2422,6 +2425,7 @@ public struct FfiConverterTypeMoqAudio: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.sampleRate, into: &buf)
         FfiConverterUInt32.write(value.channelCount, into: &buf)
         FfiConverterOptionUInt64.write(value.bitrate, into: &buf)
+        FfiConverterTypeContainer.write(value.container, into: &buf)
     }
 }
 
@@ -2629,16 +2633,18 @@ public struct MoqVideo: Equatable, Hashable {
     public var displayRatio: MoqDimensions?
     public var bitrate: UInt64?
     public var framerate: Double?
+    public var container: Container
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(codec: String, description: Data?, coded: MoqDimensions?, displayRatio: MoqDimensions?, bitrate: UInt64?, framerate: Double?) {
+    public init(codec: String, description: Data?, coded: MoqDimensions?, displayRatio: MoqDimensions?, bitrate: UInt64?, framerate: Double?, container: Container) {
         self.codec = codec
         self.description = description
         self.coded = coded
         self.displayRatio = displayRatio
         self.bitrate = bitrate
         self.framerate = framerate
+        self.container = container
     }
 
     
@@ -2662,7 +2668,8 @@ public struct FfiConverterTypeMoqVideo: FfiConverterRustBuffer {
                 coded: FfiConverterOptionTypeMoqDimensions.read(from: &buf), 
                 displayRatio: FfiConverterOptionTypeMoqDimensions.read(from: &buf), 
                 bitrate: FfiConverterOptionUInt64.read(from: &buf), 
-                framerate: FfiConverterOptionDouble.read(from: &buf)
+                framerate: FfiConverterOptionDouble.read(from: &buf), 
+                container: FfiConverterTypeContainer.read(from: &buf)
         )
     }
 
@@ -2673,6 +2680,7 @@ public struct FfiConverterTypeMoqVideo: FfiConverterRustBuffer {
         FfiConverterOptionTypeMoqDimensions.write(value.displayRatio, into: &buf)
         FfiConverterOptionUInt64.write(value.bitrate, into: &buf)
         FfiConverterOptionDouble.write(value.framerate, into: &buf)
+        FfiConverterTypeContainer.write(value.container, into: &buf)
     }
 }
 
@@ -2690,6 +2698,77 @@ public func FfiConverterTypeMoqVideo_lift(_ buf: RustBuffer) throws -> MoqVideo 
 public func FfiConverterTypeMoqVideo_lower(_ value: MoqVideo) -> RustBuffer {
     return FfiConverterTypeMoqVideo.lower(value)
 }
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum Container: Equatable, Hashable {
+    
+    case legacy
+    case cmaf(timescale: UInt64, trackId: UInt32
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension Container: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeContainer: FfiConverterRustBuffer {
+    typealias SwiftType = Container
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Container {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .legacy
+        
+        case 2: return .cmaf(timescale: try FfiConverterUInt64.read(from: &buf), trackId: try FfiConverterUInt32.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Container, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .legacy:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .cmaf(timescale,trackId):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(timescale, into: &buf)
+            FfiConverterUInt32.write(trackId, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContainer_lift(_ buf: RustBuffer) throws -> Container {
+    return try FfiConverterTypeContainer.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeContainer_lower(_ value: Container) -> RustBuffer {
+    return FfiConverterTypeContainer.lower(value)
+}
+
 
 
 /**

@@ -128,12 +128,9 @@ public final class MoQSession {
             announcedTask = Task { [weak self] in
                 while let self, !Task.isCancelled {
                     do {
-                        print("waiting for announcements")
                         guard let announcement = try await announced.next() else {
-                            print("leaving announcements")
                             break
                         }
-                        print("announcement")
                         let path = announcement.path()
                         let broadcast = announcement.broadcast()
 
@@ -151,6 +148,8 @@ public final class MoQSession {
                             MoQLogger.session.error(
                                 "handleActiveBroadcast failed for \(path): \(error)")
                         }
+                    } catch MoqError.Cancelled {
+                        break
                     } catch {
                         MoQLogger.session.error("announced() failed: \(error)")
                         break
@@ -219,6 +218,9 @@ public final class MoQSession {
                     let info = self.buildBroadcastInfo(
                         from: catalog, broadcast: broadcast, path: path)
                     self.broadcastsContinuation.yield(.available(info))
+                } catch MoqError.Cancelled {
+                    self.catalogConsumers.removeValue(forKey: path)
+                    break
                 } catch {
                     MoQLogger.session.error("subscribeCatalog() failed (\(path)): \(error)")
                     self.catalogConsumers.removeValue(forKey: path)

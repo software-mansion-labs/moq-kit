@@ -246,6 +246,36 @@ enum SampleBufferFactory {
 
         return fd
     }
+
+    static func makeHEVCFormatDescriptionFromParameterSets(
+        vps: [Data], sps: [Data], pps: [Data]
+    ) throws -> CMFormatDescription {
+
+        // VPS must precede SPS which must precede PPS per the API contract
+        let allSets = vps + sps + pps
+
+        let nsDataSets = allSets.map { $0 as NSData }
+        let pointers = nsDataSets.map { $0.bytes.assumingMemoryBound(to: UInt8.self) }
+        let sizes = nsDataSets.map { $0.length }
+
+        var formatDescription: CMFormatDescription?
+
+        let status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+            allocator: kCFAllocatorDefault,
+            parameterSetCount: pointers.count,
+            parameterSetPointers: pointers,
+            parameterSetSizes: sizes,
+            nalUnitHeaderLength: 4,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        )
+
+        guard status == noErr, let fd = formatDescription else {
+            throw MoQSessionError.formatDescriptionFailed(status)
+        }
+
+        return fd
+    }
 }
 
 // MARK: - AVCC / HVCC Parsing

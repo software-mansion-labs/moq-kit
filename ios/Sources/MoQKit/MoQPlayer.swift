@@ -378,7 +378,6 @@ public final class MoQPlayer {
                 MoQLogger.player.debug(
                     "Video track: \(vInfo.name), codec=\(vInfo.config.codec), config=\(vInfo.config.debugDescription)"
                 )
-                print("video track")
                 do {
                     videoSubscription = try MoQMediaTrack(
                         broadcast: vInfo.broadcast, name: vInfo.name,
@@ -391,7 +390,6 @@ public final class MoQPlayer {
                 MoQLogger.player.debug(
                     "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription)")
                 do {
-                    print("audio track")
                     audioSubscription = try MoQMediaTrack(
                         broadcast: aInfo.broadcast, name: aInfo.name,
                         maxLatencyMs: targetBufferingMs)

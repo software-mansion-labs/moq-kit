@@ -200,10 +200,11 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
         let now = DispatchTime.now().uptimeNanoseconds
         os_unfair_lock_lock(lock)
 
-        // TTFF
-        let ttfAudio: Double? = (playStartNs > 0 && firstAudioFrameNs > 0)
+        // TTFF — guard against UInt64 underflow if a frame callback fires before
+        // markPlayStart() (e.g. immediately after reset() during pause/play).
+        let ttfAudio: Double? = (playStartNs > 0 && firstAudioFrameNs >= playStartNs)
             ? Double(firstAudioFrameNs - playStartNs) / 1_000_000.0 : nil
-        let ttfVideo: Double? = (playStartNs > 0 && firstVideoFrameNs > 0)
+        let ttfVideo: Double? = (playStartNs > 0 && firstVideoFrameNs >= playStartNs)
             ? Double(firstVideoFrameNs - playStartNs) / 1_000_000.0 : nil
 
         // Audio stalls

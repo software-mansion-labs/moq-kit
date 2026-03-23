@@ -3,84 +3,77 @@
     import Foundation
 
     /// Resolves video format descriptions and preprocesses payloads for AVSampleBufferDisplayLayer.
-    /// Handles codec-specific concerns (avc3 in-band params, Annex B → length-prefixed conversion)
-    /// so the player doesn't need to know about them.
+    ///
+    /// Strategy is determined by whether a decoder configuration record is present:
+    /// - **Has description** (e.g. avc1, hev1, hvc1): payloads arrive length-prefixed (AVCC/HVCC)
+    ///   and are passed through as-is — AVSampleBufferDisplayLayer expects this format.
+    /// - **No description** (e.g. avc3, hev3): payloads are Annex B. Parameter sets are extracted
+    ///   in-band from the first keyframe; subsequent frames are converted to length-prefixed.
     final class VideoFrameProcessor: @unchecked Sendable {
-        private let codec: String
-        private let isAvc3: Bool
+        private let hasDescription: Bool
+        private let isHEVC: Bool
         private var formatDescription: CMFormatDescription?
         private let lock = NSLock()
 
         init(config: MoqVideo) throws {
-            self.codec = config.codec.lowercased()
-            self.isAvc3 = codec.hasPrefix("avc3")
+            let codec = config.codec.lowercased()
+            self.hasDescription = config.description != nil
+            self.isHEVC = codec.hasPrefix("hev") || codec.hasPrefix("hvc")
 
-            MoQLogger.player.debug(
-                "VideoFrameProcessor: codec=\(self.codec), isAvc3=\(self.isAvc3), hasDescription=\(config.description?.count ?? 0 > 0)"
-            )
-
-            if isAvc3 && (config.description == nil || config.description!.isEmpty) {
-                // avc3: format description will be built from in-band SPS/PPS on first keyframe
-                MoQLogger.player.debug(
-                    "avc3 detected — deferring format description to in-band parameter sets"
-                )
-            } else {
+            if hasDescription {
                 self.formatDescription = try SampleBufferFactory.makeVideoFormatDescription(
                     from: config)
+                MoQLogger.player.debug(
+                    "VideoFrameProcessor: format description ready for codec=\(codec)")
+            } else {
+                MoQLogger.player.debug(
+                    "VideoFrameProcessor: no description for codec=\(codec) — deferring to in-band parameter sets"
+                )
             }
         }
 
-        /// Whether this processor has a format description ready (either from config or from in-band params).
+        /// Whether this processor has a format description ready.
         var hasFormatDescription: Bool {
             lock.lock()
             defer { lock.unlock() }
             return formatDescription != nil
         }
 
-        /// Whether this processor can eventually produce frames (has format or expects in-band params).
+        /// Whether this processor can eventually produce frames.
         var canProcess: Bool {
-            return hasFormatDescription || isAvc3
+            return hasFormatDescription || !hasDescription
         }
 
         /// Process a raw frame payload into a CMSampleBuffer.
-        /// Returns nil if format description isn't available yet (avc3 waiting for first keyframe).
+        ///
+        /// Returns nil if the format description isn't available yet
+        /// (waiting for the first in-band keyframe).
         func process(payload: Data, timestampUs: UInt64, keyframe: Bool)
             throws -> CMSampleBuffer?
         {
-            var processedPayload = payload
-
             lock.lock()
 
-            // avc3: extract in-band SPS/PPS from keyframes and update format description
-            if isAvc3 {
-                if let params = H264Utils.extractParameterSets(from: payload) {
-                    do {
-                        let newFmt =
-                            try SampleBufferFactory.makeH264FormatDescriptionFromParameterSets(
-                                sps: params.sps, pps: params.pps)
-                        if formatDescription == nil
-                            || !CMFormatDescriptionEqual(
-                                newFmt, otherFormatDescription: formatDescription!)
-                        {
-                            MoQLogger.player.debug(
-                                "avc3: updated video format description from in-band parameter sets"
-                            )
-                            formatDescription = newFmt
-                        }
-                    } catch {
-                        MoQLogger.player.error(
-                            "avc3: failed to build format description from in-band params: \(error)"
-                        )
-                    }
-                } else if formatDescription == nil {
+            if !hasDescription && formatDescription == nil {
+                // Annex B path: extract parameter sets from the first keyframe
+                guard keyframe else {
                     lock.unlock()
                     MoQLogger.player.debug(
-                        "avc3: keyframe has no in-band SPS/PPS, skipping")
+                        "Dropping non-keyframe: waiting for in-band parameter sets")
                     return nil
                 }
 
-                // Convert Annex B → length-prefixed for AVSampleBufferDisplayLayer
-                processedPayload = AnnexBDemuxer.toLengthPrefixed(payload)
+                do {
+                    guard let fmt = try extractInBandFormatDescription(from: payload) else {
+                        lock.unlock()
+                        return nil
+                    }
+                    formatDescription = fmt
+                } catch {
+                    lock.unlock()
+                    MoQLogger.player.error(
+                        "Failed to build format description from in-band params: \(error)")
+                    return nil
+                }
             }
 
             guard let fmt = formatDescription else {
@@ -91,9 +84,42 @@
 
             lock.unlock()
 
+            // Convert Annex B → length-prefixed when there was no out-of-band description.
+            // Has-description payloads are already length-prefixed — pass through unchanged.
+            let processedPayload =
+                hasDescription ? payload : AnnexBDemuxer.toLengthPrefixed(payload)
+
             return try SampleBufferFactory.makeSampleBuffer(
                 payload: processedPayload, timestampUs: timestampUs,
                 formatDescription: fmt)
+        }
+
+        // MARK: - Private
+
+        private func extractInBandFormatDescription(from payload: Data) throws
+            -> CMFormatDescription?
+        {
+            if isHEVC {
+                guard let params = H265Utils.extractParameterSets(from: payload) else {
+                    MoQLogger.player.debug("Keyframe lacks H.265 VPS/SPS/PPS, dropping")
+                    return nil
+                }
+                MoQLogger.player.debug(
+                    "Extracted in-band HEVC parameter sets: vps=\(params.vps.count) sps=\(params.sps.count) pps=\(params.pps.count)"
+                )
+                return try SampleBufferFactory.makeHEVCFormatDescriptionFromParameterSets(
+                    vps: params.vps, sps: params.sps, pps: params.pps)
+            } else {
+                guard let params = H264Utils.extractParameterSets(from: payload) else {
+                    MoQLogger.player.debug("Keyframe lacks H.264 SPS/PPS, dropping")
+                    return nil
+                }
+                MoQLogger.player.debug(
+                    "Extracted in-band H.264 parameter sets: sps=\(params.sps.count) pps=\(params.pps.count)"
+                )
+                return try SampleBufferFactory.makeH264FormatDescriptionFromParameterSets(
+                    sps: params.sps, pps: params.pps)
+            }
         }
     }
 

@@ -187,9 +187,6 @@
 
             if discarded > 0 {
                 let droppedFrames = discarded / max(decodeFrameSize, 1)
-                print(
-                    "discarded audio \(discarded), frames = \(droppedFrames); decode size = \(decodeFrameSize)"
-                )
                 metrics.recordAudioFramesDropped(droppedFrames)
             }
         }
