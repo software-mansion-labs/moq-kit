@@ -13,3 +13,6 @@ run = "mise run stream-obs moq-local-h264"
 [daemons.stream-obs-h265]
 run = "mise run stream-obs moq-local-h265"
 
+[daemons.stream-obs-av1]
+run = "mise run stream-obs moq-local-av1"
+

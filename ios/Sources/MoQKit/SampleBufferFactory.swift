@@ -19,6 +19,10 @@ enum SampleBufferFactory {
             return try makeH264FormatDescription(avccData: descData)
         } else if codec.hasPrefix("hev") || codec.hasPrefix("hvc") {
             return try makeHEVCFormatDescription(hvccData: descData)
+        } else if codec.hasPrefix("av0") {
+            let width = Int32(config.coded?.width ?? 0)
+            let height = Int32(config.coded?.height ?? 0)
+            return try makeAV1FormatDescription(av1cData: descData, width: width, height: height)
         } else {
             throw MoQSessionError.unsupportedCodec(config.codec)
         }
@@ -63,6 +67,69 @@ enum SampleBufferFactory {
             }
             return fd
         }
+    }
+
+    /// Create a `CMFormatDescription` for AV1 using a raw `av1C` decoder configuration record.
+    private static func makeAV1FormatDescription(av1cData: Data, width: Int32, height: Int32)
+        throws -> CMFormatDescription
+    {
+        // Embed the av1C record as a SampleDescriptionExtensionAtom so VideoToolbox can
+        // initialise the decoder session with the correct sequence header OBU.
+        let extensions: NSDictionary = [
+            kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms: [
+                "av1C": av1cData as NSData
+            ] as NSDictionary
+        ]
+        var formatDescription: CMFormatDescription?
+        let status = CMVideoFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            codecType: kCMVideoCodecType_AV1,
+            width: width,
+            height: height,
+            extensions: extensions,
+            formatDescriptionOut: &formatDescription
+        )
+        guard status == noErr, let fd = formatDescription else {
+            throw MoQSessionError.formatDescriptionFailed(status)
+        }
+        return fd
+    }
+
+    /// Create a `CMFormatDescription` for AV1 from an in-band Sequence Header OBU.
+    ///
+    /// Wraps the raw OBU bytes in a minimal `av1C` decoder configuration record so that
+    /// VideoToolbox receives the sequence header it needs to set up decoding.
+    static func makeAV1FormatDescriptionFromSequenceHeader(
+        _ sequenceHeader: Data, width: Int32, height: Int32
+    ) throws -> CMFormatDescription {
+        // Build a minimal av1C (AV1 Codec Configuration Record, ISO 14496-12 annex T).
+        // Fixed header: marker=1 | version=1 | seq_profile | defaults for remaining fields.
+        // Apple's VideoToolbox reads authoritative values from the embedded OBU, so we only
+        // need seq_profile to be accurate; the rest can stay at zero / common defaults.
+        let seqProfile = av1SeqProfile(from: sequenceHeader)
+        var av1C = Data(capacity: 4 + sequenceHeader.count)
+        av1C.append(0x81)               // marker=1 (bit 7) | version=1 (bits 6:0)
+        av1C.append(seqProfile << 5)    // seq_profile (3 bits) | seq_level_idx_0=0 (5 bits)
+        av1C.append(0x0C)               // subsampling_x=1, subsampling_y=1 (YUV 4:2:0 default)
+        av1C.append(0x00)               // initial_presentation_delay_present=0
+        av1C.append(contentsOf: sequenceHeader)
+        return try makeAV1FormatDescription(av1cData: av1C, width: width, height: height)
+    }
+
+    /// Extract `seq_profile` (3 bits) from the body of a Sequence Header OBU.
+    private static func av1SeqProfile(from obu: Data) -> UInt8 {
+        guard !obu.isEmpty else { return 0 }
+        let header = obu[obu.startIndex]
+        let extensionFlag = (header >> 2) & 0x1
+        let hasSizeField = (header >> 1) & 0x1
+        var pos = obu.startIndex + 1 + (extensionFlag != 0 ? 1 : 0)
+        if hasSizeField != 0 {
+            // Skip LEB128 size bytes (each byte with MSB=1 continues; MSB=0 is last)
+            while pos < obu.endIndex && (obu[pos] & 0x80) != 0 { pos += 1 }
+            if pos < obu.endIndex { pos += 1 }
+        }
+        guard pos < obu.endIndex else { return 0 }
+        return (obu[pos] >> 5) & 0x7  // seq_profile is top 3 bits of first body byte
     }
 
     // MARK: - Audio Format Descriptions
