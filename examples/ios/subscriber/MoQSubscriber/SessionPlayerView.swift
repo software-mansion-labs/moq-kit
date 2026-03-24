@@ -55,28 +55,14 @@ private struct VideoCardView<Content: View>: View {
 
 private struct BroadcastPlayerView: View {
     @ObservedObject var entry: BroadcastEntry
+    @State private var latencyUpdateTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 12) {
             // Video card
-            VideoCardView {
-                if let layer = entry.videoLayer {
-                    VideoLayerView(layer: layer)
-                        .aspectRatio(16 / 9, contentMode: .fit)
-                } else {
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.black)
-                        .aspectRatio(16 / 9, contentMode: .fit)
-                        .overlay {
-                            if entry.offline {
-                                Label("Broadcast Offline", systemImage: "wifi.slash")
-                                    .foregroundStyle(.orange)
-                            } else {
-                                ProgressView()
-                                    .tint(.white)
-                            }
-                        }
-                }
+            if entry.player?.videoLayer != nil {
+                VideoPlayerView(entry: entry)
+                    .aspectRatio(16 / 9, contentMode: .fit)
             }
 
             // Track info pills
@@ -89,6 +75,27 @@ private struct BroadcastPlayerView: View {
                         InfoPill(text: "\(audio.config.codec) \(audio.config.sampleRate) Hz")
                     }
                     Spacer()
+                }
+            }
+
+            // Target latency
+            VStack(spacing: 4) {
+                HStack {
+                    Text("Target Latency")
+                        .font(.subheadline)
+                    Spacer()
+                    Text("\(Int(entry.targetLatencyMs)) ms")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Slider(value: $entry.targetLatencyMs, in: 50...2000, step: 50)
+            }
+            .onChange(of: entry.targetLatencyMs) {
+                latencyUpdateTask?.cancel()
+                latencyUpdateTask = Task {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    guard !Task.isCancelled else { return }
+                    entry.updateTargetLatency(ms: UInt64(entry.targetLatencyMs))
                 }
             }
 

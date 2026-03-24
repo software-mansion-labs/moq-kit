@@ -16,7 +16,7 @@ echo "Switching OBS profile"
 obs-cmd profile switch "$PROFILE"
 
 echo "Setting the streaming service"
-obs-cmd stream-service set --service-type moq_service --server http://localhost:4443/anon/bbb/shrek
+obs-cmd stream-service set --service-type moq_service --server http://localhost:4443/anon/bbb/$PROFILE
 
 echo "Starting OBS stream..."
 obs-cmd streaming start

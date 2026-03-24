@@ -10,13 +10,19 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var offline: Bool = false
     @Published var isPlaying: Bool = false
     @Published var playbackStats: PlaybackStats?
+    @Published var targetLatencyMs: Double
 
     var eventTask: Task<Void, Never>?
     private var statsTimer: Timer?
 
-    init(info: MoQBroadcastInfo) {
+    init(info: MoQBroadcastInfo, initialLatencyMs: UInt64) {
         self.id = info.path
         self.info = info
+        self.targetLatencyMs = Double(initialLatencyMs)
+    }
+
+    func updateTargetLatency(ms: UInt64) {
+        player?.updateTargetLatency(ms: ms)
     }
 
     var videoLayer: AVSampleBufferDisplayLayer? {
@@ -86,14 +92,6 @@ final class PlayerViewModel: ObservableObject {
         sessionState == .connecting || sessionState == .connected
     }
 
-    var canPause: Bool {
-        true
-    }
-
-    var canResume: Bool {
-        true
-    }
-
     var stateLabel: String {
         switch sessionState {
         case .idle: return "idle"
@@ -136,7 +134,7 @@ final class PlayerViewModel: ObservableObject {
                         entry.offline = false
                         await entry.stop()
                     } else {
-                        entry = BroadcastEntry(info: info)
+                        entry = BroadcastEntry(info: info, initialLatencyMs: self.targetLatencyMs)
                         broadcasts.append(entry)
                     }
                     var tracks: [any MoQTrackInfo] = []
@@ -185,28 +183,4 @@ final class PlayerViewModel: ObservableObject {
         }
     }
 
-    func updateTargetLatency(ms: UInt64) {
-        targetLatencyMs = ms
-        for entry in broadcasts {
-            entry.player?.updateTargetLatency(ms: ms)
-        }
-    }
-
-    func pause() {
-        broadcasts.forEach { entry in
-            Task {
-                await entry.player?.pause()
-            }
-        }
-    }
-
-    func play() {
-        broadcasts.forEach { entry in
-            Task {
-                do {
-                    try await entry.player?.play()
-                } catch {}
-            }
-        }
-    }
 }
