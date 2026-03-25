@@ -96,6 +96,7 @@ class MoQPlayer(
         val audioFlow = subscribeTrack(
             audioInfo.broadcast,
             audioInfo.name,
+            MoQMediaTrackConfig.Audio(audioInfo.config),
             targetLatencyMs.toULong(),
         )
 
@@ -160,6 +161,7 @@ class MoQPlayer(
         val videoFlow = subscribeTrack(
             videoInfo.broadcast,
             videoInfo.name,
+            MoQMediaTrackConfig.Video(videoInfo.config),
             targetLatencyMs.toULong(),
         )
 
