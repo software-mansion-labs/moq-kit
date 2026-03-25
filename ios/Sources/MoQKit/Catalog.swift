@@ -21,6 +21,19 @@ public protocol MoQTrackInfo: Sendable {
     var name: String { get }
 }
 
+extension Container: CustomStringConvertible {
+    public var description: String {
+            switch self {
+            case .legacy:
+                return "legacy"
+            case .cmaf(let timescale, let trackId):
+                return "cmaf{timescale=\(timescale), trackId=\(trackId)}"
+            default:
+                return "An unknown future case"
+            }
+        }
+}
+
 public struct MoQVideoTrackInfo: MoQTrackInfo, @unchecked Sendable {
     public let name: String
     public let config: MoqVideo

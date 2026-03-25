@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import moqFFI
 
 // MARK: - PlaybackStats
 
@@ -20,6 +21,9 @@ public struct PlaybackStats: Sendable {
 
     public let audioFramesDropped: UInt64?
     public let videoFramesDropped: UInt64?
+
+    public let audioRingBufferMs: Double?
+    public let videoJitterBufferMs: Double?
 }
 
 public struct StallStats: Sendable {
@@ -66,6 +70,8 @@ public final class MoQPlayer {
 
     nonisolated(unsafe) private var audioTracer: PacketTimingTracer?
     nonisolated(unsafe) private var videoTracer: PacketTimingTracer?
+    nonisolated(unsafe) private var audioRendererForStats: AudioRenderer?
+    nonisolated(unsafe) private var videoRendererForStats: VideoRenderer?
 
     private let accumulator = PlaybackMetricsAccumulator()
     private let mode: Mode
@@ -121,7 +127,9 @@ public final class MoQPlayer {
     public nonisolated var stats: PlaybackStats {
         accumulator.snapshot(
             audioLatencyMs: hasAudioTrack ? audioTracer?.latencyMs : nil,
-            videoLatencyMs: hasVideoTrack ? videoTracer?.latencyMs : nil
+            videoLatencyMs: hasVideoTrack ? videoTracer?.latencyMs : nil,
+            audioRingBufferMs: audioRendererForStats?.bufferFillMs,
+            videoJitterBufferMs: videoRendererForStats?.bufferFillMs
         )
     }
 
@@ -201,6 +209,8 @@ public final class MoQPlayer {
             videoRenderer = nil
             audioTracer = nil
             videoTracer = nil
+            audioRendererForStats = nil
+            videoRendererForStats = nil
             accumulator.reset()
 
             try? AVAudioSession.sharedInstance().setActive(false)
@@ -239,6 +249,7 @@ public final class MoQPlayer {
         )
         try renderer.start()
         self.audioRenderer = renderer
+        self.audioRendererForStats = renderer
     }
 
     private func setupVideoRenderer(timebase: CMTimebase) throws {
@@ -256,6 +267,7 @@ public final class MoQPlayer {
         )
         renderer.start()
         self.videoRenderer = renderer
+        self.videoRendererForStats = renderer
     }
 
     private func startIngestTasks() {
@@ -376,7 +388,7 @@ public final class MoQPlayer {
         for track in tracks {
             if let vInfo = track as? MoQVideoTrackInfo {
                 MoQLogger.player.debug(
-                    "Video track: \(vInfo.name), codec=\(vInfo.config.codec), config=\(vInfo.config.debugDescription)"
+                    "Video track: \(vInfo.name), codec=\(vInfo.config.codec), config=\(vInfo.config.debugDescription), container=\(vInfo.config.container)"
                 )
                 do {
                     videoSubscription = try MoQMediaTrack(
@@ -388,7 +400,7 @@ public final class MoQPlayer {
                 }
             } else if let aInfo = track as? MoQAudioTrackInfo {
                 MoQLogger.player.debug(
-                    "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription)")
+                    "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription), container=\(aInfo.config.container)")
                 do {
                     audioSubscription = try MoQMediaTrack(
                         broadcast: aInfo.broadcast, name: aInfo.name,

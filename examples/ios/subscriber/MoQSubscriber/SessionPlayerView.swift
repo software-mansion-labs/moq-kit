@@ -168,6 +168,18 @@ private struct StatsCardView: View {
                         }
                     }
 
+                    // Buffers section
+                    if stats.audioRingBufferMs != nil || stats.videoJitterBufferMs != nil {
+                        StatsSection(title: "Buffers") {
+                            if let ms = stats.videoJitterBufferMs {
+                                StatRow(label: "Video jitter buffer", value: "\(Int(ms)) ms")
+                            }
+                            if let ms = stats.audioRingBufferMs {
+                                StatRow(label: "Audio ring buffer", value: "\(Int(ms)) ms")
+                            }
+                        }
+                    }
+
                     // Throughput section
                     if stats.videoBitrateKbps != nil || stats.audioBitrateKbps != nil || stats.videoFps != nil {
                         StatsSection(title: "Throughput") {

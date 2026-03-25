@@ -147,6 +147,8 @@
         func flush() {
             ringState.reset()
         }
+
+        var bufferFillMs: Double { ringState.fillMs }
     }
 
     // MARK: - RingState
@@ -211,6 +213,13 @@
             os_unfair_lock_lock(lock)
             ringBuffer.reset()
             os_unfair_lock_unlock(lock)
+        }
+
+        var fillMs: Double {
+            os_unfair_lock_lock(lock)
+            let v = ringBuffer.fillMs
+            os_unfair_lock_unlock(lock)
+            return v
         }
     }
 

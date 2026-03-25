@@ -3,9 +3,16 @@
 #USAGE flag "--url <url>" default="http://localhost:4443/anon" help="Relay URL"
 #USAGE flag "--name <name>" default="bbb" help="Broadcast name/path"
 #USAGE flag "--input <input>" default="bin/shrek.fmp4" help="Input media file"
+#USAGE flag "--passthrough" help="Media should be published in passthrough mode"
 set -euo pipefail
 
 INPUT=$(realpath "$usage_input")
+
+if [ "${usage_passthrough:-false}" = "true" ]; then
+  passthrough="--passthrough"
+else
+  passthrough=""
+fi
 
 cd vendor/moq &&
   ffmpeg -hide_banner -v quiet \
@@ -13,4 +20,4 @@ cd vendor/moq &&
     -i "$INPUT" \
     -c copy \
     -f mp4 -movflags cmaf+separate_moof+delay_moov+skip_trailer+frag_every_frame - |
-  cargo run --bin moq-cli -- publish --url "$usage_url" --name "$usage_name" fmp4
+  cargo run --bin moq-cli -- publish --url "$usage_url" --name "$usage_name" fmp4 $passthrough

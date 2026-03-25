@@ -196,7 +196,10 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
 
     // MARK: - Snapshot
 
-    func snapshot(audioLatencyMs: Double?, videoLatencyMs: Double?) -> PlaybackStats {
+    func snapshot(
+        audioLatencyMs: Double?, videoLatencyMs: Double?,
+        audioRingBufferMs: Double?, videoJitterBufferMs: Double?
+    ) -> PlaybackStats {
         let now = DispatchTime.now().uptimeNanoseconds
         os_unfair_lock_lock(lock)
 
@@ -249,7 +252,9 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
             timeToFirstVideoFrameMs: ttfVideo,
             videoFps: fps,
             audioFramesDropped: aDrop > 0 ? aDrop : nil,
-            videoFramesDropped: vDrop > 0 ? vDrop : nil
+            videoFramesDropped: vDrop > 0 ? vDrop : nil,
+            audioRingBufferMs: audioRingBufferMs,
+            videoJitterBufferMs: videoJitterBufferMs
         )
     }
 

@@ -40,6 +40,11 @@ struct AudioRingBuffer {
         buffer[0].count
     }
 
+    /// Current fill level in milliseconds.
+    var fillMs: Double {
+        Double(length) / Double(rate) * 1000.0
+    }
+
     // MARK: - Bulk copy helpers
 
     /// Copy `count` samples from `src` into ring buffer `channel` starting at logical `pos`.

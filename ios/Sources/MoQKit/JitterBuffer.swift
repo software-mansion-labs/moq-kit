@@ -123,6 +123,14 @@ final class JitterBuffer<T>: @unchecked Sendable {
         lock.withLock { entries.count }
     }
 
+    /// Current buffered depth in milliseconds (newest − oldest entry timestamp).
+    var depthMs: Double {
+        lock.withLock {
+            guard entries.count >= 2 else { return 0 }
+            return Double(entries.last!.timestampUs - entries.first!.timestampUs) / 1000.0
+        }
+    }
+
     private func wallClockTimeUs() -> Int64 {
         let hostTime = CMClockGetTime(hostClock)
 

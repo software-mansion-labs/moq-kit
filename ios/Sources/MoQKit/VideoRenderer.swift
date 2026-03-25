@@ -160,6 +160,8 @@ final class VideoRenderer: @unchecked Sendable {
         jitterBuffer.updateTargetBuffering(us: ms * 1000)
     }
 
+    var bufferFillMs: Double { jitterBuffer.depthMs }
+
     /// Process and insert a video frame into the jitter buffer. Thread-safe.
     func insert(
         payload: Data, timestampUs: UInt64, keyframe: Bool
