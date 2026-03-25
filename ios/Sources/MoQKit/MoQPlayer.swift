@@ -393,6 +393,7 @@ public final class MoQPlayer {
                 do {
                     videoSubscription = try MoQMediaTrack(
                         broadcast: vInfo.broadcast, name: vInfo.name,
+                        config: .video(vInfo.config),
                         maxLatencyMs: targetBufferingMs)
                 } catch {
                     MoQLogger.player.error(
@@ -400,10 +401,12 @@ public final class MoQPlayer {
                 }
             } else if let aInfo = track as? MoQAudioTrackInfo {
                 MoQLogger.player.debug(
-                    "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription), container=\(aInfo.config.container)")
+                    "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription), container=\(aInfo.config.container)"
+                )
                 do {
                     audioSubscription = try MoQMediaTrack(
                         broadcast: aInfo.broadcast, name: aInfo.name,
+                        config: .audio(aInfo.config),
                         maxLatencyMs: targetBufferingMs)
                 } catch {
                     MoQLogger.player.error(

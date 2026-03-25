@@ -1003,16 +1003,25 @@ public func FfiConverterTypeMoqAnnouncement_lower(_ value: MoqAnnouncement) -> U
 public protocol MoqBroadcastConsumerProtocol: AnyObject, Sendable {
     
     /**
+     * Subscribe to an audio track by name, delivering frames in decode order.
+     *
+     * `config` is the audio track configuration from the catalog.
+     * `max_latency_ms` controls the maximum buffering before skipping a GoP.
+     */
+    func subscribeAudio(name: String, config: MoqAudio, maxLatencyMs: UInt64) throws  -> MoqMediaConsumer
+    
+    /**
      * Subscribe to the catalog for this broadcast.
      */
     func subscribeCatalog() throws  -> MoqCatalogConsumer
     
     /**
-     * Subscribe to a media track by name, delivering frames in decode order.
+     * Subscribe to a video track by name, delivering frames in decode order.
      *
+     * `config` is the video track configuration from the catalog.
      * `max_latency_ms` controls the maximum buffering before skipping a GoP.
      */
-    func subscribeMedia(name: String, maxLatencyMs: UInt64) throws  -> MoqMediaConsumer
+    func subscribeVideo(name: String, config: MoqVideo, maxLatencyMs: UInt64) throws  -> MoqMediaConsumer
     
 }
 open class MoqBroadcastConsumer: MoqBroadcastConsumerProtocol, @unchecked Sendable {
@@ -1069,6 +1078,23 @@ open class MoqBroadcastConsumer: MoqBroadcastConsumerProtocol, @unchecked Sendab
 
     
     /**
+     * Subscribe to an audio track by name, delivering frames in decode order.
+     *
+     * `config` is the audio track configuration from the catalog.
+     * `max_latency_ms` controls the maximum buffering before skipping a GoP.
+     */
+open func subscribeAudio(name: String, config: MoqAudio, maxLatencyMs: UInt64)throws  -> MoqMediaConsumer  {
+    return try  FfiConverterTypeMoqMediaConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastconsumer_subscribe_audio(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterTypeMoqAudio_lower(config),
+        FfiConverterUInt64.lower(maxLatencyMs),$0
+    )
+})
+}
+    
+    /**
      * Subscribe to the catalog for this broadcast.
      */
 open func subscribeCatalog()throws  -> MoqCatalogConsumer  {
@@ -1080,15 +1106,17 @@ open func subscribeCatalog()throws  -> MoqCatalogConsumer  {
 }
     
     /**
-     * Subscribe to a media track by name, delivering frames in decode order.
+     * Subscribe to a video track by name, delivering frames in decode order.
      *
+     * `config` is the video track configuration from the catalog.
      * `max_latency_ms` controls the maximum buffering before skipping a GoP.
      */
-open func subscribeMedia(name: String, maxLatencyMs: UInt64)throws  -> MoqMediaConsumer  {
+open func subscribeVideo(name: String, config: MoqVideo, maxLatencyMs: UInt64)throws  -> MoqMediaConsumer  {
     return try  FfiConverterTypeMoqMediaConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqbroadcastconsumer_subscribe_media(
+    uniffi_moq_ffi_fn_method_moqbroadcastconsumer_subscribe_video(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(name),
+        FfiConverterTypeMoqVideo_lower(config),
         FfiConverterUInt64.lower(maxLatencyMs),$0
     )
 })
@@ -3280,10 +3308,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_func_moq_log_level() != 27140) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_audio() != 221) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_catalog() != 28366) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_media() != 17857) {
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_video() != 11489) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqcatalogconsumer_cancel() != 1059) {
