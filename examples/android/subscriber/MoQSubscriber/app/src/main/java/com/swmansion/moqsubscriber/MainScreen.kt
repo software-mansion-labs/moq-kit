@@ -311,6 +311,18 @@ private fun StatsCard(stats: PlaybackStats) {
                         }
                     }
 
+                    // Buffers section
+                    if (stats.audioRingBufferMs != null || stats.videoJitterBufferMs != null) {
+                        StatsSection("Buffers") {
+                            stats.videoJitterBufferMs?.let { ms ->
+                                StatRow("Video jitter buffer", "${ms.toInt()} ms")
+                            }
+                            stats.audioRingBufferMs?.let { ms ->
+                                StatRow("Audio ring buffer", "${ms.toInt()} ms")
+                            }
+                        }
+                    }
+
                     // Health section
                     val hasHealth = (stats.videoStalls?.let { it.count > 0 } == true)
                         || (stats.audioStalls?.let { it.count > 0 } == true)

@@ -12,6 +12,8 @@ data class PlaybackStats(
     val videoFps: Double?,
     val audioFramesDropped: Long?,
     val videoFramesDropped: Long?,
+    val audioRingBufferMs: Double?,
+    val videoJitterBufferMs: Double?,
 )
 
 data class StallStats(

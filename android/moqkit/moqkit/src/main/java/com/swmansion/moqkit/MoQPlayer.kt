@@ -54,7 +54,12 @@ class MoQPlayer(
         val videoLatency = videoRenderer?.let {
             if (it.lastIngestPtsUs > 0 && timeUs > 0) (it.lastIngestPtsUs - timeUs).toDouble() / 1000.0 else null
         }
-        return accumulator.snapshot(audioLatencyMs = audioLatency, videoLatencyMs = videoLatency)
+        return accumulator.snapshot(
+            audioLatencyMs = audioLatency,
+            videoLatencyMs = videoLatency,
+            audioRingBufferMs = audioRenderer?.bufferFillMs,
+            videoJitterBufferMs = videoRenderer?.bufferFillMs,
+        )
     }
 
     /**

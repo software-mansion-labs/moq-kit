@@ -49,6 +49,10 @@ internal class AudioRenderer(
     /** Current playback time in microseconds, driven by AudioTrack head position. */
     val currentTimeUs: Long get() = timebase.currentTimeUs
 
+    val bufferFillMs: Double get() = lock.withLock {
+        (ringBuffer.length.toDouble() / sampleRate) * 1000.0
+    }
+
     fun start() {
         Log.d(TAG, "Starting: ${sampleRate}Hz ${channels}ch, targetLatency=${targetLatencyMs}ms")
 

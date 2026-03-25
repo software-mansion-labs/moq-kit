@@ -58,6 +58,8 @@ internal class VideoRenderer(
     var lastIngestPtsUs: Long = 0L
         private set
 
+    val bufferFillMs: Double get() = jitterBuffer.depthMs
+
     fun start() {
         Log.d(TAG, "Starting: codec=${config.codec}")
 

@@ -187,7 +187,12 @@ class PlaybackMetricsAccumulator {
 
     // -- Snapshot --
 
-    fun snapshot(audioLatencyMs: Double?, videoLatencyMs: Double?): PlaybackStats {
+    fun snapshot(
+        audioLatencyMs: Double?,
+        videoLatencyMs: Double?,
+        audioRingBufferMs: Double? = null,
+        videoJitterBufferMs: Double? = null,
+    ): PlaybackStats {
         val now = System.nanoTime()
         synchronized(lock) {
             // TTFF
@@ -241,6 +246,8 @@ class PlaybackMetricsAccumulator {
                 videoFps = fps,
                 audioFramesDropped = aDrop,
                 videoFramesDropped = vDrop,
+                audioRingBufferMs = audioRingBufferMs,
+                videoJitterBufferMs = videoJitterBufferMs,
             )
         }
     }

@@ -137,6 +137,10 @@ internal class JitterBuffer<T>(
 
     val state: State get() = synchronized(lock) { mode }
     val count: Int get() = synchronized(lock) { entries.size }
+    val depthMs: Double get() = synchronized(lock) {
+        if (entries.size < 2) 0.0
+        else (entries.last().timestampUs - entries.first().timestampUs).toDouble() / 1000.0
+    }
 
     private fun wallClockTimeUs(): Long = System.nanoTime() / 1000
 }
