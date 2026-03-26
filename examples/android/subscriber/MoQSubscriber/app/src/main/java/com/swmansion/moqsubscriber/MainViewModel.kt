@@ -24,22 +24,22 @@ class BroadcastEntry(info: MoQBroadcastInfo) {
     var offline by mutableStateOf(false)
     var isPlaying by mutableStateOf(false)
     var isPaused by mutableStateOf(false)
+    var targetLatencyMs by mutableStateOf(200)
 
     var playbackStats by mutableStateOf<PlaybackStats?>(null)
 
     internal var eventJob: Job? = null
     internal var statsJob: Job? = null
+    internal var latencyUpdateJob: Job? = null
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     var relayUrl by mutableStateOf("http://192.168.92.140:4443")
     var sessionState by mutableStateOf<MoQSession.State>(MoQSession.State.Idle)
-    var targetLatencyMs by mutableStateOf(100)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
 
     private var session: MoQSession? = null
     private var sessionJobs: List<Job> = emptyList()
-    private var latencyUpdateJob: Job? = null
 
     fun connect() {
         val context = getApplication<Application>()
@@ -84,20 +84,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             },
         )
     }
-    fun updateTargetLatency(ms: Int) {
-        targetLatencyMs = ms
-        latencyUpdateJob?.cancel()
-        latencyUpdateJob = viewModelScope.launch {
+    fun togglePause(entry: BroadcastEntry) {
+        if (entry.isPaused) {
+            entry.player?.play()
+            // play() recreates renderers with the original constructor latency — restore the slider value
+            entry.player?.updateTargetLatency(entry.targetLatencyMs)
+            entry.isPaused = false
+        } else {
+            entry.player?.pause()
+            entry.isPaused = true
+        }
+    }
+
+    fun updateTargetLatency(entry: BroadcastEntry, ms: Int) {
+        entry.targetLatencyMs = ms
+        entry.latencyUpdateJob?.cancel()
+        entry.latencyUpdateJob = viewModelScope.launch {
             delay(300) // 300ms debounce, matching iOS
-            for (entry in broadcasts) {
-                entry.player?.updateTargetLatency(ms)
-            }
+            entry.player?.updateTargetLatency(ms)
         }
     }
 
     private fun stopEntry(entry: BroadcastEntry) {
         entry.eventJob?.cancel()
         entry.statsJob?.cancel()
+        entry.latencyUpdateJob?.cancel()
         entry.player?.stop()
         entry.player = null
         entry.playbackStats = null
@@ -113,7 +124,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 addAll(entry.info.audioTracks)
                 addAll(entry.info.videoTracks)
             }
-            val player = MoQPlayer(allTracks, targetLatencyMs, viewModelScope)
+            val player = MoQPlayer(allTracks, entry.targetLatencyMs, viewModelScope)
             entry.player = player
             player.play()
 
@@ -138,21 +149,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             return
-        }
-    }
-
-    fun pause() {
-        for (entry in broadcasts) {
-            entry.player?.pause()
-            entry.isPaused = true
-        }
-    }
-
-    fun resume() {
-        for (entry in broadcasts) {
-            // Real-time player doesn't support resume — would need to re-play
-            entry.player?.play()
-            entry.isPaused = false
         }
     }
 

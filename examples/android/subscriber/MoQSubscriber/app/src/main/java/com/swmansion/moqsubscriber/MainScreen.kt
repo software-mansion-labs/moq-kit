@@ -1,6 +1,11 @@
 package com.swmansion.moqsubscriber
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,25 +14,24 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -36,101 +40,137 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Icon
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.media3.ui.PlayerView
 import com.swmansion.moqkit.MoQSession
 import com.swmansion.moqkit.PlaybackStats
+import kotlinx.coroutines.delay
 
 @Composable
 fun MainScreen(vm: MainViewModel = viewModel()) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .systemBarsPadding()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        OutlinedTextField(
-            value = vm.relayUrl,
-            onValueChange = { vm.relayUrl = it },
-            label = { Text("Relay URL") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
+    var fullscreenEntry by remember { mutableStateOf<BroadcastEntry?>(null) }
 
-        Column {
-            Text(
-                text = "Target latency: ${vm.targetLatencyMs} ms",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            Slider(
-                value = vm.targetLatencyMs.toFloat(),
-                onValueChange = { vm.updateTargetLatency(it.toInt()) },
-                valueRange = 50f..2000f,
-                steps = (2000 - 50) / 50 - 1,
+    val context = LocalContext.current
+    DisposableEffect(fullscreenEntry != null) {
+        val activity = context as Activity
+        if (fullscreenEntry != null) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            WindowCompat.getInsetsController(activity.window, activity.window.decorView).apply {
+                hide(WindowInsetsCompat.Type.systemBars())
+                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+                .show(WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+                .show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .systemBarsPadding()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            OutlinedTextField(
+                value = vm.relayUrl,
+                onValueChange = { vm.relayUrl = it },
+                label = { Text("Relay URL") },
+                singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = { vm.connect() },
+                    enabled = vm.sessionState is MoQSession.State.Idle &&
+                            vm.relayUrl.isNotEmpty(),
+                ) {
+                    Text("Connect")
+                }
+                OutlinedButton(
+                    onClick = { vm.stop() },
+                    enabled = vm.sessionState is MoQSession.State.Connecting ||
+                            vm.sessionState is MoQSession.State.Connected,
+                ) {
+                    Text("Stop")
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(stateColor(vm.sessionState), shape = RoundedCornerShape(5.dp))
+                )
+                Text(
+                    text = stateLabel(vm.sessionState),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                items(vm.broadcasts, key = { it.id }) { entry ->
+                    BroadcastCard(
+                        entry = entry,
+                        vm = vm,
+                        isFullscreen = fullscreenEntry?.id == entry.id,
+                        onFullscreen = { fullscreenEntry = entry },
+                    )
+                }
+            }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(
-                onClick = { vm.connect() },
-                enabled = vm.sessionState is MoQSession.State.Idle &&
-                        vm.relayUrl.isNotEmpty(),
-            ) {
-                Text("Connect")
-            }
-            OutlinedButton(
-                onClick = { vm.stop() },
-                enabled = vm.sessionState is MoQSession.State.Connecting ||
-                        vm.sessionState is MoQSession.State.Connected,
-            ) {
-                Text("Stop")
-            }
-            OutlinedButton(
-                onClick = { if (vm.broadcasts.any { it.isPaused }) vm.resume() else vm.pause() },
-                enabled = vm.broadcasts.any { it.isPlaying || it.isPaused },
-            ) {
-                Text(if (vm.broadcasts.any { it.isPaused }) "Resume" else "Pause")
-            }
-        }
-
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Box(
+        fullscreenEntry?.let { entry ->
+            FullscreenPlayerOverlay(
+                entry = entry,
+                vm = vm,
+                onDismiss = { fullscreenEntry = null },
                 modifier = Modifier
-                    .size(10.dp)
-                    .background(stateColor(vm.sessionState), shape = RoundedCornerShape(5.dp))
+                    .fillMaxSize()
+                    .zIndex(1f),
             )
-            Text(
-                text = stateLabel(vm.sessionState),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            items(vm.broadcasts, key = { it.id }) { entry ->
-                BroadcastCard(entry)
-            }
         }
     }
 }
 
 @Composable
-private fun BroadcastCard(entry: BroadcastEntry) {
+private fun BroadcastCard(
+    entry: BroadcastEntry,
+    vm: MainViewModel,
+    isFullscreen: Boolean,
+    onFullscreen: () -> Unit,
+) {
     Card(
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -188,30 +228,191 @@ private fun BroadcastCard(entry: BroadcastEntry) {
                 }
             }
 
-            val player = entry.player
-            AndroidView(
-                factory = { ctx ->
-                    SurfaceView(ctx).also { sv ->
-                        sv.holder.addCallback(object : SurfaceHolder.Callback {
-                            override fun surfaceCreated(holder: SurfaceHolder) {
-                                player?.setSurface(holder.surface)
-                            }
-                            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-                            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                player?.setSurface(null)
-                            }
-                        })
-                    }
-                },
+            // Video surface with tap-to-show overlaid controls
+            var showControls by remember { mutableStateOf(false) }
+            LaunchedEffect(showControls) {
+                if (showControls) {
+                    delay(3000)
+                    showControls = false
+                }
+            }
+
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(16f / 9f)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color.Black),
-            )
+                    .background(Color.Black)
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() },
+                    ) { showControls = !showControls },
+            ) {
+                if (isFullscreen) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "Playing in fullscreen",
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                } else {
+                    val player = entry.player
+                    AndroidView(
+                        factory = { ctx ->
+                            SurfaceView(ctx).also { sv ->
+                                sv.holder.addCallback(object : SurfaceHolder.Callback {
+                                    override fun surfaceCreated(holder: SurfaceHolder) {
+                                        entry.player?.setSurface(holder.surface)
+                                    }
+                                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                                    override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                        entry.player?.setSurface(null)
+                                    }
+                                })
+                            }
+                        },
+                        update = { sv ->
+                            val surface = sv.holder.surface
+                            if (player != null && surface != null && surface.isValid) {
+                                player.setSurface(surface)
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+
+                if (showControls) {
+                    // Pause — centred
+                    IconButton(
+                        onClick = { vm.togglePause(entry) },
+                        enabled = entry.isPlaying || entry.isPaused,
+                        modifier = Modifier.align(Alignment.Center),
+                    ) {
+                        Icon(
+                            imageVector = if (entry.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                            contentDescription = if (entry.isPaused) "Resume" else "Pause",
+                            tint = Color.White,
+                            modifier = Modifier.size(40.dp),
+                        )
+                    }
+
+                    // Fullscreen — bottom-right corner
+                    IconButton(
+                        onClick = onFullscreen,
+                        enabled = entry.isPlaying || entry.isPaused,
+                        modifier = Modifier.align(Alignment.BottomEnd),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Fullscreen,
+                            contentDescription = "Fullscreen",
+                            tint = Color.White,
+                        )
+                    }
+                }
+            }
+
+            // Per-player latency slider
+            Column {
+                Text(
+                    text = "Target latency: ${entry.targetLatencyMs} ms",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Slider(
+                    value = entry.targetLatencyMs.toFloat(),
+                    onValueChange = { vm.updateTargetLatency(entry, it.toInt()) },
+                    valueRange = 50f..2000f,
+                    steps = (2000 - 50) / 50 - 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             entry.playbackStats?.let { stats ->
                 StatsCard(stats)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FullscreenPlayerOverlay(
+    entry: BroadcastEntry,
+    vm: MainViewModel,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var showControls by remember { mutableStateOf(true) }
+
+    BackHandler { onDismiss() }
+
+    LaunchedEffect(showControls) {
+        if (showControls) {
+            delay(3000)
+            showControls = false
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .background(Color.Black)
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) { showControls = !showControls },
+    ) {
+        AndroidView(
+            factory = { ctx ->
+                SurfaceView(ctx).also { sv ->
+                    sv.holder.addCallback(object : SurfaceHolder.Callback {
+                        override fun surfaceCreated(holder: SurfaceHolder) {
+                            entry.player?.setSurface(holder.surface)
+                        }
+                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
+                        override fun surfaceDestroyed(holder: SurfaceHolder) {
+                            entry.player?.setSurface(null)
+                        }
+                    })
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+
+        if (showControls) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.4f)),
+            ) {
+                // Close — top right
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Exit fullscreen",
+                        tint = Color.White,
+                    )
+                }
+
+                // Play / pause — centre
+                IconButton(
+                    onClick = { vm.togglePause(entry) },
+                    enabled = entry.isPlaying || entry.isPaused,
+                    modifier = Modifier.align(Alignment.Center),
+                ) {
+                    Icon(
+                        imageVector = if (entry.isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                        contentDescription = if (entry.isPaused) "Resume" else "Pause",
+                        tint = Color.White,
+                        modifier = Modifier.size(48.dp),
+                    )
+                }
             }
         }
     }
