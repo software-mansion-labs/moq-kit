@@ -393,7 +393,7 @@ public final class MoQPlayer {
                 do {
                     videoSubscription = try MoQMediaTrack(
                         broadcast: vInfo.broadcast, name: vInfo.name,
-                        config: .video(vInfo.config),
+                        container: vInfo.config.container,
                         maxLatencyMs: targetBufferingMs)
                 } catch {
                     MoQLogger.player.error(
@@ -406,7 +406,7 @@ public final class MoQPlayer {
                 do {
                     audioSubscription = try MoQMediaTrack(
                         broadcast: aInfo.broadcast, name: aInfo.name,
-                        config: .audio(aInfo.config),
+                        container: aInfo.config.container,
                         maxLatencyMs: targetBufferingMs)
                 } catch {
                     MoQLogger.player.error(

@@ -8,28 +8,21 @@ import kotlinx.coroutines.flow.flowOn
 import uniffi.moq.MoqAudio
 import uniffi.moq.MoqBroadcastConsumer
 import uniffi.moq.MoqFrame
-import uniffi.moq.MoqVideo
+import uniffi.moq.Container
 
 private const val TAG = "MediaTrack"
-
-sealed class MoQMediaTrackConfig {
-    data class Audio(val config: MoqAudio) : MoQMediaTrackConfig()
-    data class Video(val config: MoqVideo) : MoQMediaTrackConfig()
-}
 
 fun subscribeTrack(
     broadcast: MoqBroadcastConsumer,
     name: String,
-    config: MoQMediaTrackConfig,
+    container: Container,
     maxLatencyMs: ULong = 1000u,
 ): Flow<MoqFrame> = flow {
     var consumer: uniffi.moq.MoqMediaConsumer? = null
     try {
         Log.d(TAG, "Subscribing to track '$name' (maxLatencyMs=$maxLatencyMs)")
-        consumer = when (config) {
-            is MoQMediaTrackConfig.Audio -> broadcast.subscribeAudio(name, config.config, maxLatencyMs)
-            is MoQMediaTrackConfig.Video -> broadcast.subscribeVideo(name, config.config, maxLatencyMs)
-        }
+        consumer = broadcast.subscribeMedia(name, container, maxLatencyMs)
+
         Log.d(TAG, "Track '$name' subscribed successfully")
         while (true) {
             val frame = consumer.next() ?: break

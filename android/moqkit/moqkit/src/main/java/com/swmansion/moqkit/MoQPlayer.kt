@@ -101,7 +101,7 @@ class MoQPlayer(
         val audioFlow = subscribeTrack(
             audioInfo.broadcast,
             audioInfo.name,
-            MoQMediaTrackConfig.Audio(audioInfo.config),
+            audioInfo.config.container,
             targetLatencyMs.toULong(),
         )
 
@@ -166,7 +166,7 @@ class MoQPlayer(
         val videoFlow = subscribeTrack(
             videoInfo.broadcast,
             videoInfo.name,
-            MoQMediaTrackConfig.Video(videoInfo.config),
+            videoInfo.config.container,
             targetLatencyMs.toULong(),
         )
 
@@ -182,7 +182,7 @@ class MoQPlayer(
                         val diff = if (tsUs > lastPtsUs) tsUs - lastPtsUs else lastPtsUs - tsUs
                         if (diff > 500_000) {
                             Log.d(TAG, "Video discontinuity detected, flushing")
-                            renderer.flush()
+                            // renderer.flush()
                         }
                     }
                     lastPtsUs = tsUs

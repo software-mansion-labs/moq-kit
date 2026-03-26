@@ -9,11 +9,6 @@ public enum MoQTrackState: Sendable, Equatable {
     case error(String)
 }
 
-public enum MoQMediaTrackConfig {
-    case audio(MoqAudio)
-    case video(MoqVideo)
-}
-
 // MARK: - Media Track
 
 public final class MoQMediaTrack: @unchecked Sendable {
@@ -26,16 +21,10 @@ public final class MoQMediaTrack: @unchecked Sendable {
     private var readTask: Task<Void, Never>?
 
     init(
-        broadcast: MoqBroadcastConsumer, name: String, config: MoQMediaTrackConfig,
+        broadcast: MoqBroadcastConsumer, name: String, container: Container,
         maxLatencyMs: UInt64
     ) throws {
-        let track =
-            switch config {
-            case .audio(let audio):
-                try broadcast.subscribeAudio(name: name, config: audio, maxLatencyMs: maxLatencyMs)
-            case .video(let video):
-                try broadcast.subscribeVideo(name: name, config: video, maxLatencyMs: maxLatencyMs)
-            }
+        let track = try broadcast.subscribeMedia(name: name, container: container, maxLatencyMs: maxLatencyMs)
 
         self.track = track
 

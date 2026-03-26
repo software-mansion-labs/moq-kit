@@ -30,6 +30,8 @@ internal class JitterBuffer<T>(
     var onStartPlaying: (() -> Unit)? = null
     var onStartBuffering: (() -> Unit)? = null
 
+    private var exhausted = true
+
     fun setOnDataAvailable(callback: (() -> Unit)?) {
         synchronized(lock) { onDataAvailable = callback }
     }
@@ -76,7 +78,7 @@ internal class JitterBuffer<T>(
             }
 
             // Notify if inserting into empty buffer while playing
-            notify = wasEmpty && mode == State.PLAYING && onDataAvailable != null
+            notify = exhausted || (wasEmpty && mode == State.PLAYING)
         }
 
         if (notify) {
@@ -94,7 +96,12 @@ internal class JitterBuffer<T>(
      */
     fun dequeue(mediaTimeUs: Long? = null): Pair<Entry<T>?, Boolean> {
         synchronized(lock) {
-            if (mode != State.PLAYING || entries.isEmpty()) return null to false
+            if (mode != State.PLAYING || entries.isEmpty()) {
+                exhausted = true
+                return null to false
+            }
+
+            exhausted = false
 
             val entry = entries.removeAt(0)
             val playable = if (mediaTimeUs != null) {
@@ -110,6 +117,17 @@ internal class JitterBuffer<T>(
     }
 
     /**
+     * Peek the PTS of the oldest buffered entry without removing it.
+     * Returns null if not in PLAYING state or if buffer is empty.
+     */
+    fun peekNextTimestampUs(): Long? {
+        synchronized(lock) {
+            if (mode != State.PLAYING || entries.isEmpty()) return null
+            return entries.first().timestampUs
+        }
+    }
+
+    /**
      * Estimated playback time in microseconds.
      * Used by VideoRenderer to compute render timestamps.
      */
@@ -120,7 +138,10 @@ internal class JitterBuffer<T>(
     }
 
     fun updateTargetBuffering(us: Long) {
-        synchronized(lock) { targetBufferingUs = us }
+        synchronized(lock) { 
+          targetBufferingUs = us 
+          mode = State.BUFFERING
+        }
     }
 
     /**

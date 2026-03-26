@@ -1,15 +1,14 @@
-@file:OptIn(UnstableApi::class)
-
 package com.swmansion.moqkit
 
 import android.media.MediaFormat
-import androidx.media3.common.Format
-import androidx.media3.common.MimeTypes
-import androidx.media3.common.util.UnstableApi
 import uniffi.moq.MoqAudio
 import uniffi.moq.MoqVideo
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import android.util.Log
+
+
 
 internal object MediaFactory {
     fun makeVideoFormat(config: MoqVideo): MediaFormat? {
@@ -37,15 +36,36 @@ internal object MediaFactory {
             config.sampleRate.toInt(),
             config.channelCount.toInt(),
         )
-        if (desc != null) {
-            format.setByteBuffer("csd-0", ByteBuffer.wrap(desc))
-        } else if (mime == MediaFormat.MIMETYPE_AUDIO_AAC) {
-            format.setByteBuffer("csd-0", this.generateAacCsd(config.sampleRate.toInt(), config.channelCount.toInt()))
-        } else {
-            return null
+        Log.d("MediaFactory", "mime $mime")
+        when (mime) {
+            MediaFormat.MIMETYPE_AUDIO_AAC -> {
+                val csd = desc?.let { ByteBuffer.wrap(it) }
+                    ?: generateAacCsd(config.sampleRate.toInt(), config.channelCount.toInt())
+                format.setByteBuffer("csd-0", csd)
+            }
+            MediaFormat.MIMETYPE_AUDIO_OPUS -> {
+                // csd-0: Opus identification header
+                // csd-1: codec delay (pre-skip) in nanoseconds, little-endian int64
+                // csd-2: seek pre-roll in nanoseconds, little-endian int64
+                val header = desc ?: generateOpusHeader(config.sampleRate.toInt(), config.channelCount.toInt())
+                val preSkipSamples = if (header.size >= 12) {
+                    ((header[11].toInt() and 0xFF) shl 8) or (header[10].toInt() and 0xFF)
+                } else {
+                    312 // default pre-skip at 48 kHz
+                }
+                val codecDelayNs = preSkipSamples * 1_000_000_000L / 48000
+                val seekPreRollNs = 80_000_000L // 80 ms
+                format.setByteBuffer("csd-0", ByteBuffer.wrap(header))
+                format.setByteBuffer("csd-1", longToLeBuffer(codecDelayNs))
+                format.setByteBuffer("csd-2", longToLeBuffer(seekPreRollNs))
+            }
+            else -> return null
         }
         return format
     }
+
+    private fun longToLeBuffer(value: Long): ByteBuffer =
+        ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(value).also { it.flip() }
 
     private fun generateAacCsd(sampleRate: Int, channelCount: Int): ByteBuffer {
         val sampleRateIndex = when (sampleRate) {
@@ -63,45 +83,19 @@ internal object MediaFactory {
         return ByteBuffer.wrap(csd)
     }
 
-    fun makeVideoFormatMedia3(config: MoqVideo): Format? {
-        val mime = videoMimeMedia3(config.codec) ?: return null
-        val desc = config.description ?: return null
-
-        val width = config.coded?.width?.toInt() ?: 1920
-        val height = config.coded?.height?.toInt() ?: 1080
-        val csd = when (mime) {
-            MimeTypes.VIDEO_H264 -> buildAvccCsd(desc)
-            MimeTypes.VIDEO_H265 -> buildHvccCsd(desc)
-            MimeTypes.VIDEO_AV1 -> listOf(desc)
-            else -> emptyList()
-        }
-
-        return Format.Builder()
-            .setSampleMimeType(mime)
-            .setWidth(width)
-            .setHeight(height)
-            .setInitializationData(csd)
-            .build()
-    }
-
-    fun makeAudioFormatMedia3(config: MoqAudio): Format? {
-        val mime = audioMimeMedia3(config.codec) ?: return null
-        val desc: ByteArray = when (mime) {
-            MimeTypes.AUDIO_AAC -> config.description
-                ?: generateAacCsd(config.sampleRate.toInt(), config.channelCount.toInt()).let { buf ->
-                    ByteArray(buf.capacity()).also { buf.get(it) }
-                }
-            else -> config.description ?: return null
-        }
-
-
-        return Format.Builder()
-            .setSampleMimeType(mime)
-            .setSampleRate(config.sampleRate.toInt())
-            .setChannelCount(config.channelCount.toInt())
-            .setAverageBitrate(128000)
-            .setInitializationData(listOf(desc))
-            .build()
+    // Generate a minimal Opus identification header (RFC 7845 §5.1) for mono/stereo streams.
+    // Channel mapping family 0 supports 1–2 channels without an explicit mapping table.
+    private fun generateOpusHeader(sampleRate: Int, channelCount: Int): ByteArray {
+        val preSkip: Short = 312 // standard pre-skip at 48 kHz
+        return ByteBuffer.allocate(19).order(ByteOrder.LITTLE_ENDIAN)
+            .put("OpusHead".toByteArray(Charsets.US_ASCII)) // magic (8 bytes)
+            .put(1.toByte())                                 // version
+            .put(channelCount.toByte())                      // channel count
+            .putShort(preSkip)                               // pre-skip (LE uint16)
+            .putInt(sampleRate)                              // input sample rate (LE uint32)
+            .putShort(0)                                     // output gain (LE int16)
+            .put(0.toByte())                                 // channel mapping family 0
+            .array()
     }
 
     fun videoMime(codec: String): String? = when {
@@ -114,19 +108,6 @@ internal object MediaFactory {
     private fun audioMime(codec: String): String? = when {
         codec.startsWith("mp4a") || codec.startsWith("aac") -> MediaFormat.MIMETYPE_AUDIO_AAC
         codec.startsWith("opus") -> MediaFormat.MIMETYPE_AUDIO_OPUS
-        else -> null
-    }
-
-    private fun videoMimeMedia3(codec: String): String? = when {
-        codec.startsWith("avc") -> MimeTypes.VIDEO_H264
-        codec.startsWith("hev") || codec.startsWith("hvc") -> MimeTypes.VIDEO_H265
-        codec.startsWith("av0") -> MimeTypes.VIDEO_AV1
-        else -> null
-    }
-
-    private fun audioMimeMedia3(codec: String): String? = when {
-        codec.startsWith("mp4a") || codec.startsWith("aac") -> MimeTypes.AUDIO_AAC
-        codec.startsWith("opus") -> MimeTypes.AUDIO_OPUS
         else -> null
     }
 
@@ -188,63 +169,6 @@ internal object MediaFactory {
         if (combined.isNotEmpty()) {
             format.setByteBuffer("csd-0", ByteBuffer.wrap(combined))
         }
-    }
-
-    // Build CSD byte arrays from AVCDecoderConfigurationRecord for Media3 Format
-    private fun buildAvccCsd(desc: ByteArray): List<ByteArray> {
-        var pos = 5
-        if (pos >= desc.size) return emptyList()
-        val result = mutableListOf<ByteArray>()
-
-        val numSps = desc[pos++].toInt() and 0x1F
-        if (numSps > 0 && pos + 2 <= desc.size) {
-            val spsLen = ((desc[pos].toInt() and 0xFF) shl 8) or (desc[pos + 1].toInt() and 0xFF)
-            pos += 2
-            if (pos + spsLen <= desc.size) {
-                result.add(annexBWrap(desc, pos, spsLen))
-                pos += spsLen
-            }
-        }
-
-        if (pos >= desc.size) return result
-        val numPps = desc[pos++].toInt() and 0xFF
-        if (numPps > 0 && pos + 2 <= desc.size) {
-            val ppsLen = ((desc[pos].toInt() and 0xFF) shl 8) or (desc[pos + 1].toInt() and 0xFF)
-            pos += 2
-            if (pos + ppsLen <= desc.size) {
-                result.add(annexBWrap(desc, pos, ppsLen))
-            }
-        }
-
-        return result
-    }
-
-    // Build combined CSD byte array from HEVCDecoderConfigurationRecord for Media3 Format
-    private fun buildHvccCsd(desc: ByteArray): List<ByteArray> {
-        var pos = 22
-        if (pos >= desc.size) return emptyList()
-
-        val numArrays = desc[pos++].toInt() and 0xFF
-        val out = ByteArrayOutputStream()
-
-        for (i in 0 until numArrays) {
-            if (pos + 3 > desc.size) break
-            pos++ // NAL type byte
-            val numNalus = ((desc[pos].toInt() and 0xFF) shl 8) or (desc[pos + 1].toInt() and 0xFF)
-            pos += 2
-            for (j in 0 until numNalus) {
-                if (pos + 2 > desc.size) break
-                val naluLen = ((desc[pos].toInt() and 0xFF) shl 8) or (desc[pos + 1].toInt() and 0xFF)
-                pos += 2
-                if (pos + naluLen > desc.size) break
-                out.write(byteArrayOf(0, 0, 0, 1))
-                out.write(desc, pos, naluLen)
-                pos += naluLen
-            }
-        }
-
-        val combined = out.toByteArray()
-        return if (combined.isNotEmpty()) listOf(combined) else emptyList()
     }
 
     private fun annexBWrap(src: ByteArray, offset: Int, length: Int): ByteArray {
