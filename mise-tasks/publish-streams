@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#MISE description="Publish multiple streams concurrently, each with a unique name"
+#USAGE flag "--url <url>" default="http://localhost:4443/anon" help="Relay URL"
+#USAGE flag "--count <count>" default="2" help="Number of streams to publish"
+#USAGE flag "--prefix <prefix>" default="stream" help="Name prefix (e.g. 'stream' → stream1, stream2, …)"
+#USAGE flag "--input <input>" default="bin/shrek.fmp4" help="Input media file"
+set -euo pipefail
+
+PIDS=()
+
+cleanup() {
+  echo "Stopping all streams…"
+  for pid in "${PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait "${PIDS[@]}" 2>/dev/null || true
+  echo "All streams stopped."
+}
+
+trap cleanup EXIT INT TERM
+
+for i in $(seq 1 "$usage_count"); do
+  NAME="${usage_prefix}${i}"
+  echo "Starting stream: $NAME"
+  mise run publish-stream --url "$usage_url" --name "$NAME" --input "$usage_input" &
+  PIDS+=($!)
+done
+
+echo "Publishing ${usage_count} streams (${usage_prefix}1…${usage_prefix}${usage_count}). Press Ctrl-C to stop."
+wait "${PIDS[@]}"
