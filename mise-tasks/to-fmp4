@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#MISE description="Convert a video file to CMAF fragmented MP4 for MOQ publishing"
+#USAGE flag "--input <input>" help="Path to source video file"
+#USAGE flag "--output <output>" default="" help="Output path (default: replaces extension with .fmp4)"
+#USAGE flag "--audio-rate <audio_rate>" default="48000" help="Audio sample rate in Hz"
+set -euo pipefail
+
+INPUT=$(realpath "$usage_input")
+OUTPUT_MP4="${usage_output:-${INPUT%.*}.mp4}"
+OUTPUT_FMP4="${usage_output:-${INPUT%.*}.fmp4}"
+
+# We remove '-r' to keep original framerate, but force a 90kHz timescale
+# This is the industry standard for MP4/HLS to prevent playback speed issues.
+ffmpeg -loglevel error -i "$INPUT" \
+  -c:v libx264 -preset superfast -bf 0 -g 30 \
+  -c:a aac -b:a 128k -ar "${usage_audio_rate:-48000}" \
+  -af "aresample=async=1:min_hard_comp=0.010000:first_pts=0" \
+  -f mp4 \
+  -y "$OUTPUT_MP4"
+
+ffmpeg -loglevel error -i "$OUTPUT_MP4" \
+  -c:v copy \
+  -f mp4 -movflags cmaf+separate_moof+delay_moov+skip_trailer+frag_every_frame \
+  -y $OUTPUT_FMP4
+
+echo "Written: $OUTPUT_FMP4"

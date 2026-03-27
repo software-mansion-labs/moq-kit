@@ -57,53 +57,89 @@ private struct BroadcastPlayerView: View {
     @ObservedObject var entry: BroadcastEntry
     @State private var latencyUpdateTask: Task<Void, Never>?
 
+    private var statusColor: Color {
+        if entry.offline { return .red }
+        if entry.isPaused { return .orange }
+        if entry.isPlaying { return .green }
+        return .orange
+    }
+
+    private var statusLabel: String {
+        if entry.offline { return "offline" }
+        if entry.isPaused { return "paused" }
+        if entry.isPlaying { return "playing" }
+        return "connecting"
+    }
+
     var body: some View {
-        VStack(spacing: 12) {
-            // Video card
+        VStack(spacing: 0) {
+            // Status header
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 8, height: 8)
+                Text(entry.info.path)
+                    .font(.subheadline)
+                    .fontWeight(.bold)
+                    .lineLimit(1)
+                Text(statusLabel)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+
+            // Video player
             if entry.player?.videoLayer != nil {
                 VideoPlayerView(entry: entry)
                     .aspectRatio(16 / 9, contentMode: .fit)
             }
 
-            // Track info pills
-            if !entry.offline {
-                HStack(spacing: 8) {
-                    if let video = entry.info.videoTracks.first {
-                        InfoPill(text: video.config.codec)
+            VStack(spacing: 12) {
+                // Track info pills
+                if !entry.offline {
+                    HStack(spacing: 8) {
+                        if let video = entry.info.videoTracks.first {
+                            InfoPill(text: video.config.codec)
+                        }
+                        if let audio = entry.info.audioTracks.first {
+                            InfoPill(text: "\(audio.config.codec) \(audio.config.sampleRate) Hz")
+                        }
+                        Spacer()
                     }
-                    if let audio = entry.info.audioTracks.first {
-                        InfoPill(text: "\(audio.config.codec) \(audio.config.sampleRate) Hz")
+                }
+
+                // Target latency
+                VStack(spacing: 4) {
+                    HStack {
+                        Text("Target Latency")
+                            .font(.subheadline)
+                        Spacer()
+                        Text("\(Int(entry.targetLatencyMs)) ms")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                    Spacer()
+                    Slider(value: $entry.targetLatencyMs, in: 50...2000, step: 50)
                 }
-            }
+                .onChange(of: entry.targetLatencyMs) {
+                    latencyUpdateTask?.cancel()
+                    latencyUpdateTask = Task {
+                        try? await Task.sleep(for: .milliseconds(300))
+                        guard !Task.isCancelled else { return }
+                        entry.updateTargetLatency(ms: UInt64(entry.targetLatencyMs))
+                    }
+                }
 
-            // Target latency
-            VStack(spacing: 4) {
-                HStack {
-                    Text("Target Latency")
-                        .font(.subheadline)
-                    Spacer()
-                    Text("\(Int(entry.targetLatencyMs)) ms")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                Slider(value: $entry.targetLatencyMs, in: 50...2000, step: 50)
-            }
-            .onChange(of: entry.targetLatencyMs) {
-                latencyUpdateTask?.cancel()
-                latencyUpdateTask = Task {
-                    try? await Task.sleep(for: .milliseconds(300))
-                    guard !Task.isCancelled else { return }
-                    entry.updateTargetLatency(ms: UInt64(entry.targetLatencyMs))
+                // Expandable stats
+                if let stats = entry.playbackStats {
+                    StatsCardView(stats: stats)
                 }
             }
-
-            // Expandable stats
-            if let stats = entry.playbackStats {
-                StatsCardView(stats: stats)
-            }
+            .padding(12)
         }
+        .background(.background, in: RoundedRectangle(cornerRadius: 16))
+        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
     }
 }
 

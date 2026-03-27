@@ -9,6 +9,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var player: MoQPlayer?
     @Published var offline: Bool = false
     @Published var isPlaying: Bool = false
+    @Published var isPaused: Bool = false
     @Published var playbackStats: PlaybackStats?
     @Published var targetLatencyMs: Double
 
@@ -85,7 +86,12 @@ final class PlayerViewModel: ObservableObject {
     private var broadcastObserverTask: Task<Void, Never>?
 
     var canConnect: Bool {
-        sessionState == .idle
+        switch sessionState {
+        case .idle, .error:
+            return true
+        default:
+            return false
+        }
     }
 
     var canStop: Bool {

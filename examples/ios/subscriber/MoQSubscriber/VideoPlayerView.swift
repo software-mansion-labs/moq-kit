@@ -6,7 +6,6 @@ struct VideoPlayerView: View {
     @ObservedObject var entry: BroadcastEntry
 
     @State private var showControls = false
-    @State private var isPaused = false
     @State private var isFullscreen = false
     @State private var videoLayerGeneration = 0
     @State private var hideTask: DispatchWorkItem?
@@ -27,7 +26,7 @@ struct VideoPlayerView: View {
         .fullScreenCover(isPresented: $isFullscreen, onDismiss: {
             videoLayerGeneration += 1
         }) {
-            FullscreenVideoView(entry: entry, isPaused: $isPaused)
+            FullscreenVideoView(entry: entry)
         }
     }
 
@@ -67,7 +66,7 @@ struct VideoPlayerView: View {
             Button {
                 togglePlayPause()
             } label: {
-                Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                Image(systemName: entry.isPaused ? "play.fill" : "pause.fill")
                     .font(.largeTitle)
                     .foregroundStyle(.white)
                     .frame(width: 60, height: 60)
@@ -109,12 +108,12 @@ struct VideoPlayerView: View {
     }
 
     private func togglePlayPause() {
-        if isPaused {
+        if entry.isPaused {
             Task { try? await entry.player?.play() }
-            isPaused = false
+            entry.isPaused = false
         } else {
             Task { await entry.player?.pause() }
-            isPaused = true
+            entry.isPaused = true
         }
         scheduleAutoHide()
     }
@@ -124,7 +123,6 @@ struct VideoPlayerView: View {
 
 private struct FullscreenVideoView: View {
     @ObservedObject var entry: BroadcastEntry
-    @Binding var isPaused: Bool
     @Environment(\.dismiss) private var dismiss
 
     @State private var showControls = false
@@ -182,7 +180,7 @@ private struct FullscreenVideoView: View {
             Button {
                 togglePlayPause()
             } label: {
-                Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                Image(systemName: entry.isPaused ? "play.fill" : "pause.fill")
                     .font(.largeTitle)
                     .foregroundStyle(.white)
                     .frame(width: 60, height: 60)
@@ -224,12 +222,12 @@ private struct FullscreenVideoView: View {
     }
 
     private func togglePlayPause() {
-        if isPaused {
+        if entry.isPaused {
             Task { try? await entry.player?.play() }
-            isPaused = false
+            entry.isPaused = false
         } else {
             Task { await entry.player?.pause() }
-            isPaused = true
+            entry.isPaused = true
         }
         scheduleAutoHide()
     }

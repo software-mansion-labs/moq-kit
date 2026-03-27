@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import MoQKit
 
 @main
 struct MoQSubscriberApp: App {
@@ -8,6 +9,8 @@ struct MoQSubscriberApp: App {
             .playback, mode: .moviePlayback, options: []
         )
         try? AVAudioSession.sharedInstance().setActive(true)
+        
+        try? moqLogLevel(level: "TRACE")
     }
 
     var body: some Scene {

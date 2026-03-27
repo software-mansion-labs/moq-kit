@@ -195,18 +195,17 @@ struct AudioRingBuffer {
         }
     }
 
-    /// Read samples into the provided output arrays. Returns how many samples were read.
+    /// Read up to `frameCount` samples into the provided output arrays. Returns how many samples were read.
     /// Returns 0 while stalled.
-    mutating func read(into output: inout [[Float32]]) -> Int {
+    mutating func read(into output: inout [[Float32]], frameCount: Int) -> Int {
         precondition(output.count == channels, "wrong number of channels")
         guard !stalled else { return 0 }
 
-        let samples = min(writeIndex - readIndex, output[0].count)
+        let samples = min(writeIndex - readIndex, frameCount)
         guard samples > 0 else { return 0 }
 
         for channel in 0..<channels {
-            precondition(
-                output[channel].count == output[0].count, "mismatching number of samples")
+            precondition(output[channel].count >= samples, "output buffer too small")
             output[channel].withUnsafeMutableBufferPointer { dst in
                 ringRead(channel: channel, pos: readIndex, dst: dst.baseAddress!, count: samples)
             }

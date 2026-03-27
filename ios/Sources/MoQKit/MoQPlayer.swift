@@ -213,9 +213,7 @@ public final class MoQPlayer {
             videoRendererForStats = nil
             accumulator.reset()
 
-            try? AVAudioSession.sharedInstance().setActive(false)
-
-            eventsContinuation.finish()
+eventsContinuation.finish()
         }
     }
 

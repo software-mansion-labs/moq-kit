@@ -128,9 +128,6 @@
         }
 
         func start() throws {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playback)
-            try audioSession.setActive(true)
             try engine.start()
             MoQLogger.player.debug("AudioRenderer started")
         }
@@ -197,7 +194,7 @@
             into output: inout [[Float32]], frameCount: Int
         ) -> (framesRead: Int, timestampUs: UInt64) {
             os_unfair_lock_lock(lock)
-            let framesRead = ringBuffer.read(into: &output)
+            let framesRead = ringBuffer.read(into: &output, frameCount: frameCount)
             let ts = ringBuffer.timestampUs
             os_unfair_lock_unlock(lock)
             return (framesRead, ts)
