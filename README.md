@@ -2,11 +2,9 @@
 
 Native MOQ (Media over QUIC) SDK for iOS and Android.
 
-<!-- badges -->
-
 ## What is moq-kit?
 
-moq-kit provides idiomatic Swift and Kotlin APIs for publishing and consuming real-time media streams using the MOQ protocol. It wraps [libmoq](https://github.com/moq-dev/moq) — a Rust library that exposes C FFI bindings for the moq-lite transport protocol.
+moq-kit provides idiomatic Swift and Kotlin APIs for publishing and consuming real-time media streams using the MOQ protocol. It wraps [moq-ffi](https://github.com/moq-dev/moq) — a Rust uniffi library bindings for the moq-lite transport protocol.
 
 ## What is MOQ?
 
@@ -25,7 +23,7 @@ MOQ replaces the trade-offs between RTMP (low latency, no scale), HLS/DASH (scal
 ┌─────────────────────────────────┐
 │  moq-kit (Swift / Kotlin)       │  ← Platform-idiomatic APIs
 ├─────────────────────────────────┤
-│  libmoq (C FFI)                 │  ← Rust → C bindings
+│  moq-ffi                 │  ← uniffi Rust bindings
 ├─────────────────────────────────┤
 │  hang (media layer)             │  ← Codecs, containers, catalogs
 ├─────────────────────────────────┤
@@ -43,7 +41,7 @@ See [docs/architecture.md](docs/architecture.md) for details on the layering, ke
 moq-kit/
 ├── android/          # Android SDK — Kotlin wrapper with JNI bridge
 ├── ios/              # iOS SDK — Swift wrapper with C interop
-├── vendor/moq/       # libmoq source (git submodule → moq-dev/moq)
+├── vendor/moq/       # moq-ffi source (git submodule → moq-dev/moq)
 ├── examples/
 │   ├── android/      # Android example apps (publisher, subscriber)
 │   └── ios/          # iOS example apps (publisher, subscriber)
@@ -71,13 +69,16 @@ Early development. Not ready for production use.
 
 ## License
 
-Licensed under either of
-
-- [Apache License, Version 2.0](LICENSE-APACHE)
-- [MIT License](LICENSE-MIT)
-
-at your option.
+- [Apache License, Version 2.0](LICENSE)
 
 ## Acknowledgments
 
 Built on top of [moq-dev/moq](https://github.com/moq-dev/moq) by [Luke Curley](https://github.com/kixelated) and contributors.
+
+## MoqKit is created by Software Mansion
+
+Since 2012 [Software Mansion](https://swmansion.com) is a software agency with experience in building web and mobile apps. We are Core React Native Contributors and experts in dealing with all kinds of React Native issues. We can help you build your next dream product – [Hire us](https://swmansion.com/contact/projects?utm_source=react-native-executorch&utm_medium=readme).
+
+[![swm](https://logo.swmansion.com/logo?color=white&variant=desktop&width=150&tag=react-native-executorch-github "Software Mansion")](https://swmansion.com)
+
+Copyright 2026, [Software Mansion](https://swmansion.com/)
