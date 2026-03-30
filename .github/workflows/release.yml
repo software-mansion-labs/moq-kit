@@ -30,3 +30,66 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ github.ref_name }}
+
+  finalize:
+    needs: [ios, android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Update Package.swift (iOS binary target)
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          CHECKSUM: ${{ needs.ios.outputs.checksum }}
+        run: |
+          python3 - <<'EOF'
+          import re, os
+
+          repo = os.environ["REPO"]
+          tag = os.environ["TAG"]
+          url = f"https://github.com/{repo}/releases/download/{tag}/moqffi.xcframework.zip"
+          checksum = os.environ["CHECKSUM"]
+
+          with open("ios/Package.swift") as f:
+              content = f.read()
+
+          new_target = (
+              '.binaryTarget(\n'
+              '            name: "moqFFI",\n'
+              f'            url: "{url}",\n'
+              f'            checksum: "{checksum}"\n'
+              '        )'
+          )
+
+          content = re.sub(
+              r'\.binaryTarget\(\s*name:\s*"moqFFI"[^)]*\)',
+              new_target,
+              content,
+              flags=re.DOTALL,
+          )
+
+          with open("ios/Package.swift", "w") as f:
+              f.write(content)
+
+          print("Updated ios/Package.swift")
+          EOF
+
+      # When Android is implemented, add a manifest-update step here:
+      # if: needs.android.outputs.checksum != ''
+
+      - name: Commit, retag, and push
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ios/Package.swift
+          git commit -m "chore: release $TAG — update binary target checksums"
+          git tag -f "$TAG"
+          git push origin HEAD:main
+          git push origin "$TAG" --force

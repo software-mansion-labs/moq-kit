@@ -6,10 +6,19 @@ on:
       tag:
         required: true
         type: string
+    outputs:
+      checksum:
+        description: "SHA256 checksum of the Android AAR (empty until implemented)"
+        value: ${{ jobs.release-android.outputs.checksum }}
 
 jobs:
   release-android:
     runs-on: ubuntu-latest
+    outputs:
+      checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
       - name: Not yet implemented
-        run: echo "Android release not yet implemented"
+        id: checksum
+        run: |
+          echo "checksum=" >> $GITHUB_OUTPUT
+          echo "Android release not yet implemented"

@@ -6,9 +6,13 @@ on:
       tag:
         required: true
         type: string
+    outputs:
+      checksum:
+        description: "SHA256 checksum of moqffi.xcframework.zip"
+        value: ${{ jobs.assemble.outputs.checksum }}
 
 jobs:
-  release-ios:
+  build-device:
     runs-on: macos-latest
     steps:
       - name: Checkout
@@ -20,20 +24,133 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          targets: aarch64-apple-ios
 
       - name: Cache Rust build artifacts
         uses: actions/cache@v4
         with:
           path: vendor/moq/target
-          key: ${{ runner.os }}-rust-ios-${{ hashFiles('vendor/moq/Cargo.lock') }}
+          key: ${{ runner.os }}-rust-ios-device-${{ hashFiles('vendor/moq/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-rust-ios-device-
             ${{ runner.os }}-rust-ios-
 
-      - name: Build XCFramework
+      - name: Build moq-ffi (device)
         env:
-          MISE_PROJECT_ROOT: ${{ github.workspace }}
-        run: bash mise-tasks/build-xcframework
+          IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        run: |
+          cargo build --release --package moq-ffi \
+            --target aarch64-apple-ios \
+            --manifest-path vendor/moq/Cargo.toml
+
+      - name: Upload device library
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmoq-ffi-device
+          path: vendor/moq/target/aarch64-apple-ios/release/libmoq_ffi.a
+
+  build-simulator:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: vendor/moq/target
+          key: ${{ runner.os }}-rust-ios-sim-${{ hashFiles('vendor/moq/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-ios-sim-
+            ${{ runner.os }}-rust-ios-
+
+      - name: Build moq-ffi (simulator)
+        env:
+          IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        run: |
+          cargo build --release --package moq-ffi \
+            --target aarch64-apple-ios-sim \
+            --manifest-path vendor/moq/Cargo.toml
+
+      - name: Upload simulator library
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmoq-ffi-simulator
+          path: vendor/moq/target/aarch64-apple-ios-sim/release/libmoq_ffi.a
+
+  assemble:
+    needs: [build-device, build-simulator]
+    runs-on: macos-latest
+    outputs:
+      checksum: ${{ steps.checksum.outputs.checksum }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: vendor/moq/target
+          key: ${{ runner.os }}-rust-ios-bindgen-${{ hashFiles('vendor/moq/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-ios-bindgen-
+            ${{ runner.os }}-rust-ios-
+
+      - name: Download device library
+        uses: actions/download-artifact@v4
+        with:
+          name: libmoq-ffi-device
+          path: vendor/moq/target/aarch64-apple-ios/release/
+
+      - name: Download simulator library
+        uses: actions/download-artifact@v4
+        with:
+          name: libmoq-ffi-simulator
+          path: vendor/moq/target/aarch64-apple-ios-sim/release/
+
+      - name: Generate UniFFI Swift bindings
+        run: |
+          mkdir -p .build/uniffi-out
+          cd vendor/moq && cargo run --release --package moq-ffi --bin uniffi-bindgen \
+            --manifest-path Cargo.toml \
+            generate \
+            --library target/aarch64-apple-ios/release/libmoq_ffi.a \
+            --language swift \
+            --out-dir ../../.build/uniffi-out
+
+      - name: Copy moq.swift
+        run: cp .build/uniffi-out/moq.swift ios/Sources/MoQKit/moq.swift
+
+      - name: Prepare headers
+        run: |
+          mkdir -p .build/headers
+          cp .build/uniffi-out/moqFFI.h .build/headers/moqFFI.h
+          cp .build/uniffi-out/moqFFI.modulemap .build/headers/module.modulemap
+
+      - name: Create XCFramework
+        run: |
+          rm -rf ios/Frameworks/moqffi.xcframework
+          mkdir -p ios/Frameworks
+          xcodebuild -create-xcframework \
+            -library vendor/moq/target/aarch64-apple-ios/release/libmoq_ffi.a \
+            -headers .build/headers \
+            -library vendor/moq/target/aarch64-apple-ios-sim/release/libmoq_ffi.a \
+            -headers .build/headers \
+            -output ios/Frameworks/moqffi.xcframework
 
       - name: Zip XCFramework
         run: |
@@ -46,55 +163,6 @@ jobs:
           CHECKSUM=$(swift package compute-checksum ios/Frameworks/moqffi.xcframework.zip)
           echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
           echo "Checksum: $CHECKSUM"
-
-      - name: Update Package.swift
-        env:
-          TAG: ${{ inputs.tag }}
-          REPO: ${{ github.repository }}
-          CHECKSUM: ${{ steps.checksum.outputs.checksum }}
-        run: |
-          URL="https://github.com/$REPO/releases/download/$TAG/moqffi.xcframework.zip"
-          python3 - <<EOF
-          import re, os
-
-          url = os.environ["URL"]
-          checksum = os.environ["CHECKSUM"]
-
-          with open("ios/Package.swift") as f:
-              content = f.read()
-
-          new_target = (
-              '.binaryTarget(\n'
-              '            name: "moqFFI",\n'
-              f'            url: "{url}",\n'
-              f'            checksum: "{checksum}"\n'
-              '        )'
-          )
-
-          content = re.sub(
-              r'\.binaryTarget\(\s*name:\s*"moqFFI"[^)]*\)',
-              new_target,
-              content,
-              flags=re.DOTALL,
-          )
-
-          with open("ios/Package.swift", "w") as f:
-              f.write(content)
-
-          print("Updated ios/Package.swift")
-          EOF
-
-      - name: Commit and retag
-        env:
-          TAG: ${{ inputs.tag }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ios/Package.swift
-          git commit -m "chore: release $TAG — update Package.swift binary target URL"
-          git tag -f "$TAG"
-          git push origin HEAD:main
-          git push origin "$TAG" --force
 
       - name: Upload XCFramework to release
         uses: softprops/action-gh-release@v2
