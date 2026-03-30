@@ -55,7 +55,7 @@ jobs:
           url = f"https://github.com/{repo}/releases/download/{tag}/moqffi.xcframework.zip"
           checksum = os.environ["CHECKSUM"]
 
-          with open("ios/Package.swift") as f:
+          with open("Package.swift") as f:
               content = f.read()
 
           new_target = (
@@ -73,10 +73,10 @@ jobs:
               flags=re.DOTALL,
           )
 
-          with open("ios/Package.swift", "w") as f:
+          with open("Package.swift", "w") as f:
               f.write(content)
 
-          print("Updated ios/Package.swift")
+          print("Updated Package.swift")
           EOF
 
       # When Android is implemented, add a manifest-update step here:
@@ -88,7 +88,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ios/Package.swift
+          git add Package.swift
           git commit -m "chore: release $TAG — update binary target checksums"
           git tag -f "$TAG"
           git push origin HEAD:main

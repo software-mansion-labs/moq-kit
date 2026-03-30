@@ -113,7 +113,7 @@
 			);
 			mainGroup = A10000000000000000000021;
 			packageReferences = (
-				A10000000000000000000071 /* XCLocalSwiftPackageReference "../../../ios" */,
+				A10000000000000000000071 /* XCLocalSwiftPackageReference "../../.." */,
 			);
 			productRefGroup = A10000000000000000000023 /* Products */;
 			projectDirPath = "";
@@ -334,9 +334,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		A10000000000000000000071 /* XCLocalSwiftPackageReference "../../../ios" */ = {
+		A10000000000000000000071 /* XCLocalSwiftPackageReference "../../.." */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../../ios;
+			relativePath = ../../..;
 		};
 /* End XCLocalSwiftPackageReference section */
 

@@ -9,7 +9,7 @@ let package = Package(
         .library(name: "MoQKit", targets: ["MoQKit"])
     ],
     targets: [
-        .target(name: "MoQKit", dependencies: ["moqFFI"], path: "Sources/MoQKit"),
-        .binaryTarget(name: "moqFFI", path: "Frameworks/moqffi.xcframework"),
+        .target(name: "MoQKit", dependencies: ["moqFFI"], path: "ios/Sources/MoQKit"),
+        .binaryTarget(name: "moqFFI", path: "ios/Frameworks/moqffi.xcframework"),
     ]
 )
