@@ -2785,6 +2785,8 @@ public enum MoqError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErro
     
     case Media(message: String)
     
+    case Mux(message: String)
+    
     case Url(message: String)
     
     case TimeOverflow(message: String)
@@ -2842,43 +2844,47 @@ public struct FfiConverterTypeMoqError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 3: return .Url(
+        case 3: return .Mux(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 4: return .TimeOverflow(
+        case 4: return .Url(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 5: return .LogLevel(
+        case 5: return .TimeOverflow(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 6: return .Task(
+        case 6: return .LogLevel(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 7: return .Cancelled(
+        case 7: return .Task(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 8: return .Closed(
+        case 8: return .Cancelled(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 9: return .Connect(
+        case 9: return .Closed(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 10: return .Codec(
+        case 10: return .Connect(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 11: return .Unauthorized(
+        case 11: return .Codec(
             message: try FfiConverterString.read(from: &buf)
         )
         
-        case 12: return .Log(
+        case 12: return .Unauthorized(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 13: return .Log(
             message: try FfiConverterString.read(from: &buf)
         )
         
@@ -2897,26 +2903,28 @@ public struct FfiConverterTypeMoqError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(1))
         case .Media(_ /* message is ignored*/):
             writeInt(&buf, Int32(2))
-        case .Url(_ /* message is ignored*/):
+        case .Mux(_ /* message is ignored*/):
             writeInt(&buf, Int32(3))
-        case .TimeOverflow(_ /* message is ignored*/):
+        case .Url(_ /* message is ignored*/):
             writeInt(&buf, Int32(4))
-        case .LogLevel(_ /* message is ignored*/):
+        case .TimeOverflow(_ /* message is ignored*/):
             writeInt(&buf, Int32(5))
-        case .Task(_ /* message is ignored*/):
+        case .LogLevel(_ /* message is ignored*/):
             writeInt(&buf, Int32(6))
-        case .Cancelled(_ /* message is ignored*/):
+        case .Task(_ /* message is ignored*/):
             writeInt(&buf, Int32(7))
-        case .Closed(_ /* message is ignored*/):
+        case .Cancelled(_ /* message is ignored*/):
             writeInt(&buf, Int32(8))
-        case .Connect(_ /* message is ignored*/):
+        case .Closed(_ /* message is ignored*/):
             writeInt(&buf, Int32(9))
-        case .Codec(_ /* message is ignored*/):
+        case .Connect(_ /* message is ignored*/):
             writeInt(&buf, Int32(10))
-        case .Unauthorized(_ /* message is ignored*/):
+        case .Codec(_ /* message is ignored*/):
             writeInt(&buf, Int32(11))
-        case .Log(_ /* message is ignored*/):
+        case .Unauthorized(_ /* message is ignored*/):
             writeInt(&buf, Int32(12))
+        case .Log(_ /* message is ignored*/):
+            writeInt(&buf, Int32(13))
 
         
         }

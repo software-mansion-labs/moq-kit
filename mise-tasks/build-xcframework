@@ -7,7 +7,7 @@ set -euo pipefail
 #   --debug  Build with debug symbols (release-with-debug profile: optimized + DWARF)
 #
 # Produces:
-#   ios/Frameworks/libmoq.xcframework/   (XCFramework with moqFFI module)
+#   ios/Frameworks/moqffi.xcframework/   (XCFramework with moqFFI module)
 #   ios/Sources/MoQKit/moq.swift         (generated Swift bindings, overwritten each build)
 
 DEBUG=0
@@ -25,7 +25,7 @@ ROOT_DIR="$MISE_PROJECT_ROOT"
 WORKSPACE_CARGO="$ROOT_DIR/vendor/moq/Cargo.toml"
 TARGET_BASE="$ROOT_DIR/vendor/moq/target"
 OUTPUT_DIR="$ROOT_DIR/ios/Frameworks"
-XCFRAMEWORK="$OUTPUT_DIR/libmoq.xcframework"
+XCFRAMEWORK="$OUTPUT_DIR/moqffi.xcframework"
 
 TARGETS=(
   aarch64-apple-ios
