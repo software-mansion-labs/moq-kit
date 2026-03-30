@@ -1,0 +1,15 @@
+name: Release Android SDK
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+jobs:
+  release-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Not yet implemented
+        run: echo "Android release not yet implemented"

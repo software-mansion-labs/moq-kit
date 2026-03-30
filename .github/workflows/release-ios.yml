@@ -1,0 +1,103 @@
+name: Release iOS SDK
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+jobs:
+  release-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: vendor/moq/target
+          key: ${{ runner.os }}-rust-ios-${{ hashFiles('vendor/moq/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-ios-
+
+      - name: Build XCFramework
+        env:
+          MISE_PROJECT_ROOT: ${{ github.workspace }}
+        run: bash mise-tasks/build-xcframework
+
+      - name: Zip XCFramework
+        run: |
+          cd ios/Frameworks
+          zip -r moqffi.xcframework.zip moqffi.xcframework
+
+      - name: Compute checksum
+        id: checksum
+        run: |
+          CHECKSUM=$(swift package compute-checksum ios/Frameworks/moqffi.xcframework.zip)
+          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
+          echo "Checksum: $CHECKSUM"
+
+      - name: Update Package.swift
+        env:
+          TAG: ${{ inputs.tag }}
+          REPO: ${{ github.repository }}
+          CHECKSUM: ${{ steps.checksum.outputs.checksum }}
+        run: |
+          URL="https://github.com/$REPO/releases/download/$TAG/moqffi.xcframework.zip"
+          python3 - <<EOF
+          import re, os
+
+          url = os.environ["URL"]
+          checksum = os.environ["CHECKSUM"]
+
+          with open("ios/Package.swift") as f:
+              content = f.read()
+
+          new_target = (
+              '.binaryTarget(\n'
+              '            name: "moqFFI",\n'
+              f'            url: "{url}",\n'
+              f'            checksum: "{checksum}"\n'
+              '        )'
+          )
+
+          content = re.sub(
+              r'\.binaryTarget\(\s*name:\s*"moqFFI"[^)]*\)',
+              new_target,
+              content,
+              flags=re.DOTALL,
+          )
+
+          with open("ios/Package.swift", "w") as f:
+              f.write(content)
+
+          print("Updated ios/Package.swift")
+          EOF
+
+      - name: Commit and retag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ios/Package.swift
+          git commit -m "chore: release $TAG — update Package.swift binary target URL"
+          git tag -f "$TAG"
+          git push origin HEAD:main
+          git push origin "$TAG" --force
+
+      - name: Upload XCFramework to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: ios/Frameworks/moqffi.xcframework.zip
