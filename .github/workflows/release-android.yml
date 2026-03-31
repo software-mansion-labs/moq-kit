@@ -35,8 +35,8 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          java-version: "17"
+          distribution: "temurin"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -70,14 +70,11 @@ jobs:
             --out-dir ../../android/moqkit/MoQKit/src/main/java
 
       - name: Build Android shared library (arm64-v8a)
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
         run: |
           mkdir -p android/moqkit/MoQKit/src/main/jniLibs
-          cargo ndk -t arm64-v8a \
-            -o android/moqkit/MoQKit/src/main/jniLibs \
-            build --release --package moq-ffi \
-            --manifest-path vendor/moq/Cargo.toml
+          cd vendor/moq && cargo ndk -t arm64-v8a \
+            -o ../../android/moqkit/MoQKit/src/main/jniLibs \
+            build --release --package moq-ffi
 
       - name: Build AAR
         run: |
