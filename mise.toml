@@ -6,9 +6,9 @@ run = "cd vendor/moq && just check"
 description = "Auto-format Rust code in vendor/moq"
 run = "cd vendor/moq && just fix"
 
-[tasks."android:aar"]
-description = "Assemble AAR and copy to examples"
-run = "cd android/moqkit && ./gradlew :MoQKit:manualBuild"
+[tasks."publish-android:local"]
+description = "Assemble AAR and publish to local Maven (~/.m2)"
+run = "cd android/moqkit && ./gradlew :MoQKit:publishToMavenLocal"
 
 [tasks."android:install"]
 description = "Install Android subscriber demo APK"
@@ -21,6 +21,10 @@ run = "adb shell am start -n com.swmansion.moqsubscriber/.MainActivity"
 [tasks."android:build"]
 description = "Build Rust + UniFFI + .so + Kotlin bindings + AAR"
 depends = ["build-android", "android:aar"]
+
+[tasks."android:publish"]
+description = "Build Rust + AAR and publish to Maven Central"
+run = "mise run publish-android"
 
 [tasks."relay"]
 description = "Run a relay server"

@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.android.library)
+    alias(libs.plugins.maven.publish)
 }
 
 android {
@@ -32,30 +33,43 @@ android {
     }
 }
 
-val aarOutputDir = file("/Users/jakub/repos/moq-kit/examples/android/subscriber/MoQSubscriber/libs")
-
-tasks.register<Copy>("manualBuild") {
-    group = "build"
-    description = "Compiles the library and copies the AAR to the target directory"
-
-    dependsOn("assembleRelease")
-
-    from(layout.buildDirectory.dir("outputs/aar"))
-    into(aarOutputDir)
-    include("*-release.aar")
-
-    doLast {
-        println("Build finished! AAR copied to $aarOutputDir")
+mavenPublishing {
+    publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
+    if (project.hasProperty("signing.keyId") || project.hasProperty("signingInMemoryKey")) {
+        signAllPublications()
+    }
+    val publishVersion = project.findProperty("publishVersion")?.toString() ?: "0.0.1-alpha"
+    coordinates("com.swmansion.moqkit", "moqkit", publishVersion)
+    pom {
+        name = "MoQ Kit Android SDK"
+        description = "Android SDK for Media over QUIC (MOQ) — live streaming over QUIC/WebTransport."
+        url = "https://github.com/software-mansion-labs/moq-kit"
+        licenses {
+            license {
+                name = "Apache License, Version 2.0"
+                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+            }
+        }
+        scm {
+            connection = "scm:git:git://github.com/software-mansion-labs/moq-kit.git"
+            developerConnection = "scm:git:ssh://github.com/software-mansion-labs/moq-kit.git"
+            url = "https://github.com/software-mansion-labs/moq-kit"
+        }
+        developers {
+            developer {
+                id = "swmansion"
+                name = "Software Mansion"
+                email = "contact@swmansion.com"
+            }
+        }
     }
 }
 
+
 dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
-    api(libs.media3.exoplayer)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.appcompat)
-    implementation(libs.material)
     testImplementation(libs.junit)
     testImplementation("net.java.dev.jna:jna:5.18.1@aar")
     androidTestImplementation(libs.androidx.junit)

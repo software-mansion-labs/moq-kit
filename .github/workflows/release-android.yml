@@ -8,17 +8,109 @@ on:
         type: string
     outputs:
       checksum:
-        description: "SHA256 checksum of the Android AAR (empty until implemented)"
-        value: ${{ jobs.release-android.outputs.checksum }}
+        description: "SHA256 checksum of moqkit-{version}.aar"
+        value: ${{ jobs.build.outputs.checksum }}
 
 jobs:
-  release-android:
+  build:
     runs-on: ubuntu-latest
+    env:
+      MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
     outputs:
       checksum: ${{ steps.checksum.outputs.checksum }}
     steps:
-      - name: Not yet implemented
-        id: checksum
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Derive version
+        id: version
         run: |
-          echo "checksum=" >> $GITHUB_OUTPUT
-          echo "Android release not yet implemented"
+          VERSION="${{ inputs.tag }}"
+          VERSION="${VERSION#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: vendor/moq/target
+          key: ${{ runner.os }}-rust-android-${{ hashFiles('vendor/moq/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rust-android-
+
+      - name: Build host library for UniFFI metadata
+        run: |
+          cargo build --release --package moq-ffi \
+            --manifest-path vendor/moq/Cargo.toml
+
+      - name: Generate Kotlin UniFFI bindings
+        run: |
+          mkdir -p android/moqkit/MoQKit/src/main/java
+          cd vendor/moq && cargo run --release --package moq-ffi --bin uniffi-bindgen \
+            --manifest-path Cargo.toml \
+            generate \
+            --library target/release/libmoq_ffi.so \
+            --language kotlin \
+            --out-dir ../../android/moqkit/MoQKit/src/main/java
+
+      - name: Build Android shared library (arm64-v8a)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+        run: |
+          mkdir -p android/moqkit/MoQKit/src/main/jniLibs
+          cargo ndk -t arm64-v8a \
+            -o android/moqkit/MoQKit/src/main/jniLibs \
+            build --release --package moq-ffi \
+            --manifest-path vendor/moq/Cargo.toml
+
+      - name: Build AAR
+        run: |
+          cd android/moqkit
+          chmod +x gradlew
+          ./gradlew :MoQKit:assembleRelease
+
+      - name: Rename AAR and compute checksum
+        id: checksum
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          AAR_SRC="android/moqkit/MoQKit/build/outputs/aar/MoQKit-release.aar"
+          AAR_DST="moqkit-${VERSION}.aar"
+          cp "$AAR_SRC" "$AAR_DST"
+          CHECKSUM=$(sha256sum "$AAR_DST" | awk '{print $1}')
+          echo "checksum=$CHECKSUM" >> $GITHUB_OUTPUT
+          echo "Checksum: $CHECKSUM"
+
+      - name: Upload AAR to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: moqkit-${{ steps.version.outputs.version }}.aar
+
+      - name: Publish to Maven Central
+        if: env.MAVEN_CENTRAL_USERNAME != ''
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_IN_MEMORY_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
+        run: |
+          cd android/moqkit
+          ./gradlew :MoQKit:publishToMavenCentral \
+            -PpublishVersion=${{ steps.version.outputs.version }}

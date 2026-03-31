@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -78,9 +78,6 @@ jobs:
 
           print("Updated Package.swift")
           EOF
-
-      # When Android is implemented, add a manifest-update step here:
-      # if: needs.android.outputs.checksum != ''
 
       - name: Commit, retag, and push
         env:
