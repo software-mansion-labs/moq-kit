@@ -61,33 +61,33 @@ jobs:
 
       - name: Generate Kotlin UniFFI bindings
         run: |
-          mkdir -p android/moqkit/MoQKit/src/main/java
+          mkdir -p android/moqkit/moqkit/src/main/java
           cd vendor/moq && cargo run --release --package moq-ffi --bin uniffi-bindgen \
             --manifest-path Cargo.toml \
             generate \
             --library target/release/libmoq_ffi.so \
             --language kotlin \
-            --out-dir ../../android/moqkit/MoQKit/src/main/java
+            --out-dir ../../android/moqkit/moqkit/src/main/java
 
       - name: Build Android shared library (arm64-v8a)
         run: |
-          mkdir -p android/moqkit/MoQKit/src/main/jniLibs
+          mkdir -p android/moqkit/moqkit/src/main/jniLibs
           cd vendor/moq && cargo ndk -t arm64-v8a \
-            -o ../../android/moqkit/MoQKit/src/main/jniLibs \
+            -o ../../android/moqkit/moqkit/src/main/jniLibs \
             build --release --package moq-ffi
 
       - name: Build AAR
         run: |
           cd android/moqkit
           chmod +x gradlew
-          ./gradlew :MoQKit:assembleRelease
+          ./gradlew :moqkit:assembleRelease
 
       - name: Rename AAR and compute checksum
         id: checksum
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          AAR_SRC="android/moqkit/MoQKit/build/outputs/aar/MoQKit-release.aar"
+          AAR_SRC="android/moqkit/moqkit/build/outputs/aar/moqkit-release.aar"
           AAR_DST="moqkit-${VERSION}.aar"
           cp "$AAR_SRC" "$AAR_DST"
           CHECKSUM=$(sha256sum "$AAR_DST" | awk '{print $1}')
@@ -109,5 +109,5 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_IN_MEMORY_KEY_PASSWORD }}
         run: |
           cd android/moqkit
-          ./gradlew :MoQKit:publishToMavenCentral \
+          ./gradlew :moqkit:publishToMavenCentral \
             -PpublishVersion=${{ steps.version.outputs.version }}

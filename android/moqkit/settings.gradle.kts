@@ -24,4 +24,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "moqkit"
 include(":app")
-include(":MoQKit")
+include(":moqkit")
