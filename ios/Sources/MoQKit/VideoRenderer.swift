@@ -1,3 +1,4 @@
+import MoQKitFFI
 import AVFoundation
 import CoreMedia
 
@@ -174,19 +175,21 @@ final class VideoRenderer: @unchecked Sendable {
         jitterBuffer.insert(item: sb, timestampUs: timestampUs)
         return true
     }
-    
+
     private func doNotDisplaySample(_ sampleBuffer: CMSampleBuffer) {
-        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) else {
+        guard
+            let attachments = CMSampleBufferGetSampleAttachmentsArray(
+                sampleBuffer, createIfNecessary: true)
+        else {
             return
         }
-        
+
         let dictPtr = CFArrayGetValueAtIndex(attachments, 0)
         let mutableDict = unsafeBitCast(dictPtr, to: CFMutableDictionary.self)
-        
+
         let key = Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque()
         let value = Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-        
+
         CFDictionarySetValue(mutableDict, key, value)
     }
 }
-

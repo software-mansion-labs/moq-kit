@@ -1,4 +1,4 @@
-#if os(iOS)
+import MoQKitFFI
     import CoreMedia
     import Foundation
 
@@ -154,5 +154,3 @@
             }
         }
     }
-
-#endif

@@ -49,7 +49,8 @@ struct AudioRingBuffer {
 
     /// Copy `count` samples from `src` into ring buffer `channel` starting at logical `pos`.
     /// Splits at the wrap point — at most 2 memcpy operations.
-    private mutating func ringCopy(channel: Int, pos: Int, src: UnsafePointer<Float32>, count: Int) {
+    private mutating func ringCopy(channel: Int, pos: Int, src: UnsafePointer<Float32>, count: Int)
+    {
         let cap = buffer[channel].count
         let start = pos % cap
         let firstChunk = min(count, cap - start)
@@ -111,7 +112,9 @@ struct AudioRingBuffer {
             let copyStart = writeIndex - samplesToKeep
             for channel in 0..<channels {
                 newBuffer[channel].withUnsafeMutableBufferPointer { dst in
-                    ringRead(channel: channel, pos: copyStart, dst: dst.baseAddress!, count: samplesToKeep)
+                    ringRead(
+                        channel: channel, pos: copyStart, dst: dst.baseAddress!,
+                        count: samplesToKeep)
                 }
             }
         }

@@ -1,3 +1,4 @@
+import MoQKitFFI
 import AVFoundation
 
 // MARK: - AudioDecoder
@@ -51,12 +52,14 @@ final class AudioDecoder: @unchecked Sendable {
         self.inputFormat = inFmt
 
         // Output: PCM Float32 non-interleaved (required by AVAudioEngine's mainMixerNode)
-        guard let outFmt = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Float64(config.sampleRate),
-            channels: AVAudioChannelCount(config.channelCount),
-            interleaved: false
-        ) else {
+        guard
+            let outFmt = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: Float64(config.sampleRate),
+                channels: AVAudioChannelCount(config.channelCount),
+                interleaved: false
+            )
+        else {
             throw MoQSessionError.audioDecoderFailed("Failed to create output AVAudioFormat")
         }
         self.outputFormat = outFmt
@@ -70,10 +73,12 @@ final class AudioDecoder: @unchecked Sendable {
 
     /// Decode a single compressed audio packet to PCM.
     func decode(payload: Data) throws -> AVAudioPCMBuffer {
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: outputFormat,
-            frameCapacity: framesPerPacket
-        ) else {
+        guard
+            let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: outputFormat,
+                frameCapacity: framesPerPacket
+            )
+        else {
             throw MoQSessionError.audioDecoderFailed("Failed to allocate output PCM buffer")
         }
 

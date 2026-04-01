@@ -3,17 +3,20 @@
 #MISE alias="xcf"
 set -euo pipefail
 
-# usage: build-xcframework [--debug]
+# usage: build-xcframework [--debug] [--macos]
 #   --debug  Build with debug symbols (release-with-debug profile: optimized + DWARF)
+#   --macos  Also build for aarch64-apple-darwin (required for swift package doc generation)
 #
 # Produces:
 #   ios/Frameworks/moqffi.xcframework/   (XCFramework with moqFFI module)
-#   ios/Sources/MoQKit/moq.swift         (generated Swift bindings, overwritten each build)
+#   ios/Sources/MoQKitFFI/moq.swift      (generated Swift bindings, overwritten each build)
 
 DEBUG=0
+MACOS=0
 for arg in "$@"; do
   case "$arg" in
   --debug) DEBUG=1 ;;
+  --macos) MACOS=1 ;;
   *)
     echo "Unknown argument: $arg" >&2
     exit 1
@@ -31,6 +34,10 @@ TARGETS=(
   aarch64-apple-ios
   aarch64-apple-ios-sim
 )
+
+if [[ $MACOS -eq 1 ]]; then
+  TARGETS+=(aarch64-apple-darwin)
+fi
 
 # --- Install Rust targets if missing ---
 
@@ -83,8 +90,8 @@ echo "Generating Swift bindings via uniffi-bindgen..."
     --language swift \
     --out-dir "$UNIFFI_OUT")
 
-# Copy generated moq.swift into the Swift package source tree (overwrite every build)
-SWIFT_SOURCES="$ROOT_DIR/ios/Sources/MoQKit"
+# Copy generated moq.swift into the MoQKitFFI source tree (overwrite every build)
+SWIFT_SOURCES="$ROOT_DIR/ios/Sources/MoQKitFFI"
 mkdir -p "$SWIFT_SOURCES"
 cp "$UNIFFI_OUT/moq.swift" "$SWIFT_SOURCES/moq.swift"
 echo "Copied moq.swift to $SWIFT_SOURCES/moq.swift"
@@ -111,10 +118,19 @@ SIMULATOR_LIB="$TARGET_BASE/aarch64-apple-ios-sim/$CARGO_PROFILE/libmoq_ffi.a"
 rm -rf "$XCFRAMEWORK"
 mkdir -p "$OUTPUT_DIR"
 
+XCFRAMEWORK_ARGS=(
+  -library "$DEVICE_LIB"    -headers "$HEADERS_DIR"
+  -library "$SIMULATOR_LIB" -headers "$HEADERS_DIR"
+)
+
+if [[ $MACOS -eq 1 ]]; then
+  MACOS_LIB="$TARGET_BASE/aarch64-apple-darwin/$CARGO_PROFILE/libmoq_ffi.a"
+  XCFRAMEWORK_ARGS+=(-library "$MACOS_LIB" -headers "$HEADERS_DIR")
+fi
+
 echo "Creating XCFramework..."
 xcodebuild -create-xcframework \
-  -library "$DEVICE_LIB" -headers "$HEADERS_DIR" \
-  -library "$SIMULATOR_LIB" -headers "$HEADERS_DIR" \
+  "${XCFRAMEWORK_ARGS[@]}" \
   -output "$XCFRAMEWORK"
 
 # --- Clean up ---
@@ -123,4 +139,4 @@ rm -rf "$ROOT_DIR/.build/headers"
 
 echo ""
 echo "XCFramework created at: $XCFRAMEWORK"
-echo "Swift bindings at:      $SWIFT_SOURCES/moq.swift"
+echo "Swift bindings at:      $SWIFT_SOURCES/moq.swift (MoQKitFFI internal target)"

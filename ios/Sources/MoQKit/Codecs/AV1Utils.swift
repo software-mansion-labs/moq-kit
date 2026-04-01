@@ -1,4 +1,3 @@
-#if os(iOS)
     import Foundation
 
     enum AV1Utils {
@@ -72,5 +71,3 @@
             return nil  // truncated
         }
     }
-
-#endif

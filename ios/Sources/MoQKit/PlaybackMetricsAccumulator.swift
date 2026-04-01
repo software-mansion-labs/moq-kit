@@ -45,7 +45,7 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
     private var audioFramesDropped: UInt64 = 0
     private var videoFramesDropped: UInt64 = 0
 
-    private static let windowNs: UInt64 = 1_000_000_000 // 1 second
+    private static let windowNs: UInt64 = 1_000_000_000  // 1 second
 
     init() {
         self.lock = .allocate(capacity: 1)
@@ -205,13 +205,16 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
 
         // TTFF — guard against UInt64 underflow if a frame callback fires before
         // markPlayStart() (e.g. immediately after reset() during pause/play).
-        let ttfAudio: Double? = (playStartNs > 0 && firstAudioFrameNs >= playStartNs)
+        let ttfAudio: Double? =
+            (playStartNs > 0 && firstAudioFrameNs >= playStartNs)
             ? Double(firstAudioFrameNs - playStartNs) / 1_000_000.0 : nil
-        let ttfVideo: Double? = (playStartNs > 0 && firstVideoFrameNs >= playStartNs)
+        let ttfVideo: Double? =
+            (playStartNs > 0 && firstVideoFrameNs >= playStartNs)
             ? Double(firstVideoFrameNs - playStartNs) / 1_000_000.0 : nil
 
         // Audio stalls
-        let aStalls: StallStats? = audioStallCount > 0 || audioIsPlaying || audioIsStalled
+        let aStalls: StallStats? =
+            audioStallCount > 0 || audioIsPlaying || audioIsStalled
             ? makeStallStats(
                 count: audioStallCount, stallTotalNs: audioStallTotalNs,
                 isStalled: audioIsStalled, stallStartNs: audioStallStartNs,
@@ -220,7 +223,8 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
             : nil
 
         // Video stalls
-        let vStalls: StallStats? = videoStallCount > 0 || videoIsPlaying || videoIsStalled
+        let vStalls: StallStats? =
+            videoStallCount > 0 || videoIsPlaying || videoIsStalled
             ? makeStallStats(
                 count: videoStallCount, stallTotalNs: videoStallTotalNs,
                 isStalled: videoIsStalled, stallStartNs: videoStallStartNs,
@@ -229,8 +233,10 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
             : nil
 
         // Bitrate
-        let aBitrate = computeBitrateKbps(entries: audioBytesWindow, total: audioBytesTotal, now: now)
-        let vBitrate = computeBitrateKbps(entries: videoBytesWindow, total: videoBytesTotal, now: now)
+        let aBitrate = computeBitrateKbps(
+            entries: audioBytesWindow, total: audioBytesTotal, now: now)
+        let vBitrate = computeBitrateKbps(
+            entries: videoBytesWindow, total: videoBytesTotal, now: now)
 
         // FPS
         let fps = computeFps(entries: videoFrameTimestamps, now: now)
@@ -295,7 +301,9 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
 
     // MARK: - Private helpers (called under lock)
 
-    private func pruneWindow(entries: inout [(ns: UInt64, bytes: Int)], total: inout Int, now: UInt64) {
+    private func pruneWindow(
+        entries: inout [(ns: UInt64, bytes: Int)], total: inout Int, now: UInt64
+    ) {
         let cutoff = now >= Self.windowNs ? now - Self.windowNs : 0
         while let first = entries.first, first.ns < cutoff {
             total -= first.bytes
@@ -310,10 +318,12 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
         }
     }
 
-    private func computeBitrateKbps(entries: [(ns: UInt64, bytes: Int)], total: Int, now: UInt64) -> Double? {
+    private func computeBitrateKbps(entries: [(ns: UInt64, bytes: Int)], total: Int, now: UInt64)
+        -> Double?
+    {
         guard let first = entries.first else { return nil }
         let spanNs = now - first.ns
-        guard spanNs > 100_000_000 else { return nil } // need at least 100ms of data
+        guard spanNs > 100_000_000 else { return nil }  // need at least 100ms of data
         let spanSec = Double(spanNs) / 1_000_000_000.0
         return Double(total) * 8.0 / 1000.0 / spanSec
     }

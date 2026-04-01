@@ -1,4 +1,3 @@
-#if os(iOS)
     import Foundation
 
     // MARK: - H.265 NAL Unit Types
@@ -42,5 +41,3 @@
             return (vps: vpsList, sps: spsList, pps: ppsList)
         }
     }
-
-#endif
