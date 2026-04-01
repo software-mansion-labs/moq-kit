@@ -100,8 +100,11 @@ private struct BroadcastPlayerView: View {
                 // Track info pills
                 if !entry.offline {
                     HStack(spacing: 8) {
-                        if let video = entry.info.videoTracks.first {
+                        if let video = entry.videoTrack {
                             InfoPill(text: video.config.codec)
+                            if let size = video.config.coded {
+                                InfoPill(text: "\(size.width)×\(size.height)")
+                            }
                         }
                         if let audio = entry.info.audioTracks.first {
                             InfoPill(text: "\(audio.config.codec) \(audio.config.sampleRate) Hz")
