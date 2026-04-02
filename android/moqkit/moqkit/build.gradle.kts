@@ -1,8 +1,10 @@
 import com.vanniktech.maven.publish.SonatypeHost
+import org.jetbrains.dokka.gradle.DokkaTask
 
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.maven.publish)
+    alias(libs.plugins.dokka)
 }
 
 android {
@@ -63,6 +65,18 @@ mavenPublishing {
     }
 }
 
+
+tasks.withType<DokkaTask>().configureEach {
+    dokkaSourceSets {
+        create("main") {
+            sourceRoots.from(file("src/main/java"))
+            perPackageOption {
+                matchingRegex.set("uniffi\\..*")
+                suppress.set(true)
+            }
+        }
+    }
+}
 
 dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")

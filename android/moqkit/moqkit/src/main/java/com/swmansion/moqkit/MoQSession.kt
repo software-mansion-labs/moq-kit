@@ -20,6 +20,21 @@ import uniffi.moq.MoqOriginProducer
 import android.util.Log
 import uniffi.moq.MoqSession as UniMoqSession
 
+/**
+ * A QUIC connection to a MOQ relay that discovers and surfaces live broadcasts.
+ *
+ * ### Lifecycle
+ * 1. Create a session with the relay [url].
+ * 2. Call [connect] (suspend) — it returns once the QUIC handshake completes and
+ *    announcement watching begins.
+ * 3. Collect [broadcasts] to receive [MoQBroadcastEvent.Available] / [MoQBroadcastEvent.Unavailable]
+ *    events as publishers come and go.
+ * 4. Call [close] to tear down the connection and free all resources.
+ *
+ * @param url WebTransport URL of the MOQ relay (e.g. `"https://relay.example.com:4443/moq"`).
+ * @param parentScope Coroutine scope whose lifetime bounds the session. Defaults to a new
+ *   IO-dispatched scope with a [SupervisorJob].
+ */
 class MoQSession(
     private val url: String,
     parentScope: CoroutineScope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
@@ -29,18 +44,38 @@ class MoQSession(
     }
 
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
+
+    /** Connection state machine for this session. */
     sealed class State {
+        /** Session has not been started yet. */
         object Idle : State()
+        /** QUIC handshake is in progress. */
         object Connecting : State()
+        /** Handshake complete; broadcasts are being watched. */
         object Connected : State()
+        /** The session ended due to a transport or protocol error.
+         * @property message Human-readable error description. */
         data class Error(val message: String) : State()
+        /** [MoQSession.close] was called and all resources have been released. */
         object Closed : State()
     }
 
     private val _state = MutableStateFlow<State>(State.Idle)
+
+    /**
+     * Current connection state. Starts at [State.Idle] and progresses through
+     * [State.Connecting] → [State.Connected] → [State.Closed] (or [State.Error]).
+     */
     val state: StateFlow<State> = _state.asStateFlow()
 
     private val _broadcasts = MutableSharedFlow<MoQBroadcastEvent>(replay = 1)
+
+    /**
+     * Stream of broadcast lifecycle events emitted as publishers announce or retract broadcasts.
+     *
+     * The flow replays the most recent event so late collectors receive the current snapshot
+     * immediately. Collect this flow after [connect] returns to be notified of available tracks.
+     */
     val broadcasts: SharedFlow<MoQBroadcastEvent> = _broadcasts
 
     private var session: UniMoqSession? = null
@@ -55,6 +90,15 @@ class MoQSession(
     private val activeBroadcasts = mutableMapOf<String, Job>()
     private val catalogConsumers = mutableMapOf<String, MoqCatalogConsumer>()
 
+    /**
+     * Opens the QUIC connection and begins watching for broadcast announcements.
+     *
+     * Suspends until the handshake is complete. Once this function returns, [state] is
+     * [State.Connected] and [broadcasts] will start emitting events.
+     *
+     * @throws IllegalStateException if called on a session that has already been started.
+     * @throws Exception if the connection attempt fails (state becomes [State.Error]).
+     */
     suspend fun connect() {
         check(_state.value == State.Idle) { "Session already started" }
         _state.value = State.Connecting
@@ -171,6 +215,12 @@ class MoQSession(
         }
     }
 
+    /**
+     * Closes the session and releases all resources.
+     *
+     * Safe to call from any thread. No-op if the session is already [State.Closed].
+     * After this returns, [state] is [State.Closed] and the coroutine scope is cancelled.
+     */
     fun close() {
         val wasConnected = _state.compareAndSet(State.Connected, State.Closed)
         val wasConnecting = if (!wasConnected) _state.compareAndSet(State.Connecting, State.Closed) else false

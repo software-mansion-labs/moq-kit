@@ -13,19 +13,44 @@ private const val TAG = "MoQRealTimePlayer"
 
 /**
  * Real-time audio+video player with fine-grained latency control.
+ *
  * Uses MediaCodec (async) for decoding, AudioTrack (MODE_STREAM) for audio output,
- * and Surface-configured MediaCodec for video output — bypassing ExoPlayer for lower latency.
+ * and a Surface-configured MediaCodec for video output — bypassing ExoPlayer for lower latency.
+ *
+ * ### Typical usage
+ * ```kotlin
+ * val player = MoQPlayer(broadcastInfo.videoTracks + broadcastInfo.audioTracks,
+ *                        targetLatencyMs = 150, parentScope = lifecycleScope)
+ * player.setSurface(surfaceView.holder.surface)
+ * player.play()
+ * // … later …
+ * player.stop()
+ * ```
+ *
+ * @param tracks List of tracks to play. Must contain at least one [MoQAudioTrackInfo];
+ *   a [MoQVideoTrackInfo] is optional.
+ * @param targetLatencyMs Target end-to-end playback latency in milliseconds. Lower values
+ *   reduce delay at the cost of increased risk of stalls. Defaults to 100 ms.
+ * @param parentScope Coroutine scope whose lifetime bounds the player's internal coroutines.
  */
 class MoQPlayer(
     private val tracks: List<MoQTrackInfo>,
     private val targetLatencyMs: Int = 100,
     parentScope: CoroutineScope,
 ) {
+    /**
+     * Playback lifecycle events emitted by the player.
+     */
     sealed class Event {
+        /** A track started producing decoded output. [kind] is `"audio"` or `"video"`. */
         data class TrackPlaying(val kind: String) : Event()
+        /** A track was paused via [pause]. [kind] is `"audio"` or `"video"`. */
         data class TrackPaused(val kind: String) : Event()
+        /** A track's incoming data stream ended. [kind] is `"audio"` or `"video"`. */
         data class TrackStopped(val kind: String) : Event()
+        /** An unrecoverable error occurred on a track. */
         data class Error(val kind: String, val message: String) : Event()
+        /** All active tracks have stopped (stream ended or [stop] called). */
         object AllTracksStopped : Event()
     }
 
@@ -76,6 +101,14 @@ class MoQPlayer(
         }
     }
 
+    /**
+     * Starts audio (and video, if a surface is set) playback.
+     *
+     * Opens subscriptions for all tracks in the list provided at construction time and begins
+     * decoding. The first decoded audio frame triggers an [Event.TrackPlaying] event.
+     * Safe to call if a surface has not yet been provided — video will start automatically
+     * once [setSurface] is called.
+     */
     fun play() {
         playing = true
         accumulator.markPlayStart()
@@ -222,6 +255,12 @@ class MoQPlayer(
         }
     }
 
+    /**
+     * Pauses playback by stopping all decoders and cancelling ingest coroutines.
+     *
+     * Unlike [stop], the player can be resumed by calling [play] again. Emits
+     * [Event.TrackPaused] for each active track.
+     */
     fun pause() {
         Log.d(TAG, "pause")
         playing = false
@@ -240,6 +279,11 @@ class MoQPlayer(
         if (hasVideo) _events.tryEmit(Event.TrackPaused("video"))
     }
 
+    /**
+     * Stops playback and resets all accumulated metrics.
+     *
+     * Releases decoders and cancels ingest coroutines. Call [play] to start again from scratch.
+     */
     fun stop() {
         Log.d(TAG, "stop")
         playing = false
@@ -254,6 +298,15 @@ class MoQPlayer(
         accumulator.reset()
     }
 
+    /**
+     * Adjusts the target playback latency while the player is running.
+     *
+     * Propagates the new value to the audio ring buffer and video jitter buffer immediately.
+     * Lower values cause more aggressive frame dropping to catch up to live; higher values
+     * trade latency for smoother playback.
+     *
+     * @param ms New target latency in milliseconds.
+     */
     fun updateTargetLatency(ms: Int) {
         audioRenderer?.updateTargetLatency(ms)
         videoRenderer?.updateTargetBuffering(ms)

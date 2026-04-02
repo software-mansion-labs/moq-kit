@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#MISE description="Generate (or preview) platform documentation"
+
+set -euo pipefail
+
+# usage: docs [ios|android] [--preview]
+#   ios       Build iOS DocC docs into docs/ios/
+#   android   Build Android Dokka docs into android/moqkit/MoQKit/build/dokka/html/
+#   (none)    Build docs for both platforms
+#   --preview Live-preview iOS docs via swift package (requires xcframework built with --macos)
+#             Only valid with 'ios' or no platform specified.
+
+PLATFORM="all"
+PREVIEW=0
+
+for arg in "$@"; do
+  case "$arg" in
+  ios) PLATFORM="ios" ;;
+  android) PLATFORM="android" ;;
+  --preview) PREVIEW=1 ;;
+  *)
+    echo "Unknown argument: $arg" >&2
+    exit 1
+    ;;
+  esac
+done
+
+if [[ $PREVIEW -eq 1 && $PLATFORM == "android" ]]; then
+  echo "--preview is not supported for android" >&2
+  exit 1
+fi
+
+build_ios() {
+  if [[ $PREVIEW -eq 1 ]]; then
+    cd "$MISE_PROJECT_ROOT"
+    exec swift package --disable-sandbox preview-documentation --target MoQKit
+  fi
+
+  xcodebuild docbuild \
+    -scheme MoQKit \
+    -destination "generic/platform=iOS Simulator" \
+    -derivedDataPath .build/docbuild
+
+  path=$(find .build/docbuild -name "*.doccarchive")
+
+  xcrun docc process-archive transform-for-static-hosting "$path" \
+    --output-path ./docs/ios \
+    --hosting-base-path /
+}
+
+build_android() {
+  cd "$MISE_PROJECT_ROOT/android/moqkit"
+  ./gradlew :moqkit:dokkaHtml
+}
+
+case "$PLATFORM" in
+ios) build_ios ;;
+android) build_android ;;
+all)
+  build_ios
+  build_android
+  ;;
+esac
