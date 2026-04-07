@@ -6,7 +6,7 @@ import SwiftUI
 final class BroadcastEntry: ObservableObject, Identifiable {
     let id: String
     let broadcastPath: String
-    let videoTrack: MoQVideoTrackInfo?
+    @Published var selectedVideoTrack: MoQVideoTrackInfo?
     @Published var info: MoQBroadcastInfo
     @Published var player: MoQPlayer?
     @Published var offline: Bool = false
@@ -17,13 +17,19 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     var eventTask: Task<Void, Never>?
     private var statsTimer: Timer?
+    private var pendingVideoTrack: MoQVideoTrackInfo?
 
-    init(info: MoQBroadcastInfo, videoTrack: MoQVideoTrackInfo?, initialLatencyMs: UInt64) {
+    init(info: MoQBroadcastInfo, initialVideoTrack: MoQVideoTrackInfo?, initialLatencyMs: UInt64) {
+        self.id = info.path
         self.broadcastPath = info.path
-        self.id = videoTrack.map { "\(info.path):\($0.name)" } ?? "\(info.path):audio-only"
-        self.videoTrack = videoTrack
+        self.selectedVideoTrack = initialVideoTrack
         self.info = info
         self.targetLatencyMs = Double(initialLatencyMs)
+    }
+
+    func switchVideoTrack(to track: MoQVideoTrackInfo) {
+        pendingVideoTrack = track
+        Task { try? await player?.switchTrack(to: track) }
     }
 
     func updateTargetLatency(ms: UInt64) {
@@ -41,6 +47,11 @@ final class BroadcastEntry: ObservableObject, Identifiable {
                 case .trackPlaying:
                     isPlaying = true
                     startStatsPolling()
+                case .trackSwitched(.video):
+                    if let pending = pendingVideoTrack {
+                        selectedVideoTrack = pending
+                        pendingVideoTrack = nil
+                    }
                 case .allTracksStopped:
                     isPlaying = false
                     offline = true
@@ -54,7 +65,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     private func startStatsPolling() {
         guard statsTimer == nil else { return }
-        
+
         statsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -142,22 +153,29 @@ final class PlayerViewModel: ObservableObject {
                     broadcasts.removeAll { $0.broadcastPath == info.path }
 
                     let audioTrack = info.audioTracks.first
-                    let videoTracks = info.videoTracks.isEmpty ? [nil] : info.videoTracks.map { Optional($0) }
+                    let highestVideoTrack = info.videoTracks
+                        .sorted {
+                            ($0.config.coded.map { UInt64($0.width) * UInt64($0.height) } ?? 0)
+                                > ($1.config.coded.map { UInt64($0.width) * UInt64($0.height) } ?? 0)
+                        }
+                        .first
 
-                    for videoTrack in videoTracks {
-                        var tracks: [any MoQTrackInfo] = []
-                        if let v = videoTrack { tracks.append(v) }
-                        if let a = audioTrack { tracks.append(a) }
-                        guard !tracks.isEmpty else { continue }
+                    var tracks: [any MoQTrackInfo] = []
+                    if let v = highestVideoTrack { tracks.append(v) }
+                    if let a = audioTrack { tracks.append(a) }
+                    guard !tracks.isEmpty else { continue }
 
-                        let entry = BroadcastEntry(info: info, videoTrack: videoTrack, initialLatencyMs: self.targetLatencyMs)
-                        broadcasts.append(entry)
+                    let entry = BroadcastEntry(
+                        info: info,
+                        initialVideoTrack: highestVideoTrack,
+                        initialLatencyMs: self.targetLatencyMs
+                    )
+                    broadcasts.append(entry)
 
-                        let p = try? MoQPlayer(tracks: tracks, targetBufferingMs: self.targetLatencyMs)
-                        entry.player = p
-                        if let p { entry.observeEvents(of: p.events) }
-                        try? await p?.play()
-                    }
+                    let p = try? MoQPlayer(tracks: tracks, targetBufferingMs: self.targetLatencyMs)
+                    entry.player = p
+                    if let p { entry.observeEvents(of: p.events) }
+                    try? await p?.play()
 
                 case .unavailable(let path):
                     let entries = broadcasts.filter { $0.broadcastPath == path }

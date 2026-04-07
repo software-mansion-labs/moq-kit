@@ -100,7 +100,7 @@ private struct BroadcastPlayerView: View {
                 // Track info pills
                 if !entry.offline {
                     HStack(spacing: 8) {
-                        if let video = entry.videoTrack {
+                        if let video = entry.selectedVideoTrack {
                             InfoPill(text: video.config.codec)
                             if let size = video.config.coded {
                                 InfoPill(text: "\(size.width)×\(size.height)")
@@ -111,6 +111,15 @@ private struct BroadcastPlayerView: View {
                         }
                         Spacer()
                     }
+                }
+
+                // Rendition picker
+                if entry.info.videoTracks.count > 1 {
+                    RenditionPickerView(
+                        tracks: entry.info.videoTracks,
+                        selected: entry.selectedVideoTrack,
+                        onSelect: { entry.switchVideoTrack(to: $0) }
+                    )
                 }
 
                 // Target latency
@@ -199,10 +208,12 @@ private struct StatsCardView: View {
                     if stats.videoLatencyMs != nil || stats.audioLatencyMs != nil {
                         StatsSection(title: "Latency") {
                             if let ms = stats.videoLatencyMs {
-                                StatRow(label: "Video", value: "\(Int(ms)) ms", color: latencyColor(ms))
+                                StatRow(
+                                    label: "Video", value: "\(Int(ms)) ms", color: latencyColor(ms))
                             }
                             if let ms = stats.audioLatencyMs {
-                                StatRow(label: "Audio", value: "\(Int(ms)) ms", color: latencyColor(ms))
+                                StatRow(
+                                    label: "Audio", value: "\(Int(ms)) ms", color: latencyColor(ms))
                             }
                         }
                     }
@@ -220,7 +231,9 @@ private struct StatsCardView: View {
                     }
 
                     // Throughput section
-                    if stats.videoBitrateKbps != nil || stats.audioBitrateKbps != nil || stats.videoFps != nil {
+                    if stats.videoBitrateKbps != nil || stats.audioBitrateKbps != nil
+                        || stats.videoFps != nil
+                    {
                         StatsSection(title: "Throughput") {
                             if let kbps = stats.videoBitrateKbps {
                                 StatRow(label: "Video bitrate", value: formatBitrate(kbps))
@@ -235,7 +248,8 @@ private struct StatsCardView: View {
                     }
 
                     // Startup section
-                    if stats.timeToFirstVideoFrameMs != nil || stats.timeToFirstAudioFrameMs != nil {
+                    if stats.timeToFirstVideoFrameMs != nil || stats.timeToFirstAudioFrameMs != nil
+                    {
                         StatsSection(title: "Startup") {
                             if let ms = stats.timeToFirstVideoFrameMs {
                                 StatRow(label: "First video frame", value: "\(Int(ms)) ms")
@@ -250,10 +264,16 @@ private struct StatsCardView: View {
                     if hasHealthStats {
                         StatsSection(title: "Health") {
                             if let s = stats.videoStalls, s.count > 0 {
-                                StatRow(label: "Video stalls", value: "\(s.count) (\(Int(s.totalDurationMs)) ms)", color: .orange)
+                                StatRow(
+                                    label: "Video stalls",
+                                    value: "\(s.count) (\(Int(s.totalDurationMs)) ms)",
+                                    color: .orange)
                             }
                             if let s = stats.audioStalls, s.count > 0 {
-                                StatRow(label: "Audio stalls", value: "\(s.count) (\(Int(s.totalDurationMs)) ms)", color: .orange)
+                                StatRow(
+                                    label: "Audio stalls",
+                                    value: "\(s.count) (\(Int(s.totalDurationMs)) ms)",
+                                    color: .orange)
                             }
                             if let d = stats.videoFramesDropped, d > 0 {
                                 StatRow(label: "Video frames dropped", value: "\(d)", color: .red)
@@ -341,5 +361,48 @@ private struct StatRow: View {
                 .fontDesign(.monospaced)
                 .foregroundStyle(color)
         }
+    }
+}
+
+// MARK: - Rendition Picker
+
+private struct RenditionPickerView: View {
+    let tracks: [MoQVideoTrackInfo]
+    let selected: MoQVideoTrackInfo?
+    let onSelect: (MoQVideoTrackInfo) -> Void
+
+    private var sortedTracks: [MoQVideoTrackInfo] {
+        tracks.sorted {
+            ($0.config.coded.map { UInt64($0.width) * UInt64($0.height) } ?? 0)
+                > ($1.config.coded.map { UInt64($0.width) * UInt64($0.height) } ?? 0)
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(sortedTracks, id: \.name) { track in
+                let isSelected = track.name == selected?.name
+                Button(renditionLabel(track)) {
+                    onSelect(track)
+                }
+                .font(.caption)
+                .fontWeight(isSelected ? .semibold : .regular)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    isSelected ? Color.accentColor : Color(.tertiarySystemFill), in: Capsule()
+                )
+                .foregroundStyle(isSelected ? Color.white : Color.primary)
+                .disabled(isSelected)
+            }
+            Spacer()
+        }
+    }
+
+    private func renditionLabel(_ track: MoQVideoTrackInfo) -> String {
+        if let h = track.config.coded?.height {
+            return "\(h)p"
+        }
+        return track.name
     }
 }
