@@ -15,7 +15,6 @@ import CoreMedia
 /// via `os_unfair_lock`.
 final class AudioRenderer: @unchecked Sendable {
     let timebase: CMTimebase
-    let decoder: AudioDecoder
 
     private let engine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
@@ -28,8 +27,8 @@ final class AudioRenderer: @unchecked Sendable {
         targetLatencyMs: Int,
         metrics: PlaybackMetricsAccumulator
     ) throws {
-        let decoder = try AudioDecoder(config: config)
-        self.decoder = decoder
+        // Create a temporary decoder only to discover the output format for AVAudioEngine setup.
+        let formatDecoder = try AudioDecoder(config: config)
         self.timebase = timebase
         self.metrics = metrics
 
@@ -50,7 +49,7 @@ final class AudioRenderer: @unchecked Sendable {
         }
 
         let metricsRef = metrics
-        let sourceNode = AVAudioSourceNode(format: decoder.outputFormat) {
+        let sourceNode = AVAudioSourceNode(format: formatDecoder.outputFormat) {
             _, _, frameCount, audioBufferList -> OSStatus in
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
             let requestedFrames = Int(frameCount)
@@ -110,12 +109,12 @@ final class AudioRenderer: @unchecked Sendable {
         // AVAudioEngine setup
         let engine = AVAudioEngine()
         engine.attach(sourceNode)
-        engine.connect(sourceNode, to: engine.mainMixerNode, format: decoder.outputFormat)
+        engine.connect(sourceNode, to: engine.mainMixerNode, format: formatDecoder.outputFormat)
         engine.prepare()
         self.engine = engine
 
         MoQLogger.player.debug(
-            "AudioRenderer created, format = \(decoder.outputFormat)")
+            "AudioRenderer created, format = \(formatDecoder.outputFormat)")
     }
 
     /// Enqueue decoded PCM into the ring buffer. Thread-safe — called from the ingest task.

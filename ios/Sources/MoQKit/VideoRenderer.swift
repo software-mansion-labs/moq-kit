@@ -1,138 +1,95 @@
-import MoQKitFFI
 import AVFoundation
 import CoreMedia
+import MoQKitFFI
 
 // MARK: - VideoRenderer
 
-/// Video playback pipeline: frame processor, jitter buffer, display layer interaction,
-/// and optional timebase ownership for video-only mode.
+/// Video playback pipeline: drains compressed frames from a `VideoRendererTrack` into
+/// `AVSampleBufferDisplayLayer` (which handles VideoToolbox decoding internally).
 ///
-/// Takes an external `CMTimebase`. When `isTimebaseOwner` is true (video-only mode),
-/// the renderer starts the timebase once the jitter buffer reaches playing state.
-/// When false (audio+video mode), the audio renderer drives the shared timebase.
+/// Supports seamless rendition switching via an active + pending track model:
+/// - The active track feeds the display layer continuously.
+/// - A pending track accumulates incoming frames in the background.
+/// - The drain loop runs a `SwapPhase` state machine: it discards stale pending frames,
+///   waits for a viable keyframe, then either cuts in seamlessly (no flush) when the
+///   active track reaches that PTS, or flushes the display layer and swaps immediately
+///   when the pending track is too far behind. Emergency swap fires when the active
+///   track drains empty.
 ///
-/// Thread safety: `insert(...)` is called from the ingest task, while the
-/// `requestMediaDataWhenReady` callback drains on `enqueueQueue`. The jitter buffer
-/// serializes access via `os_unfair_lock`.
+/// Thread safety: `VideoRendererTrack.insert` is called from the ingest task; the
+/// `requestMediaDataWhenReady` callback (and all mutations of `activeTrack`/`pendingTrack`)
+/// run on `enqueueQueue`.
 final class VideoRenderer: @unchecked Sendable {
     let layer: AVSampleBufferDisplayLayer
     let timebase: CMTimebase
 
-    private let processor: VideoFrameProcessor
-    private let jitterBuffer: JitterBuffer<CMSampleBuffer>
+    // MARK: - Pending-track swap state machine
+
+    private enum SwapPhase {
+        /// Pending track set; dropping stale frames, waiting for a recent keyframe.
+        case awaitingKeyframe
+        /// Found a keyframe at `keyframePts`; waiting for active track to reach that PTS,
+        /// then swap without flushing the display layer.
+        case cuttingIn(keyframePts: UInt64)
+        /// Pending track too far behind; flush display layer and swap immediately.
+        case flushAndSwap
+    }
+
+    private var activeTrack: VideoRendererTrack
+    private var pendingTrack: VideoRendererTrack?
+    private var pendingPhase: SwapPhase?
+    private var onTrackActivated: (() -> Void)?
+
     private let enqueueQueue: DispatchQueue
     private let isTimebaseOwner: Bool
     private var timebaseStarted: Bool
     private let metrics: PlaybackMetricsAccumulator
+    private var lastEnqueuedPTSus: UInt64 = 0
     private var lastEnqueuedPTS: CMTime = .invalid
     private var pendingStallCheck: DispatchWorkItem?
 
-    var canProcess: Bool { processor.canProcess }
+    /// Frames older than this relative to the active PTS are discarded from the pending
+    /// buffer while scanning for a cut-in keyframe (500 ms).
+    private let cutInWindowUs: Int64 = 500_000
+    /// If the first pending keyframe is more than this behind the active PTS, use the
+    /// flush-and-swap strategy instead of cut-in (2 s).
+    private let flushThresholdUs: Int64 = 2_000_000
 
     init(
-        config: MoqVideo,
         timebase: CMTimebase,
         isTimebaseOwner: Bool,
-        targetBufferingMs: UInt64,
+        track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
         metrics: PlaybackMetricsAccumulator
-    ) throws {
+    ) {
         self.layer = layer
         self.timebase = timebase
         self.isTimebaseOwner = isTimebaseOwner
         self.metrics = metrics
-        self.processor = try VideoFrameProcessor(config: config)
-        self.jitterBuffer = JitterBuffer<CMSampleBuffer>(
-            targetBufferingUs: targetBufferingMs * 1000)
+        self.activeTrack = track
         self.enqueueQueue = DispatchQueue(
             label: "com.moqkit.video-enqueue", qos: .userInteractive)
 
         layer.controlTimebase = timebase
-        // If we don't own the timebase, assume it's already being driven (by audio)
         self.timebaseStarted = !isTimebaseOwner
     }
 
-    /// Arms `requestMediaDataWhenReady` and registers the jitter buffer data-available callback.
+    // MARK: - Public API
+
+    /// Arms `requestMediaDataWhenReady` and registers the active track's data-available callback.
     func start() {
-        let jitter = self.jitterBuffer
         let queue = self.enqueueQueue
-        let videoTimebase = self.timebase
-        let isTimebaseOwner = self.isTimebaseOwner
-        let metricsRef = self.metrics
-
-        // Capture timebaseStarted as a mutable local for the closure (video-only mode)
-        var timebaseStarted = self.timebaseStarted
-
-        let armVideoEnqueue: @Sendable () -> Void = { [weak self] in
-            guard let self else { return }
-            let layer = self.layer
-
-            layer.requestMediaDataWhenReady(on: queue) { [weak self] in
-                guard let self else { return }
-                let layer = self.layer
-
-                // Start timebase once buffer has enough depth (video-only mode)
-                if isTimebaseOwner && !timebaseStarted && jitter.state == .playing {
-                    timebaseStarted = true
-                    CMTimebaseSetRate(videoTimebase, rate: 1.0)
-                }
-
-                // Drain available frames
-                while layer.isReadyForMoreMediaData {
-                    let (entry, playable) = jitter.dequeue()
-                    guard let entry else {
-                        layer.stopRequestingMediaData()
-
-                        // Check if the display layer still has frames to show
-                        let currentTime = CMTimebaseGetTime(videoTimebase)
-                        if self.lastEnqueuedPTS.isValid && currentTime < self.lastEnqueuedPTS {
-                            // Layer still has frames — schedule a deferred stall check
-                            let remaining = CMTimeSubtract(self.lastEnqueuedPTS, currentTime)
-                            let delaySec = CMTimeGetSeconds(remaining)
-                            let workItem = DispatchWorkItem { [weak self] in
-                                self?.pendingStallCheck = nil
-                                metricsRef.videoStallBegan()
-                            }
-                            self.pendingStallCheck = workItem
-                            queue.asyncAfter(
-                                deadline: .now() + delaySec, execute: workItem)
-                        } else {
-                            metricsRef.videoStallBegan()
-                        }
-                        return
-                    }
-                    if !playable {
-                        self.doNotDisplaySample(entry.item)
-                        metricsRef.recordVideoFrameDropped()
-                    } else {
-                        metricsRef.recordVideoFrameDisplayed()
-                    }
-                    layer.enqueue(entry.item)
-                    self.lastEnqueuedPTS = CMTime(
-                        value: CMTimeValue(entry.timestampUs),
-                        timescale: 1_000_000)
-                }
-            }
-        }
-
-        jitter.setOnDataAvailable {
-            queue.async {
-                self.pendingStallCheck?.cancel()
-                self.pendingStallCheck = nil
-                metricsRef.videoStallEnded()
-                armVideoEnqueue()
-            }
-        }
-
-        queue.async { armVideoEnqueue() }
-
-        MoQLogger.player.debug(
-            "VideoRenderer started (isTimebaseOwner=\(isTimebaseOwner))")
+        activeTrack.setOnDataAvailable(makeDataAvailableCallback())
+        queue.async { self.armVideoEnqueue() }
+        MoQLogger.player.debug("VideoRenderer started")
     }
 
-    /// Stops requesting media data, removes jitter buffer callback, pauses timebase if owned.
+    /// Stops requesting media data, removes track callbacks, pauses timebase if owned.
     func stop() {
-        jitterBuffer.setOnDataAvailable(nil)
+        activeTrack.setOnDataAvailable(nil)
+        pendingTrack?.setOnDataAvailable(nil)
+        pendingTrack = nil
+        pendingPhase = nil
         layer.stopRequestingMediaData()
         if isTimebaseOwner {
             CMTimebaseSetRate(timebase, rate: 0)
@@ -142,54 +99,199 @@ final class VideoRenderer: @unchecked Sendable {
             self.pendingStallCheck?.cancel()
             self.pendingStallCheck = nil
             self.lastEnqueuedPTS = .invalid
+            self.lastEnqueuedPTSus = 0
         }
     }
 
-    /// Flushes the jitter buffer and removes the displayed image.
+    /// Flushes the active track's jitter buffer and removes the displayed image.
     func flush() {
-        jitterBuffer.flush()
+        activeTrack.flush()
         layer.flushAndRemoveImage()
         enqueueQueue.async {
             self.pendingStallCheck?.cancel()
             self.pendingStallCheck = nil
             self.lastEnqueuedPTS = .invalid
+            self.lastEnqueuedPTSus = 0
         }
     }
 
-    /// Update the target buffering depth in milliseconds.
-    func updateTargetBuffering(ms: UInt64) {
-        jitterBuffer.updateTargetBuffering(us: ms * 1000)
+    /// Installs a pending track. The drain loop's `SwapPhase` state machine will
+    /// decide between a seamless cut-in and a flush-and-swap, then call `performSwap`.
+    /// `onActivated` is called on `enqueueQueue` at the moment of the swap.
+    func setPendingTrack(_ track: VideoRendererTrack, onActivated: @escaping () -> Void) {
+        enqueueQueue.async {
+            // Discard any previous pending track without firing its callback.
+            self.pendingTrack?.setOnDataAvailable(nil)
+            track.setBufferState(.pending)
+            self.pendingTrack = track
+            self.pendingPhase = .awaitingKeyframe
+            self.onTrackActivated = onActivated
+            // Re-arm so the loop re-evaluates the swap strategy when pending gets data.
+            track.setOnDataAvailable(self.makeDataAvailableCallback())
+        }
     }
 
-    var bufferFillMs: Double { jitterBuffer.depthMs }
+    /// Update the target buffering depth for the active track.
+    func updateTargetBuffering(ms: UInt64) {
+        activeTrack.updateTargetBuffering(ms: ms)
+    }
 
-    /// Process and insert a video frame into the jitter buffer. Thread-safe.
-    func insert(
-        payload: Data, timestampUs: UInt64, keyframe: Bool
-    ) throws -> Bool {
-        guard
-            let sb = try processor.process(
-                payload: payload, timestampUs: timestampUs,
-                keyframe: keyframe)
-        else { return false }
-        jitterBuffer.insert(item: sb, timestampUs: timestampUs)
-        return true
+    var bufferFillMs: Double { enqueueQueue.sync { activeTrack.depthMs } }
+
+    var hasPendingTrack: Bool { pendingTrack != nil }
+
+    // MARK: - Private: drain loop
+
+    private func armVideoEnqueue() {
+        let queue = self.enqueueQueue
+        let videoTimebase = self.timebase
+        let isOwner = self.isTimebaseOwner
+        let metricsRef = self.metrics
+
+        var timebaseStarted = self.timebaseStarted
+
+        layer.requestMediaDataWhenReady(on: queue) { [weak self] in
+            guard let self else { return }
+            let layer = self.layer
+
+            // Start timebase once the active track has buffered enough depth (video-only mode).
+            if isOwner && !timebaseStarted
+                && self.activeTrack.state == JitterBuffer<VideoRendererSample>.State.playing
+            {
+                timebaseStarted = true
+                self.timebaseStarted = true
+                CMTimebaseSetRate(videoTimebase, rate: 1.0)
+            }
+
+            while layer.isReadyForMoreMediaData {
+                // --- Pending track swap state machine ---
+                if let pending = self.pendingTrack, let phase = self.pendingPhase {
+                    switch phase {
+                    case .awaitingKeyframe:
+                        // Drop stale non-keyframes that can never serve as a cut-in point.
+                        while let front = pending.peekFront(),
+                            !front.isKeyframe,
+                            Int64(self.lastEnqueuedPTSus) - Int64(front.timestampUs)
+                                > self.cutInWindowUs
+                        {
+                            pending.discardFront()
+                        }
+                        // Decide strategy once a keyframe is available.
+                        if let kfPts = pending.firstKeyframePts {
+                            let gap = Int64(self.lastEnqueuedPTSus) - Int64(kfPts)
+                            if gap > self.flushThresholdUs {
+                                self.pendingPhase = .flushAndSwap
+                            } else {
+                                self.pendingPhase = .cuttingIn(keyframePts: kfPts)
+                            }
+                        }
+                    // else: no keyframe yet — data-available callback re-arms when one arrives.
+
+                    case .cuttingIn(let kfPts):
+                        // Drop any non-keyframe frames before the cut point so the pending
+                        // front is the keyframe when we swap.
+                        pending.discardNonKeyframesBeforePts(kfPts)
+                        // Swap once the active track has reached the cut-in PTS.
+                        if self.lastEnqueuedPTSus >= kfPts {
+                            pending.setBufferState(.playing)
+                            self.performSwap(to: pending)
+                            self.pendingPhase = nil
+                        }
+
+                    case .flushAndSwap:
+                        layer.flushAndRemoveImage()
+                        pending.setBufferState(.playing)
+                        self.performSwap(to: pending)
+                        self.pendingPhase = nil
+                    }
+                }
+
+                // --- Drain active track ---
+                let (entry, playable) = self.activeTrack.dequeue()
+                guard let entry else {
+                    layer.stopRequestingMediaData()
+
+                    // Emergency swap: active drained completely but pending has a keyframe.
+                    if let pending = self.pendingTrack,
+                        pending.peekFront()?.isKeyframe == true
+                    {
+                        pending.setBufferState(.playing)
+                        self.performSwap(to: pending)
+                        self.pendingPhase = nil
+                        self.armVideoEnqueue()
+                        return
+                    }
+
+                    // Otherwise: schedule a deferred stall check.
+                    let currentTime = CMTimebaseGetTime(videoTimebase)
+                    if self.lastEnqueuedPTS.isValid && currentTime < self.lastEnqueuedPTS {
+                        let remaining = CMTimeSubtract(self.lastEnqueuedPTS, currentTime)
+                        let delaySec = CMTimeGetSeconds(remaining)
+                        let workItem = DispatchWorkItem { [weak self] in
+                            self?.pendingStallCheck = nil
+                            metricsRef.videoStallBegan()
+                        }
+                        self.pendingStallCheck = workItem
+                        queue.asyncAfter(deadline: .now() + delaySec, execute: workItem)
+                    } else {
+                        metricsRef.videoStallBegan()
+                    }
+                    return
+                }
+
+                if !playable {
+                    self.doNotDisplaySample(entry.item.sampleBuffer)
+                    metricsRef.recordVideoFrameDropped()
+                } else {
+                    metricsRef.recordVideoFrameDisplayed()
+                }
+                layer.enqueue(entry.item.sampleBuffer)
+                self.lastEnqueuedPTSus = entry.timestampUs
+                self.lastEnqueuedPTS = CMTime(
+                    value: CMTimeValue(entry.timestampUs),
+                    timescale: 1_000_000)
+            }
+        }
+    }
+
+    /// Atomically promotes `newTrack` to active, fires `onTrackActivated`, and re-registers
+    /// the data-available callback. Must be called on `enqueueQueue`.
+    private func performSwap(to newTrack: VideoRendererTrack) {
+        activeTrack.setOnDataAvailable(nil)
+        activeTrack = newTrack
+        pendingTrack = nil
+        newTrack.setOnDataAvailable(makeDataAvailableCallback())
+        MoQLogger.player.debug("VideoRenderer: swapped to pending track")
+        onTrackActivated?()
+        onTrackActivated = nil
+    }
+
+    /// Returns the closure registered with each track's `setOnDataAvailable`.
+    private func makeDataAvailableCallback() -> () -> Void {
+        let queue = enqueueQueue
+        let metricsRef = metrics
+        return { [weak self] in
+            queue.async {
+                guard let self else { return }
+                self.pendingStallCheck?.cancel()
+                self.pendingStallCheck = nil
+                metricsRef.videoStallEnded()
+                self.armVideoEnqueue()
+            }
+        }
     }
 
     private func doNotDisplaySample(_ sampleBuffer: CMSampleBuffer) {
         guard
             let attachments = CMSampleBufferGetSampleAttachmentsArray(
                 sampleBuffer, createIfNecessary: true)
-        else {
-            return
-        }
+        else { return }
 
         let dictPtr = CFArrayGetValueAtIndex(attachments, 0)
         let mutableDict = unsafeBitCast(dictPtr, to: CFMutableDictionary.self)
 
         let key = Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque()
         let value = Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-
         CFDictionarySetValue(mutableDict, key, value)
     }
 }

@@ -72,6 +72,9 @@ public enum MoQPlayerEvent: Sendable {
     case allTracksStopped
     /// A non-fatal error occurred on the given track. Playback of other tracks continues.
     case error(TrackKind, String)
+    /// The first frame of a switched-in rendition was rendered. Emitted after a successful
+    /// ``MoQPlayer/switchTrack(to:)-7ugy3`` or ``MoQPlayer/switchTrack(to:)-3kgck`` call.
+    case trackSwitched(TrackKind)
 
     /// Identifies which type of media track an event relates to.
     public enum TrackKind: String, Sendable {
@@ -115,6 +118,7 @@ public final class MoQPlayer {
 
     private var audioRenderer: AudioRenderer?
     private var videoRenderer: VideoRenderer?
+    private var videoRendererTrack: VideoRendererTrack?
 
     private var videoSubscription: MoQMediaTrack?
     private var audioSubscription: MoQMediaTrack?
@@ -193,7 +197,7 @@ public final class MoQPlayer {
     public func updateTargetLatency(ms: UInt64) {
         targetBufferingMs = ms
         audioRenderer?.updateTargetLatency(ms: Int(ms))
-        videoRenderer?.updateTargetBuffering(ms: ms)
+        videoRendererTrack?.updateTargetBuffering(ms: ms)
     }
 
     /// A snapshot of current playback quality metrics.
@@ -237,7 +241,7 @@ public final class MoQPlayer {
         accumulator.markPlayStart()
 
         try setupAudioRenderer(timebase: timebase)
-        try setupVideoRenderer(timebase: timebase)
+        setupVideoRenderer(timebase: timebase)
 
         startIngestTasks()
     }
@@ -265,6 +269,103 @@ public final class MoQPlayer {
     public func stopAll() async {
         MoQLogger.player.debug("Stopping real-time player")
         teardown(permanent: true)
+    }
+
+    /// Switches to a different video rendition seamlessly.
+    ///
+    /// The new subscription is started in parallel with the old one. The old track keeps
+    /// feeding the jitter buffer until the new rendition delivers its first frame, at which
+    /// point the old ingest task is cancelled. No flush occurs — the jitter buffer provides
+    /// continuity, and `AVSampleBufferDisplayLayer` handles per-frame format description
+    /// changes natively.
+    ///
+    /// Emits ``MoQPlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
+    /// is rendered.
+    ///
+    /// - Parameter track: A ``MoQVideoTrackInfo`` from the same broadcast.
+    /// - Throws: ``MoQSessionError`` if subscribing to the new track fails.
+    public func switchTrack(to track: MoQVideoTrackInfo) async throws {
+        guard videoTask != nil, let renderer = videoRenderer, !renderer.hasPendingTrack else { return }
+
+        MoQLogger.player.debug("Switching video track to \(track.name)")
+
+        let newSub = try MoQMediaTrack(
+            broadcast: track.broadcast,
+            name: track.name,
+            container: track.rawConfig.container,
+            maxLatencyMs: targetBufferingMs)
+        
+        MoQLogger.player.debug(
+            "[Switch] Video track: \(track.name), codec=\(track.config.codec), config=\(track.config.debugDescription), container=\(track.rawConfig.container)"
+        )
+
+        let newTrack = try VideoRendererTrack(
+            config: track.rawConfig,
+            targetBufferingMs: targetBufferingMs)
+
+        let oldTask = videoTask
+        let oldSub = videoSubscription
+        let continuation = eventsContinuation
+
+        let newTracer = PacketTimingTracer(kind: .video, timebase: renderer.timebase) { report in
+            MoQLogger.player.debug("\(report)")
+        }
+
+        renderer.setPendingTrack(newTrack) { [weak self] in
+            // Called on enqueueQueue when the renderer promotes the pending track.
+            oldTask?.cancel()
+            oldSub?.close()
+            continuation.yield(.trackSwitched(.video))
+        }
+
+        // Update videoTracer on the main actor — the new ingest task already captures
+        // newTracer directly, so stats will reflect the new rendition from this point on.
+        videoTracer = newTracer
+
+        videoSubscription = newSub
+        videoRendererTrack = newTrack
+        videoTask = startVideoIngestTask(
+            subscription: newSub, track: newTrack,
+            tracer: newTracer, isSwitch: true)
+
+        restartCoordinator()
+    }
+
+    /// Switches to a different audio rendition seamlessly.
+    ///
+    /// The new ingest task is started immediately; the old one is cancelled right after.
+    /// The ring buffer's timestamp-based write positioning means both decoders briefly
+    /// write identical PCM to the same positions — there is no audible glitch, and no
+    /// ring buffer reset is needed.
+    ///
+    /// Emits ``MoQPlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
+    /// is rendered.
+    ///
+    /// - Parameter track: A ``MoQAudioTrackInfo`` from the same broadcast.
+    /// - Throws: ``MoQSessionError`` if subscribing to the new track fails.
+    public func switchTrack(to track: MoQAudioTrackInfo) async throws {
+        guard audioTask != nil else { return }
+
+        MoQLogger.player.debug("Switching audio track to \(track.name)")
+
+        let newSub = try MoQMediaTrack(
+            broadcast: track.broadcast,
+            name: track.name,
+            container: track.rawConfig.container,
+            maxLatencyMs: targetBufferingMs)
+
+        let oldTask = audioTask
+        let oldSub = audioSubscription
+
+        audioSubscription = newSub
+        audioTask = startAudioIngestTask(subscription: newSub, config: track.rawConfig, isSwitch: true)
+
+        // Cancel old task immediately — the ring buffer provides continuity via
+        // timestamp-based positioning (same timestamps → same ring buffer slots).
+        oldTask?.cancel()
+        oldSub?.close()
+
+        restartCoordinator()
     }
 
     deinit {
@@ -299,6 +400,7 @@ public final class MoQPlayer {
         if permanent {
             audioRenderer = nil
             videoRenderer = nil
+            videoRendererTrack = nil
             audioTracer = nil
             videoTracer = nil
             audioRendererForStats = nil
@@ -342,121 +444,176 @@ public final class MoQPlayer {
         self.audioRendererForStats = renderer
     }
 
-    private func setupVideoRenderer(timebase: CMTimebase) throws {
-        guard let vInfo = tracks.compactMap({ $0 as? MoQVideoTrackInfo }).first else {
+    private func setupVideoRenderer(timebase: CMTimebase) {
+        guard let vInfo = tracks.compactMap({ $0 as? MoQVideoTrackInfo }).first else { return }
+
+        let track: VideoRendererTrack
+        do {
+            track = try VideoRendererTrack(
+                config: vInfo.rawConfig, targetBufferingMs: targetBufferingMs)
+        } catch {
+            MoQLogger.player.error("Failed to create VideoRendererTrack: \(error)")
             return
         }
 
-        let renderer = try VideoRenderer(
-            config: vInfo.rawConfig,
+        let renderer = VideoRenderer(
             timebase: timebase,
             isTimebaseOwner: mode == .videoOnly,
-            targetBufferingMs: targetBufferingMs,
+            track: track,
             layer: videoLayer,
             metrics: accumulator
         )
         renderer.start()
+        self.videoRendererTrack = track
         self.videoRenderer = renderer
         self.videoRendererForStats = renderer
     }
 
     private func startIngestTasks() {
+        if let aTrack = audioSubscription, let aConfig = tracks.compactMap({ $0 as? MoQAudioTrackInfo }).first?.rawConfig {
+            audioTask = startAudioIngestTask(subscription: aTrack, config: aConfig, isSwitch: false)
+        }
+
+        if let vTrack = videoSubscription, let rendererTrack = videoRendererTrack {
+            videoTask = startVideoIngestTask(
+                subscription: vTrack, track: rendererTrack,
+                tracer: videoTracer, isSwitch: false)
+        }
+
+        restartCoordinator()
+    }
+
+    // MARK: - Private: per-track ingest tasks
+
+    private func startVideoIngestTask(
+        subscription: MoQMediaTrack,
+        track: VideoRendererTrack,
+        tracer: PacketTimingTracer?,
+        isSwitch: Bool
+    ) -> Task<Void, Never> {
         let continuation = eventsContinuation
-        let audioTracer = self.audioTracer
-        let videoTracer = self.videoTracer
         let metrics = self.accumulator
 
-        // Audio ingest task
-        if let aTrack = audioSubscription, let renderer = audioRenderer {
-            audioTask = Task.detached {
-                var lastPtsUs: UInt64 = 0
-                var firstFrame = true
-                for await frame in aTrack.frames {
-                    if Task.isCancelled { break }
-                    do {
-                        if Self.isDiscontinuity(
-                            currentUs: frame.timestampUs, lastUs: lastPtsUs,
-                            keyframe: frame.keyframe
-                        ) {
-                            MoQLogger.player.debug(
-                                "Audio discontinuity detected, flushing")
-                            renderer.flush()
-                            audioTracer?.reset()
-                        }
-                        lastPtsUs = frame.timestampUs
+        return Task.detached {
+            var lastPtsUs: UInt64 = 0
+            var firstFrame = true
+            
+            defer {
+                MoQLogger.player.debug("Exited reading task")
+            }
 
-                        metrics.recordAudioBytes(frame.payload.count)
-                        audioTracer?.record(ptsUs: frame.timestampUs)
-                        let pcm = try renderer.decoder.decode(payload: frame.payload)
-                        renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
-
-                        if firstFrame {
-                            firstFrame = false
-                            metrics.markFirstAudioFrame()
-                            continuation.yield(.trackPlaying(.audio))
-                        }
-                    } catch {
-                        MoQLogger.player.error("Audio decode error: \(error)")
-                        continuation.yield(.error(.audio, error.localizedDescription))
+            for await frame in subscription.frames {
+                if Task.isCancelled { break }
+                do {
+                    if Self.isDiscontinuity(
+                        currentUs: frame.timestampUs, lastUs: lastPtsUs,
+                        keyframe: frame.keyframe
+                    ) {
+                        MoQLogger.player.debug("Video discontinuity detected")
+                        tracer?.reset()
                     }
-                }
-                if !Task.isCancelled {
-                    continuation.yield(.trackStopped(.audio))
+                    lastPtsUs = frame.timestampUs
+
+                    metrics.recordVideoBytes(frame.payload.count)
+                    tracer?.record(ptsUs: frame.timestampUs)
+
+                    guard try track.insert(
+                        payload: frame.payload,
+                        timestampUs: frame.timestampUs,
+                        keyframe: frame.keyframe) != nil
+                    else { continue }
+
+                    if firstFrame && !isSwitch {
+                        firstFrame = false
+                        metrics.markFirstVideoFrame()
+                        continuation.yield(.trackPlaying(.video))
+                    } else if firstFrame {
+                        firstFrame = false
+                        metrics.markFirstVideoFrame()
+                    }
+                } catch {
+                    MoQLogger.player.error("Video frame processing error: \(error)")
+                    continuation.yield(.error(.video, error.localizedDescription))
                 }
             }
-        }
-
-        // Video ingest task
-        if let vTrack = videoSubscription, let renderer = videoRenderer, renderer.canProcess {
-            videoTask = Task.detached {
-                var lastPtsUs: UInt64 = 0
-                var firstFrame = true
-                for await frame in vTrack.frames {
-                    if Task.isCancelled { break }
-                    do {
-                        if Self.isDiscontinuity(
-                            currentUs: frame.timestampUs, lastUs: lastPtsUs,
-                            keyframe: frame.keyframe
-                        ) {
-                            MoQLogger.player.debug(
-                                "Video discontinuity detected, flushing")
-                            renderer.flush()
-                            videoTracer?.reset()
-                        }
-                        lastPtsUs = frame.timestampUs
-
-                        metrics.recordVideoBytes(frame.payload.count)
-                        videoTracer?.record(ptsUs: frame.timestampUs)
-                        let inserted = try renderer.insert(
-                            payload: frame.payload, timestampUs: frame.timestampUs,
-                            keyframe: frame.keyframe)
-
-                        if inserted && firstFrame {
-                            firstFrame = false
-                            metrics.markFirstVideoFrame()
-                            continuation.yield(.trackPlaying(.video))
-                        }
-                    } catch {
-                        MoQLogger.player.error("Video frame processing error: \(error)")
-                        continuation.yield(.error(.video, error.localizedDescription))
-                    }
-                }
-                if !Task.isCancelled {
-                    continuation.yield(.trackStopped(.video))
-                }
+            if !Task.isCancelled {
+                continuation.yield(.trackStopped(.video))
             }
         }
+    }
 
-        // Coordinator: wait for both tasks and emit allTracksStopped
+    private func startAudioIngestTask(
+        subscription: MoQMediaTrack,
+        config: MoqAudio,
+        isSwitch: Bool
+    ) -> Task<Void, Never> {
+        let continuation = eventsContinuation
+        let audioTracer = self.audioTracer
+        let metrics = self.accumulator
+        guard let renderer = self.audioRenderer else {
+            MoQLogger.player.error("startAudioIngestTask called without an active AudioRenderer")
+            return Task.detached {}
+        }
+
+        return Task.detached {
+            let decoder: AudioDecoder
+            do {
+                decoder = try AudioDecoder(config: config)
+            } catch {
+                MoQLogger.player.error("Failed to create AudioDecoder: \(error)")
+                continuation.yield(.error(.audio, error.localizedDescription))
+                return
+            }
+
+            var lastPtsUs: UInt64 = 0
+            var firstFrame = true
+
+            for await frame in subscription.frames {
+                if Task.isCancelled { break }
+                do {
+                    if Self.isDiscontinuity(
+                        currentUs: frame.timestampUs, lastUs: lastPtsUs,
+                        keyframe: frame.keyframe
+                    ) {
+                        MoQLogger.player.debug("Audio discontinuity detected, flushing")
+                        renderer.flush()
+                        audioTracer?.reset()
+                    }
+                    lastPtsUs = frame.timestampUs
+
+                    metrics.recordAudioBytes(frame.payload.count)
+                    audioTracer?.record(ptsUs: frame.timestampUs)
+                    let pcm = try decoder.decode(payload: frame.payload)
+                    renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
+
+                    if firstFrame {
+                        firstFrame = false
+                        metrics.markFirstAudioFrame()
+                        let event: MoQPlayerEvent = isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
+                        continuation.yield(event)
+                    }
+                } catch {
+                    MoQLogger.player.error("Audio decode error: \(error)")
+                    continuation.yield(.error(.audio, error.localizedDescription))
+                }
+            }
+            if !Task.isCancelled {
+                continuation.yield(.trackStopped(.audio))
+            }
+        }
+    }
+
+    private func restartCoordinator() {
+        coordinatorTask?.cancel()
         let vTask = videoTask
         let aTask = audioTask
+        let continuation = eventsContinuation
         coordinatorTask = Task.detached {
             await vTask?.value
             await aTask?.value
-            if !Task.isCancelled {
-                continuation.yield(.allTracksStopped)
-                continuation.finish()
-            }
+            guard !Task.isCancelled else { return }
+            continuation.yield(.allTracksStopped)
+            continuation.finish()
         }
     }
 

@@ -110,7 +110,9 @@ public final class MoQMediaTrack: @unchecked Sendable {
     public func close() {
         track.cancel()
         readTask?.cancel()
-        stateContinuation.yield(.closed)
+        readTask = nil
+        // Do not yield .closed here — the read task's defer handles that on a normal
+        // end, and double-yielding would emit two .closed events to state consumers.
         stateContinuation.finish()
         framesContinuation.finish()
     }

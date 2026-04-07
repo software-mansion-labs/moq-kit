@@ -143,7 +143,7 @@ final class PacketTimingTracer: @unchecked Sendable {
                     "[%@] %d pkts | avg wall %.1fms avg pts %.1fms | stalls: %d bursts: %d | ooo: %d (max -%.1fms) | gap [%.1f, %.1f]ms",
                 kind.rawValue, pkts, avgWall, avgPts, stalls, bursts, ooo, maxOoo, minG, maxG
             )
-            self.reportCallback(msg)
+            // self.reportCallback(msg)
         }
     }
 
