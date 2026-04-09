@@ -160,6 +160,15 @@ final class VideoRenderer: @unchecked Sendable {
             {
                 timebaseStarted = true
                 self.timebaseStarted = true
+                // Anchor the timebase to the first buffered frame's PTS so that
+                // AVSampleBufferDisplayLayer schedules frames in the correct PTS domain.
+                // Without this the timebase stays at 0 while frames have large live PTS
+                // values, causing them to be scheduled far in the future and never display.
+                if let firstPts = self.activeTrack.peekFront()?.timestampUs {
+                    CMTimebaseSetTime(
+                        videoTimebase,
+                        time: CMTime(value: CMTimeValue(firstPts), timescale: 1_000_000))
+                }
                 CMTimebaseSetRate(videoTimebase, rate: 1.0)
             }
 
