@@ -115,6 +115,9 @@ public final class MoQSession {
     ///     string will be surfaced on ``broadcasts``. Pass `""` (the default) to receive all
     ///     broadcasts on the relay.
     public init(url: String, prefix: String = "") {
+        do {
+            try moqLogLevel(level: "TRACE")
+        } catch { }
         self.url = url
         self.prefix = prefix
 
@@ -152,6 +155,7 @@ public final class MoQSession {
             self.origin = origin
 
             let client = MoqClient()
+            client.setTlsDisableVerify(disable: true)
             client.setConsume(origin: origin)
             self.client = client
 

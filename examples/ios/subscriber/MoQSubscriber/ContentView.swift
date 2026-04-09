@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var relayURL = "http://192.168.92.140:4443"
+    // @State private var relayURL = "http://192.168.92.140:4443"
+    @State private var relayURL = "https://cdn.moq.dev/demo?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJyb290IjoiZGVtbyIsImdldCI6WyIiXSwiZXhwIjpudWxsLCJpYXQiOm51bGx9.6EoN-Y1Ouj35_qV5FokcdcdderrE2navNbYQjJyR2Ac"
     @State private var broadcastPath = "bbb"
     @StateObject private var player = PlayerViewModel()
 

@@ -1,6 +1,5 @@
 import AVFoundation
 import SwiftUI
-import MoQKit
 
 @main
 struct MoQSubscriberApp: App {
