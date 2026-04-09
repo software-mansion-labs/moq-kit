@@ -9,10 +9,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -20,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -59,6 +62,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.swmansion.moqkit.MoQSession
+import com.swmansion.moqkit.MoQVideoTrackInfo
 import com.swmansion.moqkit.PlaybackStats
 import kotlinx.coroutines.delay
 
@@ -314,6 +318,8 @@ private fun BroadcastCard(
                     }
                 }
             }
+
+            RenditionPickerRow(entry = entry, vm = vm)
 
             // Per-player latency slider
             Column {
@@ -591,6 +597,51 @@ private fun latencyColor(ms: Double): Color {
 private fun formatBitrate(kbps: Double): String {
     if (kbps >= 1000) return String.format("%.1f Mbps", kbps / 1000)
     return "${kbps.toInt()} kbps"
+}
+
+@Composable
+private fun RenditionPickerRow(entry: BroadcastEntry, vm: MainViewModel) {
+    val tracks = remember(entry.info.videoTracks) {
+        entry.info.videoTracks.sortedByDescending {
+            it.config.coded?.let { d -> d.width.toLong() * d.height.toLong() } ?: 0L
+        }
+    }
+    if (tracks.size < 2) return
+
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        tracks.forEach { track ->
+            val isSelected = track.name == entry.selectedVideoTrack?.name
+            val isPending = track.name == entry.pendingVideoTrack?.name
+            val label = track.config.coded?.height?.let { "${it}p" } ?: track.name
+
+            Button(
+                onClick = { vm.switchVideoTrack(entry, track) },
+                enabled = !isSelected && entry.pendingVideoTrack == null,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSelected || isPending)
+                        MaterialTheme.colorScheme.primary
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = if (isSelected || isPending)
+                        MaterialTheme.colorScheme.onPrimary
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    disabledContainerColor = if (isSelected || isPending)
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                    else
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    disabledContentColor = if (isSelected || isPending)
+                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                    else
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.height(32.dp),
+            ) {
+                Text(label, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
 }
 
 private fun stateLabel(state: MoQSession.State): String = when (state) {

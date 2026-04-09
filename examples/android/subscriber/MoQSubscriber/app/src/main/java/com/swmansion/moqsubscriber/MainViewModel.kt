@@ -11,7 +11,10 @@ import com.swmansion.moqkit.MoQBroadcastEvent
 import com.swmansion.moqkit.MoQBroadcastInfo
 import com.swmansion.moqkit.MoQPlayer
 import com.swmansion.moqkit.MoQSession
+import com.swmansion.moqkit.MoQTrackInfo
+import com.swmansion.moqkit.MoQVideoTrackInfo
 import com.swmansion.moqkit.PlaybackStats
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -27,6 +30,8 @@ class BroadcastEntry(info: MoQBroadcastInfo) {
     var targetLatencyMs by mutableStateOf(200)
 
     var playbackStats by mutableStateOf<PlaybackStats?>(null)
+    var selectedVideoTrack by mutableStateOf<MoQVideoTrackInfo?>(null)
+    var pendingVideoTrack by mutableStateOf<MoQVideoTrackInfo?>(null)
 
     internal var eventJob: Job? = null
     internal var statsJob: Job? = null
@@ -34,7 +39,9 @@ class BroadcastEntry(info: MoQBroadcastInfo) {
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    var relayUrl by mutableStateOf("http://192.168.92.140:4443")
+    // var relayUrl by mutableStateOf("http://192.168.92.85:4443")
+    var relayUrl = "https://cdn.moq.dev/demo?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJyb290IjoiZGVtbyIsImdldCI6WyIiXSwiZXhwIjpudWxsLCJpYXQiOm51bGx9.6EoN-Y1Ouj35_qV5FokcdcdderrE2navNbYQjJyR2Ac"
+
     var sessionState by mutableStateOf<MoQSession.State>(MoQSession.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
 
@@ -42,7 +49,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var sessionJobs: List<Job> = emptyList()
 
     fun connect() {
-        val context = getApplication<Application>()
         val s = MoQSession(
             url = relayUrl,
             parentScope = viewModelScope,
@@ -64,11 +70,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 existing.eventJob?.cancel()
                                 existing.info = info
                                 existing.offline = false
-                                startPlayer(context, existing)
+                                startPlayer(existing)
                             } else {
                                 val entry = BroadcastEntry(info)
                                 broadcasts.add(entry)
-                                startPlayer(context, entry)
+                                startPlayer(entry)
                             }
                         }
                         is MoQBroadcastEvent.Unavailable -> {
@@ -105,6 +111,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun switchVideoTrack(entry: BroadcastEntry, track: MoQVideoTrackInfo) {
+        entry.pendingVideoTrack = track
+        entry.player?.switchVideoTrack(track) {
+            viewModelScope.launch(Dispatchers.Main) {
+                entry.selectedVideoTrack = track
+                entry.pendingVideoTrack = null
+            }
+        }
+    }
+
     private fun stopEntry(entry: BroadcastEntry) {
         entry.eventJob?.cancel()
         entry.statsJob?.cancel()
@@ -114,41 +130,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         entry.playbackStats = null
         entry.isPlaying = false
         entry.isPaused = false
+        entry.selectedVideoTrack = null
+        entry.pendingVideoTrack = null
     }
 
-    private fun startPlayer(context: Application, entry: BroadcastEntry) {
-        val hasAudio = entry.info.audioTracks.isNotEmpty()
+    private fun startPlayer(entry: BroadcastEntry) {
+        val initialVideo = entry.info.videoTracks.maxByOrNull { track ->
+            (track.config.coded?.height ?: 0u) * (track.config.coded?.width ?: 0u)
+        }
 
-        if (hasAudio) {
-            val allTracks = buildList<com.swmansion.moqkit.MoQTrackInfo> {
-                addAll(entry.info.audioTracks)
-                addAll(entry.info.videoTracks)
-            }
-            val player = MoQPlayer(allTracks, entry.targetLatencyMs, viewModelScope)
-            entry.player = player
-            player.play()
+        val tracks = buildList<MoQTrackInfo> {
+            addAll(entry.info.audioTracks)
+            if (initialVideo != null) add(initialVideo)
+        }
+        val player = MoQPlayer(tracks, entry.targetLatencyMs, viewModelScope)
+        entry.player = player
+        entry.selectedVideoTrack = initialVideo
+        player.play()
 
-            entry.eventJob = viewModelScope.launch {
-                player.events.collect { ev ->
-                    when (ev) {
-                        is MoQPlayer.Event.TrackPlaying -> {
-                            entry.isPlaying = true
-                            entry.isPaused = false
-                        }
-                        is MoQPlayer.Event.TrackStopped -> entry.isPlaying = false
-                        is MoQPlayer.Event.Error -> entry.isPlaying = false
-                        is MoQPlayer.Event.AllTracksStopped -> entry.isPlaying = false
-                        else -> {}
+        entry.eventJob = viewModelScope.launch {
+            player.events.collect { ev ->
+                when (ev) {
+                    is MoQPlayer.Event.TrackPlaying -> {
+                        entry.isPlaying = true
+                        entry.isPaused = false
                     }
+                    is MoQPlayer.Event.TrackStopped -> entry.isPlaying = false
+                    is MoQPlayer.Event.Error -> entry.isPlaying = false
+                    is MoQPlayer.Event.AllTracksStopped -> entry.isPlaying = false
+                    else -> {}
                 }
             }
-            entry.statsJob = viewModelScope.launch {
-                while (true) {
-                    delay(500)
-                    entry.playbackStats = player.stats
-                }
+        }
+        entry.statsJob = viewModelScope.launch {
+            while (true) {
+                delay(500)
+                entry.playbackStats = player.stats
             }
-            return
         }
     }
 
