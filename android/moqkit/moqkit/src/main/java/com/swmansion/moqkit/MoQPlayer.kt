@@ -27,8 +27,8 @@ private const val TAG = "MoQRealTimePlayer"
  * player.stop()
  * ```
  *
- * @param tracks List of tracks to play. Must contain at least one [MoQAudioTrackInfo];
- *   a [MoQVideoTrackInfo] is optional.
+ * @param tracks List of tracks to play. Both [MoQAudioTrackInfo] and [MoQVideoTrackInfo] are
+ *   optional — any combination works, including video-only or audio-only.
  * @param targetLatencyMs Target end-to-end playback latency in milliseconds. Lower values
  *   reduce delay at the cost of increased risk of stalls. Defaults to 100 ms.
  * @param parentScope Coroutine scope whose lifetime bounds the player's internal coroutines.
@@ -38,6 +38,20 @@ class MoQPlayer(
     private val targetLatencyMs: Int = 100,
     parentScope: CoroutineScope,
 ) {
+    init {
+        val audioTracksCount = tracks.count { track ->  track is MoQAudioTrackInfo }
+        if (audioTracksCount > 1) {
+            throw IllegalArgumentException("at most one audio track is allowed")
+        }
+        val videoTracksCount = tracks.count { track -> track is MoQVideoTrackInfo }
+        if (videoTracksCount > 1) {
+            throw IllegalArgumentException("at most one video track is allowed")
+        }
+        if (audioTracksCount + videoTracksCount == 0) {
+            throw IllegalArgumentException("at least one audio or video track is expected")
+        }
+    }
+
     /**
      * Playback lifecycle events emitted by the player.
      */
@@ -107,20 +121,27 @@ class MoQPlayer(
      * Opens subscriptions for all tracks in the list provided at construction time and begins
      * decoding. The first decoded audio frame triggers an [Event.TrackPlaying] event.
      * Safe to call if a surface has not yet been provided — video will start automatically
-     * once [setSurface] is called.
+     * once [setSurface] is called. Audio is optional — if no audio track is present only
+     * video is played.
      */
     fun play() {
         playing = true
         accumulator.markPlayStart()
 
-        val audioInfo = tracks.filterIsInstance<MoQAudioTrackInfo>().firstOrNull()
-        if (audioInfo == null) {
-            Log.w(TAG, "No audio track found")
-            _events.tryEmit(Event.Error("audio", "No audio track"))
+        startAudio()
+
+        surface?.let {
+            startVideo(it)
+        }
+    }
+
+    private fun startAudio() {
+        val audioInfo = tracks.filterIsInstance<MoQAudioTrackInfo>().firstOrNull() ?: run {
+            Log.d(TAG, "No audio track, skipping audio pipeline")
             return
         }
 
-        Log.d(TAG, "play: audio='${audioInfo.name}' ${audioInfo.config.sampleRate}Hz " +
+        Log.d(TAG, "startAudio: '${audioInfo.name}' ${audioInfo.config.sampleRate}Hz " +
             "${audioInfo.config.channelCount}ch, targetLatency=${targetLatencyMs}ms")
 
         val renderer = AudioRenderer(
@@ -139,23 +160,11 @@ class MoQPlayer(
         )
 
         audioIngestJob = scope.launch {
-            var lastPtsUs = 0L
             var firstFrame = true
             try {
                 audioFlow.collect { frame ->
-                    val tsUs = frame.timestampUs.toLong()
-
-                    // Discontinuity detection: keyframe with >500ms PTS jump
-                    if (frame.keyframe && lastPtsUs > 0) {
-                        val diff = if (tsUs > lastPtsUs) tsUs - lastPtsUs else lastPtsUs - tsUs
-                        if (diff > 500_000) {
-                            Log.d(TAG, "Audio discontinuity detected, flushing")
-                            renderer.flush()
-                        }
-                    }
-                    lastPtsUs = tsUs
-
-                    renderer.submitFrame(frame.payload, tsUs)
+                    // TODO: add discontinuation detection
+                    renderer.submitFrame(frame.payload, frame.timestampUs.toLong())
                     accumulator.recordAudioBytes(frame.payload.size)
 
                     if (firstFrame) {
@@ -165,19 +174,13 @@ class MoQPlayer(
                         _events.tryEmit(Event.TrackPlaying("audio"))
                     }
                 }
-                Log.d(TAG, "Audio flow ended")
+
                 _events.tryEmit(Event.TrackStopped("audio"))
             } catch (e: Exception) {
                 Log.e(TAG, "Audio ingest error: $e")
                 _events.tryEmit(Event.Error("audio", e.message ?: "Unknown error"))
             }
             checkAllStopped()
-        }
-
-        // Start video if surface is available
-        val s = surface
-        if (s != null) {
-            startVideo(s)
         }
     }
 
@@ -186,16 +189,22 @@ class MoQPlayer(
 
         Log.d(TAG, "Starting video: '${videoInfo.name}' codec=${videoInfo.config.codec}")
 
+        val track = VideoRendererTrack(videoInfo.config, targetLatencyMs.toLong() * 1000)
+
         val renderer = VideoRenderer(
-            config = videoInfo.config,
+            activeTrack = track,
             surface = surface,
-            targetBufferingUs = targetLatencyMs.toLong() * 1000,
             timebase = audioRenderer?.timebase,
             metrics = accumulator,
         )
         videoRenderer = renderer
         renderer.start()
 
+        videoIngestJob = launchVideoIngestJob(videoInfo, track)
+    }
+
+    private fun launchVideoIngestJob(videoInfo: MoQVideoTrackInfo, track: VideoRendererTrack): Job {
+        Log.d(TAG, "Subscribing to video track")
         val videoFlow = subscribeTrack(
             videoInfo.broadcast,
             videoInfo.name,
@@ -203,24 +212,14 @@ class MoQPlayer(
             targetLatencyMs.toULong(),
         )
 
-        videoIngestJob = scope.launch {
-            var lastPtsUs = 0L
+        return scope.launch {
             var firstFrame = true
             try {
+                Log.d(TAG, "Waiting for video frames")
                 videoFlow.collect { frame ->
-                    val tsUs = frame.timestampUs.toLong()
+                    // TODO: add discontinuation detection
 
-                    // Discontinuity detection: keyframe with >500ms PTS jump
-                    if (frame.keyframe && lastPtsUs > 0) {
-                        val diff = if (tsUs > lastPtsUs) tsUs - lastPtsUs else lastPtsUs - tsUs
-                        if (diff > 500_000) {
-                            Log.d(TAG, "Video discontinuity detected, flushing")
-                            // renderer.flush()
-                        }
-                    }
-                    lastPtsUs = tsUs
-
-                    renderer.submitFrame(frame.payload, tsUs, frame.keyframe)
+                    track.insert(frame.payload, frame.timestampUs.toLong(), frame.keyframe)
                     accumulator.recordVideoBytes(frame.payload.size)
 
                     if (firstFrame) {
@@ -230,7 +229,7 @@ class MoQPlayer(
                         _events.tryEmit(Event.TrackPlaying("video"))
                     }
                 }
-                Log.d(TAG, "Video flow ended")
+
                 _events.tryEmit(Event.TrackStopped("video"))
             } catch (e: Exception) {
                 Log.e(TAG, "Video ingest error: $e")
@@ -238,6 +237,35 @@ class MoQPlayer(
             }
             checkAllStopped()
         }
+    }
+
+    /**
+     * Switches to a different video rendition seamlessly.
+     *
+     * Creates a pending track that accumulates frames in the background. The swap state
+     * machine in [VideoRenderer] decides between a seamless cut-in and a flush-and-swap,
+     * then calls [onActivated] on the renderer's HandlerThread.
+     *
+     * No-ops if a switch is already in progress.
+     *
+     * @param videoInfo The new video rendition to switch to.
+     * @param onActivated Called on the renderer's HandlerThread when the swap completes.
+     */
+    fun switchVideoTrack(videoInfo: MoQVideoTrackInfo, onActivated: (() -> Unit)? = null) {
+        val renderer = videoRenderer ?: return
+        if (renderer.hasPendingTrack) return
+
+        Log.d(TAG, "Switching video track to '${videoInfo.name}' codec=${videoInfo.config.codec}")
+
+        val newTrack = VideoRendererTrack(videoInfo.config, targetLatencyMs.toLong() * 1000)
+        val oldJob = videoIngestJob
+
+        renderer.setPendingTrack(newTrack) {
+            oldJob?.cancel()
+            onActivated?.invoke()
+        }
+
+        videoIngestJob = launchVideoIngestJob(videoInfo, newTrack)
     }
 
     private fun stopVideo() {

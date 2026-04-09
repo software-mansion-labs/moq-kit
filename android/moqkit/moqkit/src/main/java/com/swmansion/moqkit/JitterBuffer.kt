@@ -14,7 +14,7 @@ private const val TAG = "JitterBuffer"
 internal class JitterBuffer<T>(
     private var targetBufferingUs: Long,
 ) {
-    enum class State { BUFFERING, PLAYING }
+    enum class State { BUFFERING, PLAYING, PENDING }
 
     data class Entry<T>(
         val item: T,
@@ -34,6 +34,39 @@ internal class JitterBuffer<T>(
 
     fun setOnDataAvailable(callback: (() -> Unit)?) {
         synchronized(lock) { onDataAvailable = callback }
+    }
+
+    /** Force-set the buffer state, bypassing normal transition logic. */
+    fun setState(state: State) {
+        synchronized(lock) { mode = state }
+    }
+
+    /**
+     * Peek at the front entry without removing it.
+     * Returns the entry regardless of mode (works in PENDING, BUFFERING, and PLAYING).
+     */
+    fun peekFront(): Entry<T>? {
+        synchronized(lock) { return entries.firstOrNull() }
+    }
+
+    /**
+     * Scan entries and return the PTS of the first one matching the predicate.
+     * Returns null if no matching entry exists.
+     */
+    fun firstPts(predicate: (Entry<T>) -> Boolean): Long? {
+        synchronized(lock) { return entries.firstOrNull(predicate)?.timestampUs }
+    }
+
+    /**
+     * Unconditionally remove the front entry regardless of mode.
+     * Returns true if an entry was removed.
+     */
+    fun discardFront(): Boolean {
+        synchronized(lock) {
+            if (entries.isEmpty()) return false
+            entries.removeAt(0)
+            return true
+        }
     }
 
     /**
@@ -97,7 +130,7 @@ internal class JitterBuffer<T>(
     fun dequeue(mediaTimeUs: Long? = null): Pair<Entry<T>?, Boolean> {
         synchronized(lock) {
             if (mode != State.PLAYING || entries.isEmpty()) {
-                exhausted = true
+                if (mode != State.PENDING) exhausted = true
                 return null to false
             }
 
@@ -126,6 +159,7 @@ internal class JitterBuffer<T>(
             return entries.first().timestampUs
         }
     }
+
 
     /**
      * Estimated playback time in microseconds.

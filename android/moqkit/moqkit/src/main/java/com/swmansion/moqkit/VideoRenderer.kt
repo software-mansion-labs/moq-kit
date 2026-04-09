@@ -1,206 +1,346 @@
 package com.swmansion.moqkit
 
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
-import uniffi.moq.MoqVideo
 
 private const val TAG = "VideoRenderer"
 
 /**
- * Processed video frame ready for MediaCodec input.
- * Annex B encoded bytes with prepended CSD if needed.
- */
-internal data class ProcessedFrame(
-    val payload: ByteArray,
-    val timestampUs: Long,
-)
-
-/**
  * Orchestrates JitterBuffer + VideoDecoder for real-time video rendering.
  *
- * Frames are buffered in the jitter buffer as raw payloads (before decoding).
- * When MediaCodec signals input buffer availability, frames are pulled from
- * the jitter buffer and submitted for decoding. All frames (playable or not)
- * are decoded to maintain the decoder's reference picture chain; non-playable
- * frames are released with render=false.
- *
- * Uses MediaCodec's scheduled release (`releaseOutputBuffer(index, renderTimestampNs)`)
- * to let the system compositor handle vsync-aligned display timing.
+ * Supports seamless rendition switching via an active + pending track model:
+ * - The active track feeds the decoder continuously.
+ * - A pending track accumulates incoming frames in the background.
+ * - [tryFeedDecoder] runs a [SwapPhase] state machine: discards stale pending frames,
+ *   waits for a viable keyframe, then either cuts in seamlessly (no decoder restart)
+ *   when the active track reaches that PTS, or swaps immediately (flush-and-swap)
+ *   when the pending track is too far behind.
  *
  * ## Thread model
- * - **IO thread**: [submitFrame] — inserts into the JitterBuffer (thread-safe), posts
- *   [tryFeedDecoder] to the decoder HandlerThread.
+ * A single [HandlerThread] is owned by this class and shared across decoder swaps.
+ * - **IO thread**: [VideoRendererTrack.insert] — thread-safe inside the track.
  * - **HandlerThread**: all decoder interaction — [tryFeedDecoder], [onDecodedFrame],
- *   [parkedInputBuffers], [playabilityMap]. No locks needed for these structures.
- * - **Main/caller thread**: lifecycle only — [start], [stop], [flush].
- *
- * ## Feed loop
- * [tryFeedDecoder] is the single entry-point for matching parked decoder input
- * buffers with jitter-buffer frames. It is triggered from three places:
- *   1. [onInputBufferAvailable] — decoder freed an input slot.
- *   2. [submitFrame] (posted) — a new frame arrived; parked buffer may be waiting.
- *   3. [JitterBuffer.setOnDataAvailable] — buffer transitioned empty→non-empty while PLAYING.
+ *   [parkedInputBuffers], [playabilityMap], swap state machine. No locks needed for these.
+ * - **Any thread**: [setPendingTrack] — posts to HandlerThread.
+ * - **Caller thread**: lifecycle only — [start], [stop].
  */
 internal class VideoRenderer(
-    private val config: MoqVideo,
+    @Volatile private var activeTrack: VideoRendererTrack,
     private val surface: Surface,
-    targetBufferingUs: Long,
     private val timebase: MediaTimebase? = null,
     private val metrics: PlaybackMetricsAccumulator? = null,
 ) {
-    private val jitterBuffer = JitterBuffer<ProcessedFrame>(targetBufferingUs).also { jb ->
-        if (metrics != null) {
-            jb.onStartPlaying = { metrics.videoStallEnded() }
-            jb.onStartBuffering = { metrics.videoStallBegan() }
-        }
-        // Fires outside JitterBuffer's lock, on the insert thread (IO).
-        // Just schedule a drain on the HandlerThread — safe and non-blocking.
-        jb.setOnDataAvailable {
-            decoder?.handler?.post { tryFeedDecoder() }
-        }
-    }
-    private val processor = VideoFrameProcessor(config)
+    // MARK: - Pending-track swap state machine
 
-    @Volatile
-    private var decoder: VideoDecoder? = null
-
-    // Pending input buffer indices waiting for jitter-buffer data.
-    // Only accessed on the decoder HandlerThread — no lock needed.
-    private val parkedInputBuffers = ArrayDeque<Int>()
-
-    // Maps PTS → playable flag, set at dequeue time and consumed at output time.
-    // Only accessed on the decoder HandlerThread — no lock needed.
-    private val playabilityMap = HashMap<Long, Boolean>()
-
-    companion object {
-        /**
-         * Don't submit a frame to the decoder whose PTS is more than this far ahead
-         * of the current audio clock. This bounds how far in the future we schedule
-         * surface release (MediaCodec breaks with scheduled release > ~200–300 ms out).
-         */
-        private const val MAX_AHEAD_US = 500_000L
-
-        /**
-         * Hard cap on scheduled surface release offset from now, in nanoseconds.
-         * Safety net that catches any edge case where the feed gate was not enough.
-         */
-        private const val MAX_RENDER_SCHEDULE_NS = 500_000_000L
-
-        /** Drop decoded frames that are this far behind the playback head. */
-        private const val LATE_DROP_THRESHOLD_US = 50_000L
+    private sealed class SwapPhase {
+        object AwaitingKeyframe : SwapPhase()
+        data class CuttingIn(val keyframePts: Long) : SwapPhase()
+        object FlushAndSwap : SwapPhase()
     }
 
-    /** PTS of the most recently submitted frame, in microseconds. */
+    private data class FramePlayability(val playable: Boolean, val enqueuedAt:  Long)
+
+    private var pendingTrack: VideoRendererTrack? = null
+    private var pendingPhase: SwapPhase? = null
+    private var onTrackActivated: (() -> Unit)? = null
+
+    /** If non-null, a rendition switch is in progress. */
     @Volatile
-    var lastIngestPtsUs: Long = 0L
+    var hasPendingTrack: Boolean = false
         private set
 
-    val bufferFillMs: Double get() = jitterBuffer.depthMs
+    // MARK: - HandlerThread (persistent across decoder swaps)
 
+    private val handlerThread = HandlerThread("MoQ-VideoRenderer").apply { start() }
+    private val handler = Handler(handlerThread.looper)
+
+    // MARK: - Decoder state (only accessed on HandlerThread)
+
+    private var decoder: VideoDecoder? = null
+    private val parkedInputBuffers = ArrayDeque<Int>()
+    private val playabilityMap = HashMap<Long, FramePlayability>()
     private var delayedDrainToken: Object? = null
 
-    fun start() {
-        Log.d(TAG, "Starting: codec=${config.codec}")
+    /** PTS of the most recently fed frame to MediaCodec (used by swap state machine). */
+    private var lastFedPtsUs: Long = 0L
 
-        if (processor.isReady) {
-            initDecoder()
+    companion object {
+        private const val MAX_AHEAD_US = 500_000L
+        private const val MAX_RENDER_SCHEDULE_NS = 500_000_000L
+        private const val LATE_DROP_THRESHOLD_US = 50_000L
+        private const val CUT_IN_WINDOW_US = 500_000L
+        private const val FLUSH_THRESHOLD_US = 2_000_000L
+    }
+
+    val bufferFillMs: Double get() = activeTrack.depthMs
+
+    /** PTS of the most recently ingested frame from the network. */
+    val lastIngestPtsUs: Long get() = activeTrack.lastIngestPtsUs
+
+    // MARK: - Lifecycle
+
+    fun start() {
+        Log.d(TAG, "Starting")
+        activeTrack.setOnDataAvailable {
+            handler.post {
+                if (decoder == null && activeTrack.isProcessorReady) {
+                    initDecoder()
+                }
+                tryFeedDecoder()
+            }
+        }
+        if (activeTrack.isProcessorReady) {
+            handler.post { initDecoder() }
         } else {
             Log.d(TAG, "Deferring decoder init until CSD is available")
         }
-
         Log.d(TAG, "VideoRenderer started")
     }
 
     private fun initDecoder() {
-        val format = processor.getFormat()
+        val format = activeTrack.getFormat()
             ?: throw IllegalStateException("Cannot init decoder: format not ready")
+        decoder = buildDecoder(format)
+        decoder!!.start()
+        Log.d(TAG, "Decoder initialized: $format")
+    }
 
-        val videoDecoder = VideoDecoder(
-            format,
-            surface,
+    private fun buildDecoder(format: android.media.MediaFormat): VideoDecoder =
+        VideoDecoder(
+            format = format,
+            surface = surface,
+            handler = handler,
             onInputBufferAvailable = { index ->
-                // Runs on HandlerThread.
                 parkedInputBuffers.addLast(index)
                 tryFeedDecoder()
             },
             onOutputBufferAvailable = { bufferIndex, timestampUs ->
-                // Runs on HandlerThread.
                 onDecodedFrame(bufferIndex, timestampUs)
             },
         )
-        decoder = videoDecoder
-        videoDecoder.start()
-        Log.d(TAG, "Decoder initialized: $format")
-    }
 
-    /** Submit a compressed video frame for buffering and eventual decoding. */
-    fun submitFrame(payload: ByteArray, timestampUs: Long, keyframe: Boolean) {
-        lastIngestPtsUs = timestampUs
-        val processed = processor.processPayload(payload, keyframe) ?: return
-
-        if (decoder == null && processor.isReady) {
-            initDecoder()
+    fun stop() {
+        Log.d(TAG, "Stopping VideoRenderer")
+        activeTrack.setOnDataAvailable(null)
+        pendingTrack?.setOnDataAvailable(null)
+        hasPendingTrack = false
+        activeTrack.flush()
+        handler.post {
+            delayedDrainToken?.let { handler.removeCallbacksAndMessages(it) }
+            delayedDrainToken = null
+            pendingTrack = null
+            pendingPhase = null
+            parkedInputBuffers.clear()
+            playabilityMap.clear()
+            decoder?.release()
+            decoder = null
+            handlerThread.quitSafely()
         }
-
-        jitterBuffer.insert(ProcessedFrame(processed, timestampUs), timestampUs)
+        Log.d(TAG, "VideoRenderer stopped")
     }
+
+    fun updateTargetBuffering(ms: Int) {
+        activeTrack.updateTargetBuffering(ms.toLong() * 1000)
+    }
+
+    // MARK: - Pending track API
 
     /**
-     * Match parked decoder input buffers with jitter-buffer frames.
-     *
-     * Must run on the decoder HandlerThread. Loops until the jitter buffer is
-     * empty/buffering, we run out of parked input buffers, or the next frame is
-     * too far ahead of the playback clock (schedules a retry via postDelayed).
+     * Install a pending track. The [SwapPhase] state machine in [tryFeedDecoder] will
+     * decide between cut-in and flush-and-swap, then call [performSwap].
+     * [onActivated] is called on the HandlerThread at the moment of the swap.
      */
+    fun setPendingTrack(track: VideoRendererTrack, onActivated: (() -> Unit)?) {
+        hasPendingTrack = true
+        handler.post {
+            pendingTrack?.setOnDataAvailable(null)
+            track.setBufferState(JitterBuffer.State.PENDING)
+            pendingTrack = track
+            pendingPhase = SwapPhase.AwaitingKeyframe
+            onTrackActivated = onActivated
+            track.setOnDataAvailable { handler.post { tryFeedDecoder() } }
+        }
+    }
+
+    // MARK: - Drain loop + swap state machine (HandlerThread only)
 
     private fun tryFeedDecoder() {
-        if (delayedDrainToken != null) {
-            decoder?.handler?.removeCallbacksAndMessages(delayedDrainToken)
-            delayedDrainToken = null
+        delayedDrainToken?.let { handler.removeCallbacksAndMessages(it) }
+        delayedDrainToken = null
+
+        // --- Pending track swap state machine ---
+        val pending = pendingTrack
+        val phase = pendingPhase
+        if (pending != null && phase != null) {
+            when (phase) {
+                is SwapPhase.AwaitingKeyframe -> {
+                    // Discard stale non-keyframes that can never serve as a cut-in point.
+                    while (true) {
+                        val front = pending.peekFront() ?: break
+                        if (front.second) break  // is keyframe
+                        if (lastFedPtsUs - front.first <= CUT_IN_WINDOW_US) break
+                        pending.discardFront()
+                    }
+                    // Decide strategy once a keyframe is available.
+                    val kfPts = pending.firstKeyframePts
+                    if (kfPts != null) {
+                        val gap = lastFedPtsUs - kfPts
+                        pendingPhase = if (gap > FLUSH_THRESHOLD_US) {
+                            SwapPhase.FlushAndSwap
+                        } else {
+                            SwapPhase.CuttingIn(kfPts)
+                        }
+                    }
+                    // else: no keyframe yet — onDataAvailable will re-trigger when one arrives
+                }
+
+                is SwapPhase.CuttingIn -> {
+                    val kfPts = phase.keyframePts
+                    pending.discardNonKeyframesBeforePts(kfPts)
+                    if (lastFedPtsUs >= kfPts) {
+                        pending.setBufferState(JitterBuffer.State.PLAYING)
+                        performSwap(pending)
+                        pendingPhase = null
+                    }
+                }
+
+                is SwapPhase.FlushAndSwap -> {
+                    pending.setBufferState(JitterBuffer.State.PLAYING)
+                    performSwap(pending, hardFlush = true)
+                    pendingPhase = null
+                }
+            }
         }
 
+        // --- Drain active track ---
         while (parkedInputBuffers.isNotEmpty()) {
             val mediaTimeUs = timebase?.currentTimeUs?.takeIf { it > 0L }
 
-            val nextPts = jitterBuffer.peekNextTimestampUs() ?: return  // empty or still buffering
+            val nextPts = activeTrack.peekNextTimestampUs() ?: run {
+                // Empty or still buffering — check for emergency swap.
+                handleEmptyActive()
+                return
+            }
 
             if (mediaTimeUs != null) {
                 val aheadUs = nextPts - mediaTimeUs
                 if (aheadUs > MAX_AHEAD_US) {
                     val delayMs = ((aheadUs - MAX_AHEAD_US) / 1000L).coerceIn(1L, 100L)
-
                     delayedDrainToken = Object()
-                    decoder?.handler?.postDelayed({
-                        tryFeedDecoder()
-                    }, delayedDrainToken, delayMs)
+                    handler.postDelayed({ tryFeedDecoder() }, delayedDrainToken, delayMs)
                     return
                 }
             }
 
-            val (entry, playable) = jitterBuffer.dequeue(mediaTimeUs)
-            if (entry == null) return
+            val (entry, playable) = activeTrack.dequeue(mediaTimeUs)
+            if (entry == null) {
+                handleEmptyActive()
+                return
+            }
 
             val index = parkedInputBuffers.removeFirst()
-            playabilityMap[entry.item.timestampUs] = playable
+            lastFedPtsUs = entry.item.timestampUs
+            playabilityMap[entry.item.timestampUs] = FramePlayability(playable, System.nanoTime())
             decoder?.fillInputBuffer(index, entry.item.payload, entry.item.timestampUs)
+
+            if (!playable) metrics?.recordVideoFrameDropped()
         }
     }
 
-    /** Called on the decoder HandlerThread when a frame is decoded. */
-    private fun onDecodedFrame(bufferIndex: Int, timestampUs: Long) {
-        val playable = playabilityMap.remove(timestampUs) ?: true
+    private fun handleEmptyActive() {
+        val pending = pendingTrack
+        if (pending != null && pending.peekFront()?.second == true) {
+            // Emergency swap: active drained completely but pending has a keyframe.
+            pending.setBufferState(JitterBuffer.State.PLAYING)
+            performSwap(pending)
+            pendingPhase = null
+        }
+    }
 
+    /**
+     * Promotes [newTrack] to active. Must be called on HandlerThread.
+     *
+     * The decoder is **reused** across swaps (adaptive playback). The same MediaCodec instance
+     * handles resolution changes transparently as long as the codec (MIME type) is unchanged.
+     * Throws if the codec changes — the caller must tear down and re-create [VideoRenderer] instead.
+     *
+     * @param hardFlush When true, flushes and restarts the decoder to discard stale queued state
+     *                  (used for the FlushAndSwap path where the pending track is far behind).
+     *                  When false (CuttingIn / emergency swap), the decoder keeps running and
+     *                  input buffer indices remain valid.
+     */
+    private fun performSwap(newTrack: VideoRendererTrack, hardFlush: Boolean = false) {
+        Log.d(TAG, "VideoRenderer: swapping to pending track (hardFlush=$hardFlush)")
+
+        val activeMime = activeTrack.getFormat()?.getString(android.media.MediaFormat.KEY_MIME)
+        val newMime = newTrack.getFormat()?.getString(android.media.MediaFormat.KEY_MIME)
+        if (activeMime != null && newMime != null && activeMime != newMime) {
+            error("Cannot switch codecs during adaptive swap: $activeMime → $newMime")
+        }
+
+        activeTrack.setOnDataAvailable(null)
+
+        val currentDecoder = decoder
+        if (currentDecoder != null) {
+            if (hardFlush) {
+                currentDecoder.flush()
+                parkedInputBuffers.clear()
+            }
+            // else: decoder keeps running, parkedInputBuffers remain valid
+        } else {
+            // Decoder not yet initialized (swap before first keyframe on active track).
+            val format = newTrack.getFormat()
+            if (format != null) {
+                val newDecoder = buildDecoder(format)
+                decoder = newDecoder
+                newDecoder.start()
+            } else {
+                Log.d(TAG, "performSwap: format not ready, deferring decoder init")
+            }
+        }
+
+        playabilityMap.clear()
+        delayedDrainToken = null
+
+        activeTrack = newTrack
+        pendingTrack = null
+        hasPendingTrack = false
+
+        newTrack.setOnDataAvailable {
+            handler.post {
+                if (decoder == null && activeTrack.isProcessorReady) {
+                    initDecoder()
+                }
+                tryFeedDecoder()
+            }
+        }
+
+        onTrackActivated?.invoke()
+        onTrackActivated = null
+    }
+
+    // MARK: - Decoded frame handling (HandlerThread only)
+
+    private fun onDecodedFrame(bufferIndex: Int, timestampUs: Long) {
+        val playability = playabilityMap.remove(timestampUs) ?: FramePlayability(true, System.nanoTime())
         val dec = decoder ?: return
 
-        if (!playable) {
+        if (!playability.playable) {
+          Log.d(TAG, "Dropping video frame, set as non-playable")
             dec.releaseOutputBuffer(bufferIndex, false)
             metrics?.recordVideoFrameDropped()
             return
         }
 
+        val processingTime = (System.nanoTime() - playability.enqueuedAt) / 1_000_000
+
         val mediaTimeUs = timebase?.currentTimeUs?.takeIf { it > 0L }
 
         if (mediaTimeUs != null && timestampUs < mediaTimeUs - LATE_DROP_THRESHOLD_US) {
+          Log.d(TAG, "Dropping frame due to being late, pts diff = ${(mediaTimeUs - timestampUs) / 1_000}ms, processing time = ${processingTime}ms")
+
             dec.releaseOutputBuffer(bufferIndex, false)
             metrics?.recordVideoFrameDropped()
             return
@@ -209,33 +349,14 @@ internal class VideoRenderer(
         val delayUs = if (mediaTimeUs != null) {
             timestampUs - mediaTimeUs
         } else {
-            timestampUs - jitterBuffer.estimatedPlaybackTimeUs()
+            timestampUs - activeTrack.estimatedPlaybackTimeUs()
         }
+
+        Log.d(TAG, "Frame processed in ${processingTime}ms")
 
         val nowNs = System.nanoTime()
         val renderNs = (nowNs + delayUs * 1000L).coerceIn(nowNs, nowNs + MAX_RENDER_SCHEDULE_NS)
         dec.releaseOutputBuffer(bufferIndex, renderNs)
         metrics?.recordVideoFrameDisplayed()
-    }
-
-    fun updateTargetBuffering(ms: Int) {
-        jitterBuffer.updateTargetBuffering(ms.toLong() * 1000)
-    }
-
-    fun stop() {
-        Log.d(TAG, "Stopping VideoRenderer")
-        jitterBuffer.flush()
-        val dec = decoder
-        decoder = null
-        if (dec != null) {
-            // Post teardown to HandlerThread so it runs after any in-progress callback,
-            // then release() quits the thread cleanly via quitSafely().
-            dec.handler.post {
-                parkedInputBuffers.clear()
-                playabilityMap.clear()
-                dec.release()
-            }
-        }
-        Log.d(TAG, "VideoRenderer stopped")
     }
 }

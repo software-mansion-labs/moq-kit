@@ -109,6 +109,7 @@ class MoQSession(
             Log.d(TAG, "Origin created")
 
             val newClient = MoqClient()
+            newClient.setTlsDisableVerify(true)
             client = newClient
             newClient.setConsume(newOrigin)
 
