@@ -42,7 +42,7 @@ android {
 }
 
 dependencies {
-    implementation("com.swmansion.moqkit:moqkit:0.0.2")
+    implementation("com.swmansion.moqkit:moqkit:0.0.1-alpha3")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)

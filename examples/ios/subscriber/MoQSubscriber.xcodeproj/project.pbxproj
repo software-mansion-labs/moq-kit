@@ -113,7 +113,7 @@
 			);
 			mainGroup = A10000000000000000000021;
 			packageReferences = (
-				A10000000000000000000071 /* XCLocalSwiftPackageReference "../../../" */,
+				A10000000000000000000071 /* XCRemoteSwiftPackageReference "moq-kit" */,
 			);
 			productRefGroup = A10000000000000000000023 /* Products */;
 			projectDirPath = "";
@@ -333,17 +333,21 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		A10000000000000000000071 /* XCLocalSwiftPackageReference "../../../" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "../../../";
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000071 /* XCRemoteSwiftPackageReference "moq-kit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/software-mansion-labs/moq-kit";
+			requirement = {
+				kind = exactVersion;
+				version = "0.0.1-alpha3";
+			};
 		};
-/* End XCLocalSwiftPackageReference section */
+/* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		A10000000000000000000072 /* MoQKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000071 /* XCLocalSwiftPackageReference "../../../" */;
+			package = A10000000000000000000071 /* XCRemoteSwiftPackageReference "moq-kit" */;
 			productName = MoQKit;
 		};
 /* End XCSwiftPackageProductDependency section */
