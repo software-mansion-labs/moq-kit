@@ -2,7 +2,7 @@
 run = "mise run relay"
 
 [daemons.publish-shrek]
-run = "mise run publish-stream --name bbb/shrek"
+run = "mise run publish-stream --name public/shrek"
 
 [daemons.publish-another-shrek]
 run = "mise run publish-stream --name bbb/another-shrek"

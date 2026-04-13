@@ -6,7 +6,6 @@ private const val TAG = "JitterBuffer"
 
 /**
  * Sorted jitter buffer for media frames.
- * Port of iOS JitterBuffer<CMSampleBuffer>, generic over item type.
  *
  * Manages buffering->playing state transitions and playability decisions
  * based on wall-clock-to-PTS offset tracking.
@@ -50,11 +49,10 @@ internal class JitterBuffer<T>(
     }
 
     /**
-     * Scan entries and return the PTS of the first one matching the predicate.
-     * Returns null if no matching entry exists.
+     * Peek at the first entry matching the predicate.
      */
-    fun firstPts(predicate: (Entry<T>) -> Boolean): Long? {
-        synchronized(lock) { return entries.firstOrNull(predicate)?.timestampUs }
+    fun peekWhere(predicate: (Entry<T>) -> Boolean): Entry<T>? {
+        synchronized(lock) { return entries.firstOrNull(predicate) }
     }
 
     /**
@@ -75,13 +73,14 @@ internal class JitterBuffer<T>(
      */
     fun insert(item: T, timestampUs: Long) {
         val notify: Boolean
+        var startedPlaying = false
         synchronized(lock) {
             val offset = timestampUs - wallClockTimeUs()
 
             if (offset > maxOffset) {
                 val diff = offset - maxOffset
                 for (i in entries.indices) {
-                    entries[i] = entries[i].copy(offsetUs = entries[i].offsetUs + diff)
+                    entries[i].offsetUs += diff
                 }
                 maxOffset = offset
             }
@@ -105,7 +104,7 @@ internal class JitterBuffer<T>(
                     mode = State.PLAYING
                     Log.d(TAG, "Transitioned to PLAYING (${entries.size} frames buffered)")
                     notify = onDataAvailable != null
-                    onStartPlaying?.invoke()
+                    startedPlaying = true
                     return@synchronized
                 }
             }
@@ -114,6 +113,7 @@ internal class JitterBuffer<T>(
             notify = exhausted || (wasEmpty && mode == State.PLAYING)
         }
 
+        if (startedPlaying) onStartPlaying?.invoke()
         if (notify) {
             onDataAvailable?.invoke()
         }
@@ -155,8 +155,8 @@ internal class JitterBuffer<T>(
      */
     fun peekNextTimestampUs(): Long? {
         synchronized(lock) {
-            if (mode != State.PLAYING || entries.isEmpty()) return null
-            return entries.first().timestampUs
+            if (mode != State.PLAYING) return null
+            return entries.firstOrNull()?.timestampUs
         }
     }
 
@@ -186,8 +186,8 @@ internal class JitterBuffer<T>(
             entries.clear()
             mode = State.BUFFERING
             maxOffset = Long.MIN_VALUE
-            onStartBuffering?.invoke()
         }
+        onStartBuffering?.invoke()
     }
 
     val state: State get() = synchronized(lock) { mode }

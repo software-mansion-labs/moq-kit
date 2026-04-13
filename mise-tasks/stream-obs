@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# mise description="Start OBS stream and monitor it; stop cleanly on signal"
+#MISE description="Start OBS stream and monitor it; stop cleanly on signal"
+#USAGE flag "--url <url>" default="http://localhost:4443/anon" help="Relay URL"
+#USAGE arg "<profile>" help="OBS profile to use"
 set -euo pipefail
-
-PROFILE=${1:-"localhost"}
 
 cleanup() {
   echo "Stopping OBS stream..."
@@ -13,12 +13,10 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 echo "Switching OBS profile"
-obs-cmd profile switch "$PROFILE"
+obs-cmd profile switch "$usage_profile"
 
 echo "Setting the streaming service"
-# obs-cmd stream-service set --service-type moq_service --server http://localhost:4443/anon/bbb/$PROFILE
-obs-cmd stream-service set --service-type moq_service --server http://localhost:4443/anon/bbb/$PROFILE
-obs-cmd stream-service set --service-type moq_service --server https://cdn.moq.dev:4443/anon/dupa/$PROFILE
+obs-cmd stream-service set --service-type moq_service --server "$usage_url/$usage_profile"
 
 echo "Starting OBS stream..."
 obs-cmd streaming start

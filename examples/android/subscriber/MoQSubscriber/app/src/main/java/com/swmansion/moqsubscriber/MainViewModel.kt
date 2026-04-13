@@ -39,8 +39,7 @@ class BroadcastEntry(info: MoQBroadcastInfo) {
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    // var relayUrl by mutableStateOf("http://192.168.92.85:4443")
-    var relayUrl = "https://cdn.moq.dev/demo?jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJyb290IjoiZGVtbyIsImdldCI6WyIiXSwiZXhwIjpudWxsLCJpYXQiOm51bGx9.6EoN-Y1Ouj35_qV5FokcdcdderrE2navNbYQjJyR2Ac"
+    var relayUrl by mutableStateOf("http://192.168.92.140:4443")
 
     var sessionState by mutableStateOf<MoQSession.State>(MoQSession.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
@@ -77,6 +76,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 startPlayer(entry)
                             }
                         }
+
                         is MoQBroadcastEvent.Unavailable -> {
                             val entry = broadcasts.find { it.id == event.path } ?: return@collect
                             stopEntry(entry)
@@ -86,10 +86,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             },
             viewModelScope.launch {
-                try { s.connect() } catch (_: Exception) {}
+                try {
+                    s.connect()
+                } catch (_: Exception) {
+                }
             },
         )
     }
+
     fun togglePause(entry: BroadcastEntry) {
         if (entry.isPaused) {
             entry.player?.play()
@@ -155,6 +159,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         entry.isPlaying = true
                         entry.isPaused = false
                     }
+
                     is MoQPlayer.Event.TrackStopped -> entry.isPlaying = false
                     is MoQPlayer.Event.Error -> entry.isPlaying = false
                     is MoQPlayer.Event.AllTracksStopped -> entry.isPlaying = false

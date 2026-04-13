@@ -8,7 +8,7 @@ run = "cd vendor/moq && just fix"
 
 [tasks."android:publish-local"]
 description = "Assemble AAR and publish to local Maven (~/.m2)"
-run = "cd android/moqkit && ./gradlew clean && ./gradlew :MoQKit:build && ./gradlew :MoQKit:publishToMavenLocal"
+run = "cd android/moqkit && ./gradlew :MoQKit:build && ./gradlew :MoQKit:publishToMavenLocal"
 
 [tasks."android:install"]
 description = "Install Android subscriber demo APK"

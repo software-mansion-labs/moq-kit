@@ -21,6 +21,7 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
 
     private val isAv1 = config.codec.startsWith("av0")
     private val transform: (ByteArray) -> ByteArray
+    @Volatile
     private var format: MediaFormat? = null
 
     /** True once a MediaFormat with CSD is available and the decoder can be configured. */
@@ -38,8 +39,12 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
             if (format != null) {
                 Log.d(TAG, "Format ready immediately: $format")
             } else {
+
                 Log.w(TAG, "makeVideoFormat returned null for codec=${config.codec}")
             }
+
+            format?.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            format?.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         } else {
             Log.d(TAG, "No description — deferring CSD extraction for codec=${config.codec}")
         }
@@ -108,6 +113,8 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
             }
 
             format = fmt
+            format?.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            format?.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
             Log.d(TAG, "Format now ready: $fmt")
         }
 

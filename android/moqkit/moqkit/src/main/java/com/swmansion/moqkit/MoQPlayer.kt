@@ -261,6 +261,7 @@ class MoQPlayer(
         val oldJob = videoIngestJob
 
         renderer.setPendingTrack(newTrack) {
+            // TODO: we may encounter situation where the track will never be switched so we will leak the job
             oldJob?.cancel()
             onActivated?.invoke()
         }

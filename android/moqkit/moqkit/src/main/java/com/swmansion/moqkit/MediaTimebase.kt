@@ -8,12 +8,15 @@ import android.media.AudioTrack
  * Will serve as the master clock for future video sync.
  */
 internal class MediaTimebase {
+    @Volatile
     private var baseTimestampUs: Long = 0L
     private var sampleRate: Int = 0
     private var lastHeadPosition: Long = 0L
+    @Volatile
     private var hostTimeAtBaseNs: Long = 0L
 
     /** Current playback time in microseconds. */
+    @Volatile
     var currentTimeUs: Long = 0L
         private set
 

@@ -1,10 +1,7 @@
 package com.swmansion.moqkit
 
 import android.media.MediaFormat
-import android.util.Log
 import uniffi.moq.MoqVideo
-
-private const val TAG = "VideoRendererTrack"
 
 /**
  * Processed video frame ready for MediaCodec input.
@@ -40,13 +37,9 @@ internal class VideoRendererTrack(config: MoqVideo, targetBufferingUs: Long) {
     init {
         buffer.setOnDataAvailable {
             val cb = synchronized(lock) { onDataAvailable }
-            Log.d(TAG, "Buffer is available")
-
             cb?.invoke()
         }
     }
-
-    // MARK: - Insertion (called from ingest coroutine)
 
     fun insert(payload: ByteArray, timestampUs: Long, keyframe: Boolean) {
         lastIngestPtsUs = timestampUs
@@ -64,8 +57,6 @@ internal class VideoRendererTrack(config: MoqVideo, targetBufferingUs: Long) {
         }
     }
 
-    // MARK: - Consumption (called from HandlerThread)
-
     fun peekFront(): Pair<Long, Boolean>? {
         val entry = buffer.peekFront() ?: return null
         return entry.timestampUs to entry.item.isKeyframe
@@ -76,15 +67,12 @@ internal class VideoRendererTrack(config: MoqVideo, targetBufferingUs: Long) {
 
     fun dequeue(mediaTimeUs: Long? = null): Pair<JitterBuffer.Entry<ProcessedFrame>?, Boolean> =
         buffer.dequeue(mediaTimeUs)
-
-    // MARK: - State control
-
     fun setBufferState(state: JitterBuffer.State) {
         buffer.setState(state)
     }
 
     val firstKeyframePts: Long?
-        get() = buffer.firstPts { it.item.isKeyframe }
+        get() = buffer.peekWhere { it.item.isKeyframe }?.timestampUs
 
     fun discardNonKeyframesBeforePts(pts: Long) {
         while (true) {
@@ -95,8 +83,6 @@ internal class VideoRendererTrack(config: MoqVideo, targetBufferingUs: Long) {
     }
 
     fun discardFront(): Boolean = buffer.discardFront()
-
-    // MARK: - Configuration
 
     fun setOnDataAvailable(callback: (() -> Unit)?) {
         synchronized(lock) { onDataAvailable = callback }
@@ -112,8 +98,6 @@ internal class VideoRendererTrack(config: MoqVideo, targetBufferingUs: Long) {
     fun flush() {
         buffer.flush()
     }
-
-    // MARK: - State
 
     val state: JitterBuffer.State get() = buffer.state
     val depthMs: Double get() = buffer.depthMs

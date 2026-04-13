@@ -62,6 +62,18 @@ internal class VideoDecoder(
         Log.d(TAG, "VideoDecoder started")
     }
 
+    /** Queue a codec-specific-data buffer to prepare for an adaptive resolution change. */
+    fun queueCodecConfig(index: Int, csd: ByteArray) {
+        try {
+            val inputBuffer = codec.getInputBuffer(index) ?: return
+            inputBuffer.clear()
+            inputBuffer.put(csd)
+            codec.queueInputBuffer(index, 0, csd.size, 0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error queuing codec config: $e")
+        }
+    }
+
     /** Fill an input buffer with a compressed video frame (Annex B format). */
     fun fillInputBuffer(index: Int, payload: ByteArray, timestampUs: Long) {
         try {
