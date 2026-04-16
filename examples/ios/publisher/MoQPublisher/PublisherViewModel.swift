@@ -116,8 +116,16 @@ final class PublisherViewModel: ObservableObject {
     }
 
     func flipCamera() {
-        cameraPosition = cameraPosition == .front ? .back : .front
-        if isPreviewRunning {
+        let newPosition: MoQCameraPosition = cameraPosition == .front ? .back : .front
+        cameraPosition = newPosition
+
+        if publisher != nil, case .publishing = publisherState {
+            do {
+                try publisher?.switchCamera(trackName: "camera", to: newPosition)
+            } catch {
+                lastError = "Camera switch failed: \(error.localizedDescription)"
+            }
+        } else if isPreviewRunning {
             stopPreview()
             startPreview()
         }

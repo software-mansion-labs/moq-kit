@@ -6,7 +6,8 @@ import MoQKitFFI
 
 /// What to capture for a video track.
 public enum MoQVideoInput: Sendable {
-    case camera(position: MoQCameraPosition = .back)
+    case camera(
+        position: MoQCameraPosition = .back, orientation: MoQVideoOrientation = .portrait)
     case screen
 }
 
@@ -19,6 +20,27 @@ public enum MoQCameraPosition: Sendable {
         case .front: return .front
         case .back: return .back
         }
+    }
+}
+
+/// Video capture orientation.
+public enum MoQVideoOrientation: Sendable {
+    case portrait
+    case portraitUpsideDown
+    case landscapeRight
+    case landscapeLeft
+
+    var avOrientation: AVCaptureVideoOrientation {
+        switch self {
+        case .portrait: return .portrait
+        case .portraitUpsideDown: return .portraitUpsideDown
+        case .landscapeRight: return .landscapeRight
+        case .landscapeLeft: return .landscapeLeft
+        }
+    }
+
+    var isLandscape: Bool {
+        self == .landscapeRight || self == .landscapeLeft
     }
 }
 
@@ -233,9 +255,9 @@ public final class MoQPublisher {
 
     /// Start all sources, encoders, and begin publishing.
     ///
-    /// Sources are started, and frames flow through encoders into FFI media producers.
-    /// The `MoqMediaProducer` for each track is created lazily on the first encoded frame
-    /// (because init data is only available after the encoder produces its first output).
+    /// Both video and audio tracks create their `MoqMediaProducer` lazily on the
+    /// first encoded frame that carries init data (parameter sets for video,
+    /// codec config for audio).
     public func start() async throws {
         guard currentState == .idle else {
             throw MoQSessionError.invalidConfiguration("Publisher already started")
@@ -326,6 +348,69 @@ public final class MoQPublisher {
         eventsContinuation.finish()
     }
 
+    // MARK: - Public: Camera & Orientation Control
+
+    /// Switch the camera on an active video track without interrupting the stream.
+    ///
+    /// - Parameters:
+    ///   - trackName: The name of the video track. Defaults to `"video"`.
+    ///   - position: The camera position to switch to.
+    public func switchCamera(trackName: String = "video", to position: MoQCameraPosition) throws {
+        guard currentState == .publishing else {
+            throw MoQSessionError.invalidConfiguration("Publisher is not active")
+        }
+        guard let active = activeVideoTracks[trackName] else {
+            throw MoQSessionError.invalidConfiguration("No active video track '\(trackName)'")
+        }
+        guard let camera = active.camera else {
+            throw MoQSessionError.invalidConfiguration(
+                "Track '\(trackName)' has no camera source")
+        }
+        try camera.switchCamera(to: position.avPosition)
+        MoQLogger.publish.debug(
+            "Switched camera on track '\(trackName)' to \(String(describing: position))")
+    }
+
+    /// Change the capture orientation on an active video track.
+    ///
+    /// When crossing a landscape↔portrait boundary, the encoder is automatically
+    /// reset with swapped dimensions.
+    ///
+    /// - Parameters:
+    ///   - trackName: The name of the video track. Defaults to `"video"`.
+    ///   - orientation: The new capture orientation.
+    public func setOrientation(
+        trackName: String = "video", _ orientation: MoQVideoOrientation
+    ) throws {
+        guard currentState == .publishing else {
+            throw MoQSessionError.invalidConfiguration("Publisher is not active")
+        }
+        guard let active = activeVideoTracks[trackName] else {
+            throw MoQSessionError.invalidConfiguration("No active video track '\(trackName)'")
+        }
+        guard let camera = active.camera, let encoder = active.encoder else {
+            throw MoQSessionError.invalidConfiguration(
+                "Track '\(trackName)' has no camera source")
+        }
+
+        let oldIsLandscape: Bool
+        switch camera.currentOrientation {
+        case .landscapeRight, .landscapeLeft: oldIsLandscape = true
+        default: oldIsLandscape = false
+        }
+
+        camera.setOrientation(orientation.avOrientation)
+
+        if oldIsLandscape != orientation.isLandscape {
+            let newWidth = encoder.config.height
+            let newHeight = encoder.config.width
+            try encoder.reset(width: newWidth, height: newHeight)
+            MoQLogger.publish.debug(
+                "Encoder reset for orientation change on track '\(trackName)': \(newWidth)x\(newHeight)"
+            )
+        }
+    }
+
     deinit {
         // Best-effort cleanup
         for (_, active) in activeVideoTracks {
@@ -366,11 +451,11 @@ public final class MoQPublisher {
         let eventsContinuation = self.eventsContinuation
         let formatString = desc.config.format
 
-        // Encoder output: lazily creates MoqMediaProducer on first keyframe with init data
+        // Encoder output: lazily creates the media producer on the first keyframe
+        // that carries init data (parameter sets), then writes frames to it.
         try encoder.start { [weak active] frame in
             guard let active else { return }
 
-            // Create the FFI media producer on first keyframe (when init data is available)
             if active.mediaProducer == nil {
                 guard let initData = frame.initData else { return }
                 do {
@@ -405,11 +490,12 @@ public final class MoQPublisher {
 
         // Wire source → encoder
         switch desc.input {
-        case .camera(let position):
+        case .camera(let position, let orientation):
             let camera = CameraCapture(
                 position: position.avPosition,
                 width: desc.config.width,
-                height: desc.config.height
+                height: desc.config.height,
+                orientation: orientation.avOrientation
             )
             active.camera = camera
             try await camera.start { [weak encoder] sampleBuffer in
@@ -425,13 +511,16 @@ public final class MoQPublisher {
         // Set up individual track stop
         trackHandle.stopAction = { [weak self, weak active] in
             guard let self, let active else { return }
+            print("stopping camera")
             active.camera?.stop()
+            print("stopping encoder")
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
             self.activeVideoTracks.removeValue(forKey: trackHandle.name)
             trackHandle.transition(to: .stopped)
             self.eventsContinuation.yield(.trackStopped(trackHandle.name))
             self.checkAllTracksStopped()
+            print("stopped")
         }
 
         activeVideoTracks[desc.track.name] = active
@@ -478,7 +567,7 @@ public final class MoQPublisher {
 
             let timestampUs = clock.timestampUs(from: frame.presentationTime)
             do {
-                MoQLogger.publish.warning("Writing frame")
+                MoQLogger.publish.warning("Writing video frame")
                 try active.mediaProducer?.writeFrame(payload: frame.data, timestampUs: timestampUs)
             } catch {
                 MoQLogger.publish.error("Failed to write audio frame: \(error)")

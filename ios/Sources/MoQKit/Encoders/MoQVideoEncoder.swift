@@ -7,7 +7,7 @@ final class MoQVideoEncoder: @unchecked Sendable {
     private var handler: ((MoQEncodedVideoFrame) -> Void)?
     private var sentInitData = false
 
-    let config: MoQVideoEncoderConfig
+    var config: MoQVideoEncoderConfig
 
     init(config: MoQVideoEncoderConfig) {
         self.config = config
@@ -68,10 +68,6 @@ final class MoQVideoEncoder: @unchecked Sendable {
             session, key: kVTCompressionPropertyKey_MaxKeyFrameInterval,
             value: NSNumber(value: keyframeIntervalFrames)
         )
-        // VTSessionSetProperty(
-        //     session, key: kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-        //     value: NSNumber(value: config.keyframeInterval)
-        // )
 
         if let profileLevel = config.profileLevel {
             VTSessionSetProperty(
@@ -114,6 +110,16 @@ final class MoQVideoEncoder: @unchecked Sendable {
         handler = nil
     }
 
+    /// Tear down the current compression session and recreate it with new dimensions.
+    /// The existing handler callback is preserved.
+    func reset(width: Int32, height: Int32) throws {
+        guard let handler = self.handler else { return }
+        stop()
+        config.width = width
+        config.height = height
+        try start(handler: handler)
+    }
+
     // MARK: - Private
 
     private func handleEncodedFrame(_ sampleBuffer: CMSampleBuffer) {
@@ -142,15 +148,10 @@ final class MoQVideoEncoder: @unchecked Sendable {
 
         var initData: Data?
         if isKeyframe && !sentInitData {
-            print("Getting init data")
             if let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) {
-                print("Got some format description")
                 initData = buildInitData(from: formatDesc)
                 if initData != nil {
                     sentInitData = true
-                } else {
-                    print("init data is empty")
-
                 }
             }
         }

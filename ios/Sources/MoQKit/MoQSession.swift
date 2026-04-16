@@ -124,9 +124,6 @@ public final class MoQSession {
     ///
     /// - Parameter url: The WebTransport URL of the MoQ relay (e.g. `"https://relay.example.com/moq"`).
     public init(url: String) {
-        do {
-            try moqLogLevel(level: "TRACE")
-        } catch { }
         self.url = url
 
         var stateCont: AsyncStream<MoQSessionState>.Continuation!
@@ -225,7 +222,8 @@ public final class MoQSession {
     /// - Throws: ``MoQSessionError/invalidConfiguration(_:)`` if the session is not connected.
     public func subscribe(prefix: String = "") throws {
         guard currentState == .connected else {
-            throw MoQSessionError.invalidConfiguration("Session must be connected before subscribing")
+            throw MoQSessionError.invalidConfiguration(
+                "Session must be connected before subscribing")
         }
         guard let consumeOrigin else {
             throw MoQSessionError.invalidConfiguration("Consume origin not available")
@@ -282,7 +280,8 @@ public final class MoQSession {
     /// - Throws: ``MoQSessionError/invalidConfiguration(_:)`` if the session is not connected.
     public func publish(path: String, publisher: MoQPublisher) throws {
         guard currentState == .connected else {
-            throw MoQSessionError.invalidConfiguration("Session must be connected before publishing")
+            throw MoQSessionError.invalidConfiguration(
+                "Session must be connected before publishing")
         }
         guard let publishOrigin else {
             throw MoQSessionError.invalidConfiguration("Publish origin not available")

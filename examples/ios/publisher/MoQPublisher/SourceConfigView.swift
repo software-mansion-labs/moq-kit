@@ -34,7 +34,6 @@ struct SourceConfigView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
-                        .disabled(isPublishing)
                     }
                     .padding(.leading, 4)
                 }
