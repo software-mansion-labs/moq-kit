@@ -68,7 +68,7 @@ final class VideoRenderer: @unchecked Sendable {
         self.metrics = metrics
         self.activeTrack = track
         self.enqueueQueue = DispatchQueue(
-            label: "com.moqkit.video-enqueue", qos: .userInteractive)
+            label: "com.swmansion.MoQKit.VideoEnqueue", qos: .userInteractive)
 
         layer.controlTimebase = timebase
         self.timebaseStarted = !isTimebaseOwner

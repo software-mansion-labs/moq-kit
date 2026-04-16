@@ -13,6 +13,7 @@ public enum MoQLogger {
     static let catalog = Logger(subsystem: subsystem, category: "catalog")
     static let media = Logger(subsystem: subsystem, category: "media")
     static let player = Logger(subsystem: subsystem, category: "player")
+    static let publish = Logger(subsystem: subsystem, category: "publish")
 
     private static let initLock = OSAllocatedUnfairLock(initialState: false)
 

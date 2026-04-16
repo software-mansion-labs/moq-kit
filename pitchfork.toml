@@ -16,3 +16,6 @@ run = "mise run stream-obs moq-local-h265"
 [daemons.stream-obs-av1]
 run = "mise run stream-obs moq-local-av1"
 
+[daemons.web]
+run = "cd vendor/moq && just web"
+

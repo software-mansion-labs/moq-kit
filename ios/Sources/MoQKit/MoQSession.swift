@@ -55,11 +55,13 @@ public enum MoQSessionState: Sendable, Equatable {
 /// Manages a single MoQ relay connection and surfaces available broadcasts.
 ///
 /// `MoQSession` is the primary entry point for the MoQKit SDK. Create one with a relay
-/// URL, call ``connect()``, and observe ``broadcasts`` to discover live streams:
+/// URL and call ``connect()``. To discover live streams, call ``subscribe(prefix:)``
+/// after connecting and observe ``broadcasts``:
 ///
 /// ```swift
 /// let session = MoQSession(url: "https://relay.example.com/moq")
 /// try await session.connect()
+/// try session.subscribe()
 ///
 /// for await event in session.broadcasts {
 ///     if case .available(let info) = event {
@@ -67,6 +69,14 @@ public enum MoQSessionState: Sendable, Equatable {
 ///         try await player.play()
 ///     }
 /// }
+/// ```
+///
+/// To publish without consuming, simply omit the ``subscribe(prefix:)`` call:
+///
+/// ```swift
+/// let session = MoQSession(url: "https://relay.example.com/moq")
+/// try await session.connect()
+/// try session.publish(path: "live/my-stream", publisher: publisher)
 /// ```
 ///
 /// The class is `@MainActor` — all calls must be made from the main actor.
@@ -86,7 +96,6 @@ public final class MoQSession {
     public let broadcasts: AsyncStream<MoQBroadcastEvent>
 
     private let url: String
-    private let prefix: String
 
     private let stateContinuation: AsyncStream<MoQSessionState>.Continuation
     private let broadcastsContinuation: AsyncStream<MoQBroadcastEvent>.Continuation
@@ -94,14 +103,18 @@ public final class MoQSession {
 
     // Pipeline objects
     private var client: MoqClient?
-    private var origin: MoqOriginProducer?
+    private var consumeOrigin: MoqOriginProducer?
+    private var publishOrigin: MoqOriginProducer?
     private var session: MoqSession?
     private var consumer: MoqOriginConsumer?
     private var announced: MoqAnnounced?
 
-    // Per-path broadcast state
+    // Per-path broadcast state (consuming)
     private var activeBroadcasts: [String: Task<Void, Never>] = [:]
     private var catalogConsumers: [String: MoqCatalogConsumer] = [:]
+
+    // Per-path publish state
+    private var activePublishers: [String: MoQPublisher] = [:]
 
     // Background tasks
     private var sessionMonitorTask: Task<Void, Never>?
@@ -109,17 +122,12 @@ public final class MoQSession {
 
     /// Creates a new session.
     ///
-    /// - Parameters:
-    ///   - url: The WebTransport URL of the MoQ relay (e.g. `"https://relay.example.com/moq"`).
-    ///   - prefix: Optional broadcast path prefix. Only broadcasts whose path starts with this
-    ///     string will be surfaced on ``broadcasts``. Pass `""` (the default) to receive all
-    ///     broadcasts on the relay.
-    public init(url: String, prefix: String = "") {
+    /// - Parameter url: The WebTransport URL of the MoQ relay (e.g. `"https://relay.example.com/moq"`).
+    public init(url: String) {
         do {
             try moqLogLevel(level: "TRACE")
         } catch { }
         self.url = url
-        self.prefix = prefix
 
         var stateCont: AsyncStream<MoQSessionState>.Continuation!
         self.state = AsyncStream { stateCont = $0 }
@@ -132,10 +140,10 @@ public final class MoQSession {
         stateContinuation.yield(.idle)
     }
 
-    /// Establishes the QUIC connection to the relay and starts watching for broadcast announcements.
+    /// Establishes the QUIC connection to the relay.
     ///
-    /// Transitions the session through `.connecting` → `.connected`. Once connected, incoming
-    /// broadcasts are emitted on ``broadcasts``.
+    /// Transitions the session through `.connecting` → `.connected`. To start receiving
+    /// broadcast announcements, call ``subscribe(prefix:)`` after connecting.
     ///
     /// - Throws: ``MoQSessionError/alreadyConnected`` if called while connecting or connected.
     /// - Throws: ``MoQSessionError/alreadyClosed`` if the session has already been closed.
@@ -150,13 +158,17 @@ public final class MoQSession {
         transition(to: .connecting)
 
         do {
-            // 1. Create origin and client
-            let origin = MoqOriginProducer()
-            self.origin = origin
+            // 1. Create separate origins for consuming and publishing
+            let consumeOrigin = MoqOriginProducer()
+            self.consumeOrigin = consumeOrigin
+
+            let publishOrigin = MoqOriginProducer()
+            self.publishOrigin = publishOrigin
 
             let client = MoqClient()
             client.setTlsDisableVerify(disable: true)
-            client.setConsume(origin: origin)
+            client.setConsume(origin: consumeOrigin)
+            client.setPublish(origin: publishOrigin)
             self.client = client
 
             // 2. Connect session
@@ -185,44 +197,6 @@ public final class MoQSession {
                 }
             }
 
-            // 5. Watch announcements
-            let consumer = origin.consume()
-            self.consumer = consumer
-            let announced = try consumer.announced(prefix: "")
-            self.announced = announced
-
-            announcedTask = Task { [weak self] in
-                while let self, !Task.isCancelled {
-                    do {
-                        guard let announcement = try await announced.next() else {
-                            break
-                        }
-                        let path = announcement.path()
-                        let broadcast = announcement.broadcast()
-
-                        // Cancel existing broadcast task for this path
-                        self.activeBroadcasts[path]?.cancel()
-                        self.activeBroadcasts.removeValue(forKey: path)
-                        self.catalogConsumers[path]?.cancel()
-                        self.catalogConsumers.removeValue(forKey: path)
-
-                        MoQLogger.session.debug("Broadcast active: \(path)")
-                        do {
-                            try self.handleActiveBroadcast(
-                                path: path, broadcast: broadcast)
-                        } catch {
-                            MoQLogger.session.error(
-                                "handleActiveBroadcast failed for \(path): \(error)")
-                        }
-                    } catch MoqError.Cancelled {
-                        break
-                    } catch {
-                        MoQLogger.session.error("announced() failed: \(error)")
-                        break
-                    }
-                }
-            }
-
         } catch let error as MoqError {
             MoQLogger.session.error("Connection failed: \(error)")
             transition(to: .error(error.localizedDescription))
@@ -239,6 +213,92 @@ public final class MoQSession {
             await tearDown()
             throw error
         }
+    }
+
+    /// Starts watching for broadcast announcements on the relay.
+    ///
+    /// Call this after ``connect()`` to begin receiving ``MoQBroadcastEvent`` values on
+    /// ``broadcasts``. This is not needed when the session is used only for publishing.
+    ///
+    /// - Parameter prefix: Only broadcasts whose path starts with this string will be surfaced.
+    ///   Pass `""` (the default) to receive all broadcasts.
+    /// - Throws: ``MoQSessionError/invalidConfiguration(_:)`` if the session is not connected.
+    public func subscribe(prefix: String = "") throws {
+        guard currentState == .connected else {
+            throw MoQSessionError.invalidConfiguration("Session must be connected before subscribing")
+        }
+        guard let consumeOrigin else {
+            throw MoQSessionError.invalidConfiguration("Consume origin not available")
+        }
+
+        MoQLogger.session.debug("Subscribing to announcements with prefix: \(prefix)")
+
+        let consumer = consumeOrigin.consume()
+        self.consumer = consumer
+        let announced = try consumer.announced(prefix: prefix)
+        self.announced = announced
+
+        announcedTask = Task { [weak self] in
+            while let self, !Task.isCancelled {
+                do {
+                    guard let announcement = try await announced.next() else {
+                        break
+                    }
+                    let path = announcement.path()
+                    let broadcast = announcement.broadcast()
+
+                    // Cancel existing broadcast task for this path
+                    self.activeBroadcasts[path]?.cancel()
+                    self.activeBroadcasts.removeValue(forKey: path)
+                    self.catalogConsumers[path]?.cancel()
+                    self.catalogConsumers.removeValue(forKey: path)
+
+                    MoQLogger.session.debug("Broadcast active: \(path)")
+                    do {
+                        try self.handleActiveBroadcast(
+                            path: path, broadcast: broadcast)
+                    } catch {
+                        MoQLogger.session.error(
+                            "handleActiveBroadcast failed for \(path): \(error)")
+                    }
+                } catch MoqError.Cancelled {
+                    break
+                } catch {
+                    MoQLogger.session.error("announced() failed: \(error)")
+                    break
+                }
+            }
+        }
+    }
+
+    /// Publish a broadcast to the relay at the given path.
+    ///
+    /// The publisher's underlying `MoqBroadcastProducer` is registered with the relay origin.
+    /// Call ``MoQPublisher/start()`` after this to begin sending frames.
+    ///
+    /// - Parameters:
+    ///   - path: The broadcast path on the relay (e.g. `"live/my-stream"`).
+    ///   - publisher: A configured ``MoQPublisher`` with at least one track added.
+    /// - Throws: ``MoQSessionError/invalidConfiguration(_:)`` if the session is not connected.
+    public func publish(path: String, publisher: MoQPublisher) throws {
+        guard currentState == .connected else {
+            throw MoQSessionError.invalidConfiguration("Session must be connected before publishing")
+        }
+        guard let publishOrigin else {
+            throw MoQSessionError.invalidConfiguration("Publish origin not available")
+        }
+        MoQLogger.publish.debug("Publishing broadcast at path: \(path)")
+        try publishOrigin.publish(path: path, broadcast: publisher.broadcast)
+        activePublishers[path] = publisher
+    }
+
+    /// Stop publishing at the given path.
+    ///
+    /// Calls ``MoQPublisher/stop()`` on the publisher and removes it from the session.
+    public func unpublish(path: String) {
+        guard let publisher = activePublishers.removeValue(forKey: path) else { return }
+        MoQLogger.publish.debug("Unpublishing broadcast at path: \(path)")
+        publisher.stop()
     }
 
     /// Closes the relay connection and releases all resources.
@@ -259,6 +319,7 @@ public final class MoQSession {
         announcedTask?.cancel()
         for (_, task) in activeBroadcasts { task.cancel() }
         for (_, consumer) in catalogConsumers { consumer.cancel() }
+        for (_, publisher) in activePublishers { Task { @MainActor in publisher.stop() } }
         announced?.cancel()
         client?.cancel()
         stateContinuation.finish()
@@ -335,6 +396,9 @@ public final class MoQSession {
         for (_, consumer) in catalogConsumers { consumer.cancel() }
         catalogConsumers.removeAll()
 
+        for (_, publisher) in activePublishers { publisher.stop() }
+        activePublishers.removeAll()
+
         announced?.cancel()
         announced = nil
 
@@ -345,6 +409,7 @@ public final class MoQSession {
         client = nil
 
         consumer = nil
-        origin = nil
+        consumeOrigin = nil
+        publishOrigin = nil
     }
 }
