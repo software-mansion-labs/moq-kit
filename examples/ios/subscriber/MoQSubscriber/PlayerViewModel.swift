@@ -190,6 +190,7 @@ final class PlayerViewModel: ObservableObject {
         Task {
             do {
                 try await s.connect()
+                try s.subscribe()
             } catch {}
         }
     }
