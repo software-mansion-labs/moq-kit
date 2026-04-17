@@ -2,7 +2,7 @@ import MoQKit
 import SwiftUI
 
 struct SessionPlayerView: View {
-    @ObservedObject var viewModel: PlayerViewModel
+    @ObservedObject var viewModel: PlayerDemoViewModel
 
     var body: some View {
         VStack(spacing: 12) {

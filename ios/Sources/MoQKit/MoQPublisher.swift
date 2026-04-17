@@ -43,6 +43,7 @@ public enum MoQPublishedTrackState: Sendable {
 public enum MoQTrackCodecInfo: Sendable {
     case video(codec: MoQVideoCodec, width: Int32, height: Int32, frameRate: Double)
     case audio(codec: MoQAudioCodec, sampleRate: Double)
+    case object
 }
 
 // MARK: - MoQPublishedTrack
@@ -104,6 +105,12 @@ private struct AudioTrackDescriptor {
     let config: MoQAudioEncoderConfig
 }
 
+/// Describes an object track to be started when `start()` is called.
+private struct ObjectTrackDescriptor {
+    let track: MoQPublishedTrack
+    let emitter: MoQObjectEmitter
+}
+
 // MARK: - Active Track State (internal)
 
 /// Holds the runtime objects for an active video track.
@@ -118,6 +125,12 @@ private final class ActiveAudioTrack {
     var source: (any MoQFrameSource)?
     var encoder: MoQAudioEncoder?
     var mediaProducer: MoqMediaProducer?
+}
+
+/// Holds the runtime objects for an active object track.
+private final class ActiveObjectTrack {
+    var emitter: MoQObjectEmitter?
+    var producer: MoqObjectProducer?
 }
 
 // MARK: - MoQPublisher
@@ -155,10 +168,12 @@ public final class MoQPublisher {
     // Track descriptors (added before start)
     private var videoDescriptors: [VideoTrackDescriptor] = []
     private var audioDescriptors: [AudioTrackDescriptor] = []
+    private var objectDescriptors: [ObjectTrackDescriptor] = []
 
     // Active runtime state
     private var activeVideoTracks: [String: ActiveVideoTrack] = [:]
     private var activeAudioTracks: [String: ActiveAudioTrack] = [:]
+    private var activeObjectTracks: [String: ActiveObjectTrack] = [:]
 
     /// Create a publisher. Does not start publishing until ``start()`` is called.
     public init() throws {
@@ -218,6 +233,22 @@ public final class MoQPublisher {
         return track
     }
 
+    /// Add an object track for publishing raw binary data directly.
+    ///
+    /// - Parameters:
+    ///   - name: Track name in the broadcast catalog. Defaults to `"data"`.
+    ///   - source: An emitter the caller uses to push objects onto the track.
+    /// - Returns: A handle to control the track independently.
+    @discardableResult
+    public func addObjectTrack(
+        name: String = "data",
+        source: MoQObjectEmitter
+    ) -> MoQPublishedTrack {
+        let track = MoQPublishedTrack(name: name, codecInfo: .object)
+        objectDescriptors.append(ObjectTrackDescriptor(track: track, emitter: source))
+        return track
+    }
+
     /// Start all encoders and bind them to their frame sources.
     ///
     /// Both video and audio tracks create their `MoqMediaProducer` lazily on the
@@ -242,6 +273,11 @@ public final class MoQPublisher {
             try startAudioTrack(desc)
         }
 
+        // Start object tracks
+        for desc in objectDescriptors {
+            try startObjectTrack(desc)
+        }
+
         transition(to: .publishing)
     }
 
@@ -264,6 +300,11 @@ public final class MoQPublisher {
         }
         activeAudioTracks.removeAll()
 
+        for (_, active) in activeObjectTracks {
+            active.emitter?.detach()
+        }
+        activeObjectTracks.removeAll()
+
         try? broadcast.finish()
         clock.reset()
 
@@ -273,6 +314,10 @@ public final class MoQPublisher {
             eventsContinuation.yield(.trackStopped(desc.track.name))
         }
         for desc in audioDescriptors {
+            desc.track.transition(to: .stopped)
+            eventsContinuation.yield(.trackStopped(desc.track.name))
+        }
+        for desc in objectDescriptors {
             desc.track.transition(to: .stopped)
             eventsContinuation.yield(.trackStopped(desc.track.name))
         }
@@ -293,6 +338,9 @@ public final class MoQPublisher {
             active.source?.onFrame = { (_: CMSampleBuffer) in false }
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
+        }
+        for (_, active) in activeObjectTracks {
+            active.emitter?.detach()
         }
         try? broadcast.finish()
         stateContinuation.finish()
@@ -454,10 +502,34 @@ public final class MoQPublisher {
         activeAudioTracks[desc.track.name] = active
     }
 
+    // MARK: - Private: Object Track Wiring
+
+    private func startObjectTrack(_ desc: ObjectTrackDescriptor) throws {
+        let active = ActiveObjectTrack()
+        let producer = try broadcast.publishObject(name: desc.track.name)
+        active.producer = producer
+        active.emitter = desc.emitter
+        desc.emitter.attach(producer)
+
+        let trackHandle = desc.track
+        trackHandle.stopAction = { [weak self, weak active] in
+            guard let self, let active else { return }
+            active.emitter?.detach()
+            self.activeObjectTracks.removeValue(forKey: trackHandle.name)
+            trackHandle.transition(to: .stopped)
+            self.eventsContinuation.yield(.trackStopped(trackHandle.name))
+            self.checkAllTracksStopped()
+        }
+
+        trackHandle.transition(to: .active)
+        eventsContinuation.yield(.trackStarted(trackHandle.name))
+        activeObjectTracks[desc.track.name] = active
+    }
+
     // MARK: - Private: Lifecycle
 
     private func checkAllTracksStopped() {
-        if activeVideoTracks.isEmpty && activeAudioTracks.isEmpty && currentState == .publishing {
+        if activeVideoTracks.isEmpty && activeAudioTracks.isEmpty && activeObjectTracks.isEmpty && currentState == .publishing {
             transition(to: .stopped)
             stateContinuation.finish()
             eventsContinuation.finish()
