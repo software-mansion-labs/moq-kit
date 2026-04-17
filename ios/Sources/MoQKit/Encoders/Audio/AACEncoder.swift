@@ -1,11 +1,11 @@
-import AudioToolbox
+import AVFoundation
 import CoreMedia
 import Foundation
 
-/// Hardware AAC encoder using `AudioConverter`.
+/// AAC encoder using `AVAudioConverter`.
 final class AACEncoder: AudioEncoding {
-    private var converter: AudioConverterRef?
-    private var inputFormat: AudioStreamBasicDescription?
+    private var converter: AVAudioConverter?
+    private var resamplingConverter: AVAudioConverter?
 
     let config: MoQAudioEncoderConfig
 
@@ -30,11 +30,58 @@ final class AACEncoder: AudioEncoding {
             }
         }
 
-        guard let pcmData = extractPCMData(from: sampleBuffer) else { return [] }
+        guard let converter else { return [] }
+        guard let pcmBuffer = asPCMBuffer(sampleBuffer, targetFormat: converter.inputFormat) else {
+            return []
+        }
 
-        guard let encoded = encodePacket(pcmData: pcmData, inputASBD: inputASBD) else { return [] }
+        var frames: [MoQEncodedAudioFrame] = []
+        var fed = false
+        let outputSamplesPerPacket = Int64(
+            converter.outputFormat.streamDescription.pointee.mFramesPerPacket
+        )
+        let maximumPacketSize = max(converter.maximumOutputPacketSize, 4096)
+        var packetsDrained: Int64 = 0
 
-        return [MoQEncodedAudioFrame(data: encoded, presentationTime: pts)]
+        while true {
+            let outputBuffer = AVAudioCompressedBuffer(
+                format: converter.outputFormat,
+                packetCapacity: 1,
+                maximumPacketSize: maximumPacketSize
+            )
+
+            var error: NSError?
+            let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+                if fed {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                fed = true
+                outStatus.pointee = .haveData
+                return pcmBuffer
+            }
+
+            if status == .error {
+                let message = error?.localizedDescription ?? "unknown"
+                MoQLogger.publish.error("AAC conversion failed: \(message)")
+                break
+            }
+
+            guard outputBuffer.byteLength > 0, outputBuffer.packetCount > 0 else { break }
+
+            let offsetSeconds = Double(packetsDrained * outputSamplesPerPacket) / config.sampleRate
+            let currentPTS = CMTimeAdd(pts, CMTime(seconds: offsetSeconds, preferredTimescale: pts.timescale))
+            packetsDrained += 1
+
+            frames.append(
+                MoQEncodedAudioFrame(
+                    data: Data(bytes: outputBuffer.data, count: Int(outputBuffer.byteLength)),
+                    presentationTime: currentPTS
+                )
+            )
+        }
+
+        return frames
     }
 
     func buildInitData() -> Data {
@@ -42,16 +89,23 @@ final class AACEncoder: AudioEncoding {
     }
 
     func stop() {
-        if let converter {
-            AudioConverterDispose(converter)
-        }
         converter = nil
+        resamplingConverter = nil
     }
 
     // MARK: - Private
 
     private func createConverter(inputASBD: AudioStreamBasicDescription) throws {
-        self.inputFormat = inputASBD
+        guard
+            let inputAVFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: config.sampleRate,
+                channels: AVAudioChannelCount(config.channels),
+                interleaved: false
+            )
+        else {
+            throw MoQSessionError.invalidConfiguration("Failed to create input AVAudioFormat")
+        }
 
         var outputASBD = AudioStreamBasicDescription(
             mSampleRate: config.sampleRate,
@@ -65,69 +119,16 @@ final class AACEncoder: AudioEncoding {
             mReserved: 0
         )
 
-        var inASBD = inputASBD
-        var ref: AudioConverterRef?
-        let status = AudioConverterNew(&inASBD, &outputASBD, &ref)
-        guard status == noErr, let ref else {
-            throw MoQSessionError.invalidConfiguration("Failed to create AudioConverter: \(status)")
-        }
-        self.converter = ref
-
-        var bitrate = config.bitrate
-        AudioConverterSetProperty(
-            ref, kAudioConverterEncodeBitRate,
-            UInt32(MemoryLayout<UInt32>.size), &bitrate
-        )
-    }
-
-    private func encodePacket(pcmData: Data, inputASBD: AudioStreamBasicDescription) -> Data? {
-        guard let converter else { return nil }
-
-        var inputData = pcmData
-        var outputPacketDescription = AudioStreamPacketDescription()
-        var ioOutputDataPacketSize: UInt32 = 1
-
-        let maxOutputSize = 8192
-        var outputData = Data(count: maxOutputSize)
-
-        var outBufferList = AudioBufferList(
-            mNumberBuffers: 1,
-            mBuffers: AudioBuffer(
-                mNumberChannels: config.channels,
-                mDataByteSize: UInt32(maxOutputSize),
-                mData: nil
-            )
-        )
-
-        let status = outputData.withUnsafeMutableBytes { outputPtr -> OSStatus in
-            outBufferList.mBuffers.mData = outputPtr.baseAddress
-            outBufferList.mBuffers.mDataByteSize = UInt32(maxOutputSize)
-
-            return inputData.withUnsafeMutableBytes { inputPtr -> OSStatus in
-                var userData = AACEncoderUserData(
-                    data: inputPtr.baseAddress!,
-                    size: UInt32(pcmData.count),
-                    consumed: false,
-                    inputASBD: inputASBD
-                )
-
-                return withUnsafeMutablePointer(to: &userData) { userDataPtr in
-                    AudioConverterFillComplexBuffer(
-                        converter,
-                        aacEncoderInputCallback,
-                        userDataPtr,
-                        &ioOutputDataPacketSize,
-                        &outBufferList,
-                        &outputPacketDescription
-                    )
-                }
-            }
+        guard let outputAVFormat = AVAudioFormat(streamDescription: &outputASBD) else {
+            throw MoQSessionError.invalidConfiguration("Failed to create AAC output AVAudioFormat")
         }
 
-        guard status == noErr, ioOutputDataPacketSize > 0 else { return nil }
+        guard let converter = AVAudioConverter(from: inputAVFormat, to: outputAVFormat) else {
+            throw MoQSessionError.invalidConfiguration("Failed to create AVAudioConverter for AAC")
+        }
 
-        let encodedSize = Int(outBufferList.mBuffers.mDataByteSize)
-        return outputData.prefix(encodedSize)
+        converter.bitRate = Int(config.bitrate)
+        self.converter = converter
     }
 
     /// Build a 2-byte AudioSpecificConfig for AAC-LC.
@@ -136,7 +137,6 @@ final class AACEncoder: AudioEncoding {
         let freqIndex = aacFrequencyIndex(for: config.sampleRate)
         let channelConfig = UInt8(config.channels)
 
-        // AudioSpecificConfig: 5 bits objectType | 4 bits freqIndex | 4 bits channelConfig | 3 bits padding
         let byte0 = (objectType << 3) | (freqIndex >> 1)
         let byte1 = ((freqIndex & 0x01) << 7) | (channelConfig << 3)
         return Data([byte0, byte1])
@@ -156,59 +156,62 @@ final class AACEncoder: AudioEncoding {
         return 15
     }
 
-    private func extractPCMData(from sampleBuffer: CMSampleBuffer) -> Data? {
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return nil }
-        var totalLength = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        CMBlockBufferGetDataPointer(
-            blockBuffer, atOffset: 0,
-            lengthAtOffsetOut: nil, totalLengthOut: &totalLength,
-            dataPointerOut: &dataPointer
+    private func asPCMBuffer(
+        _ sampleBuffer: CMSampleBuffer, targetFormat: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
+            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)
+        else { return nil }
+
+        guard let sourceFormat = AVAudioFormat(streamDescription: asbd) else { return nil }
+
+        let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard
+            let sourceBuffer = AVAudioPCMBuffer(
+                pcmFormat: sourceFormat,
+                frameCapacity: AVAudioFrameCount(frameCount)
+            )
+        else { return nil }
+
+        sourceBuffer.frameLength = AVAudioFrameCount(frameCount)
+
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: Int32(frameCount),
+            into: sourceBuffer.mutableAudioBufferList
         )
-        guard let dataPointer, totalLength > 0 else { return nil }
-        return Data(bytes: dataPointer, count: totalLength)
+        guard status == noErr else { return nil }
+
+        if sourceFormat == targetFormat { return sourceBuffer }
+
+        if resamplingConverter == nil {
+            resamplingConverter = AVAudioConverter(from: sourceFormat, to: targetFormat)
+        }
+        guard let formatConverter = resamplingConverter else { return nil }
+
+        let targetFrameCount = AVAudioFrameCount(
+            ceil(Double(frameCount) * targetFormat.sampleRate / sourceFormat.sampleRate) * 2
+        )
+        guard
+            let targetBuffer = AVAudioPCMBuffer(
+                pcmFormat: targetFormat,
+                frameCapacity: targetFrameCount
+            )
+        else { return nil }
+
+        var error: NSError?
+        var consumed = false
+        formatConverter.convert(to: targetBuffer, error: &error) { _, outStatus in
+            if consumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            outStatus.pointee = .haveData
+            return sourceBuffer
+        }
+
+        return error == nil ? targetBuffer : nil
     }
-}
-
-// MARK: - AudioConverter Fill Callback
-
-private struct AACEncoderUserData {
-    var data: UnsafeMutableRawPointer
-    var size: UInt32
-    var consumed: Bool
-    var inputASBD: AudioStreamBasicDescription
-}
-
-private func aacEncoderInputCallback(
-    _ converter: AudioConverterRef,
-    _ ioNumberDataPackets: UnsafeMutablePointer<UInt32>,
-    _ ioData: UnsafeMutablePointer<AudioBufferList>,
-    _ outDataPacketDescription: UnsafeMutablePointer<
-        UnsafeMutablePointer<AudioStreamPacketDescription>?
-    >?,
-    _ inUserData: UnsafeMutableRawPointer?
-) -> OSStatus {
-    guard let inUserData else {
-        ioNumberDataPackets.pointee = 0
-        return -1
-    }
-    let userData = inUserData.assumingMemoryBound(to: AACEncoderUserData.self)
-
-    if userData.pointee.consumed {
-        ioNumberDataPackets.pointee = 0
-        return -1
-    }
-
-    ioData.pointee.mBuffers.mData = userData.pointee.data
-    ioData.pointee.mBuffers.mDataByteSize = userData.pointee.size
-    ioData.pointee.mBuffers.mNumberChannels = userData.pointee.inputASBD.mChannelsPerFrame
-
-    let bytesPerFrame = userData.pointee.inputASBD.mBytesPerFrame
-    if bytesPerFrame > 0 {
-        ioNumberDataPackets.pointee = userData.pointee.size / UInt32(bytesPerFrame)
-    }
-
-    userData.pointee.consumed = true
-
-    return noErr
 }
