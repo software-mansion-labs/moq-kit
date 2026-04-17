@@ -2,54 +2,6 @@ import AVFoundation
 import CoreMedia
 import MoQKitFFI
 
-// MARK: - Public Input Types
-
-/// What to capture for a video track.
-public enum MoQVideoInput: Sendable {
-    case camera(
-        position: MoQCameraPosition = .back, orientation: MoQVideoOrientation = .portrait)
-    case screen
-}
-
-/// Camera position for video capture.
-public enum MoQCameraPosition: Sendable {
-    case front, back
-
-    var avPosition: AVCaptureDevice.Position {
-        switch self {
-        case .front: return .front
-        case .back: return .back
-        }
-    }
-}
-
-/// Video capture orientation.
-public enum MoQVideoOrientation: Sendable {
-    case portrait
-    case portraitUpsideDown
-    case landscapeRight
-    case landscapeLeft
-
-    var avOrientation: AVCaptureVideoOrientation {
-        switch self {
-        case .portrait: return .portrait
-        case .portraitUpsideDown: return .portraitUpsideDown
-        case .landscapeRight: return .landscapeRight
-        case .landscapeLeft: return .landscapeLeft
-        }
-    }
-
-    var isLandscape: Bool {
-        self == .landscapeRight || self == .landscapeLeft
-    }
-}
-
-/// What to capture for an audio track.
-public enum MoQAudioInput: Sendable {
-    case microphone
-    case screenAudio
-}
-
 // MARK: - Publisher State & Events
 
 /// The lifecycle state of a ``MoQPublisher``.
@@ -85,12 +37,22 @@ public enum MoQPublishedTrackState: Sendable {
     case stopped
 }
 
+// MARK: - Track Codec Info
+
+/// Codec information associated with a published track.
+public enum MoQTrackCodecInfo: Sendable {
+    case video(codec: MoQVideoCodec, width: Int32, height: Int32, frameRate: Double)
+    case audio(codec: MoQAudioCodec, sampleRate: Double)
+}
+
 // MARK: - MoQPublishedTrack
 
 /// A handle for controlling an individual track's lifecycle.
 public final class MoQPublishedTrack: @unchecked Sendable {
     /// The track name.
     public let name: String
+    /// Codec information for the track.
+    public let codecInfo: MoQTrackCodecInfo
     /// A stream of ``MoQPublishedTrackState`` transitions.
     public let state: AsyncStream<MoQPublishedTrackState>
 
@@ -98,8 +60,9 @@ public final class MoQPublishedTrack: @unchecked Sendable {
     internal var currentState: MoQPublishedTrackState = .idle
     internal var stopAction: (() -> Void)?
 
-    init(name: String) {
+    init(name: String, codecInfo: MoQTrackCodecInfo) {
         self.name = name
+        self.codecInfo = codecInfo
         var cont: AsyncStream<MoQPublishedTrackState>.Continuation!
         self.state = AsyncStream { cont = $0 }
         self.stateContinuation = cont
@@ -130,14 +93,14 @@ public final class MoQPublishedTrack: @unchecked Sendable {
 /// Describes a video track to be started when `start()` is called.
 private struct VideoTrackDescriptor {
     let track: MoQPublishedTrack
-    let input: MoQVideoInput
+    let source: any MoQFrameSource
     let config: MoQVideoEncoderConfig
 }
 
 /// Describes an audio track to be started when `start()` is called.
 private struct AudioTrackDescriptor {
     let track: MoQPublishedTrack
-    let input: MoQAudioInput
+    let source: any MoQFrameSource
     let config: MoQAudioEncoderConfig
 }
 
@@ -145,36 +108,35 @@ private struct AudioTrackDescriptor {
 
 /// Holds the runtime objects for an active video track.
 private final class ActiveVideoTrack {
-    var camera: CameraCapture?
-    var screenCapture: ScreenCapture?
+    var source: (any MoQFrameSource)?
     var encoder: MoQVideoEncoder?
     var mediaProducer: MoqMediaProducer?
 }
 
 /// Holds the runtime objects for an active audio track.
 private final class ActiveAudioTrack {
-    var microphone: MicrophoneCapture?
-    var screenCapture: ScreenCapture?
+    var source: (any MoQFrameSource)?
     var encoder: MoQAudioEncoder?
     var mediaProducer: MoqMediaProducer?
 }
 
 // MARK: - MoQPublisher
 
-/// Orchestrates the capture → encode → publish pipeline for a MoQ broadcast.
+/// Orchestrates the encode → publish pipeline for a MoQ broadcast.
 ///
-/// Create a publisher, add tracks, then call ``start()`` to begin capturing and
-/// encoding. Use ``MoQSession/publish(path:publisher:)`` to register the broadcast
-/// with the relay.
+/// Create capture sources, then hand them to the publisher via ``addVideoTrack``
+/// and ``addAudioTrack``. Call ``start()`` to bind sources to encoders and begin
+/// publishing.
 ///
 /// ```swift
-/// let publisher = MoQPublisher()
-/// let video = publisher.addVideoTrack(input: .camera(position: .back), config: videoConfig)
-/// let audio = publisher.addAudioTrack(input: .microphone, config: audioConfig)
+/// let camera = CameraCapture(position: .back, width: 1920, height: 1080)
+/// try await camera.start()
+///
+/// let publisher = try MoQPublisher()
+/// let video = publisher.addVideoTrack(name: "video", source: camera)
 /// try session.publish(path: "live/stream", publisher: publisher)
-/// try publisher.start()
+/// try await publisher.start()
 /// ```
-@MainActor
 public final class MoQPublisher {
     /// Emits ``MoQPublisherState`` as the publisher transitions through its lifecycle.
     public let state: AsyncStream<MoQPublisherState>
@@ -198,9 +160,6 @@ public final class MoQPublisher {
     private var activeVideoTracks: [String: ActiveVideoTrack] = [:]
     private var activeAudioTracks: [String: ActiveAudioTrack] = [:]
 
-    // Shared screen capture instance (video + audio share the same RPScreenRecorder)
-    private var sharedScreenCapture: ScreenCapture?
-
     /// Create a publisher. Does not start publishing until ``start()`` is called.
     public init() throws {
         self.broadcast = try MoqBroadcastProducer()
@@ -216,44 +175,50 @@ public final class MoQPublisher {
         stateContinuation.yield(.idle)
     }
 
-    /// Add a video track.
+    /// Add a video track with an external frame source.
     ///
-    /// The source and encoder are created and wired automatically when ``start()`` is called.
+    /// The encoder is created and bound to the source when ``start()`` is called.
     /// - Parameters:
     ///   - name: Track name in the broadcast catalog. Defaults to `"video"`.
-    ///   - input: The video capture source.
+    ///   - source: A frame source that produces video sample buffers.
     ///   - config: Video encoder configuration.
     /// - Returns: A handle to control the track independently.
     @discardableResult
     public func addVideoTrack(
         name: String = "video",
-        input: MoQVideoInput,
+        source: any MoQFrameSource,
         config: MoQVideoEncoderConfig = MoQVideoEncoderConfig()
     ) -> MoQPublishedTrack {
-        let track = MoQPublishedTrack(name: name)
-        videoDescriptors.append(VideoTrackDescriptor(track: track, input: input, config: config))
+        let track = MoQPublishedTrack(
+            name: name,
+            codecInfo: .video(
+                codec: config.codec, width: config.width, height: config.height,
+                frameRate: config.maxFrameRate))
+        videoDescriptors.append(VideoTrackDescriptor(track: track, source: source, config: config))
         return track
     }
 
-    /// Add an audio track.
+    /// Add an audio track with an external frame source.
     ///
     /// - Parameters:
     ///   - name: Track name in the broadcast catalog. Defaults to `"audio"`.
-    ///   - input: The audio capture source.
+    ///   - source: A frame source that produces audio sample buffers.
     ///   - config: Audio encoder configuration.
     /// - Returns: A handle to control the track independently.
     @discardableResult
     public func addAudioTrack(
         name: String = "audio",
-        input: MoQAudioInput,
+        source: any MoQFrameSource,
         config: MoQAudioEncoderConfig = MoQAudioEncoderConfig()
     ) -> MoQPublishedTrack {
-        let track = MoQPublishedTrack(name: name)
-        audioDescriptors.append(AudioTrackDescriptor(track: track, input: input, config: config))
+        let track = MoQPublishedTrack(
+            name: name,
+            codecInfo: .audio(codec: config.codec, sampleRate: config.sampleRate))
+        audioDescriptors.append(AudioTrackDescriptor(track: track, source: source, config: config))
         return track
     }
 
-    /// Start all sources, encoders, and begin publishing.
+    /// Start all encoders and bind them to their frame sources.
     ///
     /// Both video and audio tracks create their `MoqMediaProducer` lazily on the
     /// first encoded frame that carries init data (parameter sets for video,
@@ -267,40 +232,14 @@ public final class MoQPublisher {
             "Starting publisher with \(self.videoDescriptors.count) video + \(self.audioDescriptors.count) audio tracks"
         )
 
-        // Check if we need screen capture (shared across video + audio)
-        let needsScreenVideo = videoDescriptors.contains {
-            if case .screen = $0.input { return true }
-            return false
-        }
-        let needsScreenAudio = audioDescriptors.contains {
-            if case .screenAudio = $0.input { return true }
-            return false
-        }
-
-        if needsScreenVideo || needsScreenAudio {
-            sharedScreenCapture = ScreenCapture()
-        }
-
         // Start video tracks
         for desc in videoDescriptors {
-            try await startVideoTrack(desc)
+            try startVideoTrack(desc)
         }
 
         // Start audio tracks
         for desc in audioDescriptors {
-            try await startAudioTrack(desc)
-        }
-
-        // Start screen capture if needed (after wiring handlers)
-        if needsScreenVideo || needsScreenAudio {
-            Task {
-                do {
-                    try await self.startSharedScreenCapture()
-                } catch {
-                    MoQLogger.publish.error("Screen capture failed to start: \(error)")
-                    self.transition(to: .error("Screen capture failed: \(error)"))
-                }
-            }
+            try startAudioTrack(desc)
         }
 
         transition(to: .publishing)
@@ -312,23 +251,18 @@ public final class MoQPublisher {
         MoQLogger.publish.debug("Stopping publisher")
 
         for (_, active) in activeVideoTracks {
-            active.camera?.stop()
+            active.source?.onFrame = { (_: CMSampleBuffer) in false }
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
         }
         activeVideoTracks.removeAll()
 
         for (_, active) in activeAudioTracks {
-            active.microphone?.stop()
+            active.source?.onFrame = { (_: CMSampleBuffer) in false }
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
         }
         activeAudioTracks.removeAll()
-
-        if let screenCapture = sharedScreenCapture {
-            Task { await screenCapture.stop() }
-            sharedScreenCapture = nil
-        }
 
         try? broadcast.finish()
         clock.reset()
@@ -348,78 +282,15 @@ public final class MoQPublisher {
         eventsContinuation.finish()
     }
 
-    // MARK: - Public: Camera & Orientation Control
-
-    /// Switch the camera on an active video track without interrupting the stream.
-    ///
-    /// - Parameters:
-    ///   - trackName: The name of the video track. Defaults to `"video"`.
-    ///   - position: The camera position to switch to.
-    public func switchCamera(trackName: String = "video", to position: MoQCameraPosition) throws {
-        guard currentState == .publishing else {
-            throw MoQSessionError.invalidConfiguration("Publisher is not active")
-        }
-        guard let active = activeVideoTracks[trackName] else {
-            throw MoQSessionError.invalidConfiguration("No active video track '\(trackName)'")
-        }
-        guard let camera = active.camera else {
-            throw MoQSessionError.invalidConfiguration(
-                "Track '\(trackName)' has no camera source")
-        }
-        try camera.switchCamera(to: position.avPosition)
-        MoQLogger.publish.debug(
-            "Switched camera on track '\(trackName)' to \(String(describing: position))")
-    }
-
-    /// Change the capture orientation on an active video track.
-    ///
-    /// When crossing a landscape↔portrait boundary, the encoder is automatically
-    /// reset with swapped dimensions.
-    ///
-    /// - Parameters:
-    ///   - trackName: The name of the video track. Defaults to `"video"`.
-    ///   - orientation: The new capture orientation.
-    public func setOrientation(
-        trackName: String = "video", _ orientation: MoQVideoOrientation
-    ) throws {
-        guard currentState == .publishing else {
-            throw MoQSessionError.invalidConfiguration("Publisher is not active")
-        }
-        guard let active = activeVideoTracks[trackName] else {
-            throw MoQSessionError.invalidConfiguration("No active video track '\(trackName)'")
-        }
-        guard let camera = active.camera, let encoder = active.encoder else {
-            throw MoQSessionError.invalidConfiguration(
-                "Track '\(trackName)' has no camera source")
-        }
-
-        let oldIsLandscape: Bool
-        switch camera.currentOrientation {
-        case .landscapeRight, .landscapeLeft: oldIsLandscape = true
-        default: oldIsLandscape = false
-        }
-
-        camera.setOrientation(orientation.avOrientation)
-
-        if oldIsLandscape != orientation.isLandscape {
-            let newWidth = encoder.config.height
-            let newHeight = encoder.config.width
-            try encoder.reset(width: newWidth, height: newHeight)
-            MoQLogger.publish.debug(
-                "Encoder reset for orientation change on track '\(trackName)': \(newWidth)x\(newHeight)"
-            )
-        }
-    }
-
     deinit {
         // Best-effort cleanup
         for (_, active) in activeVideoTracks {
-            active.camera?.stop()
+            active.source?.onFrame = { (_: CMSampleBuffer) in false }
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
         }
         for (_, active) in activeAudioTracks {
-            active.microphone?.stop()
+            active.source?.onFrame = { (_: CMSampleBuffer) in false }
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
         }
@@ -440,10 +311,11 @@ public final class MoQPublisher {
 
     // MARK: - Private: Video Track Wiring
 
-    private func startVideoTrack(_ desc: VideoTrackDescriptor) async throws {
+    private func startVideoTrack(_ desc: VideoTrackDescriptor) throws {
         let active = ActiveVideoTrack()
         let encoder = MoQVideoEncoder(config: desc.config)
         active.encoder = encoder
+        active.source = desc.source
 
         let trackHandle = desc.track
         let clock = self.clock
@@ -488,39 +360,23 @@ public final class MoQPublisher {
 
         trackHandle.transition(to: .starting)
 
-        // Wire source → encoder
-        switch desc.input {
-        case .camera(let position, let orientation):
-            let camera = CameraCapture(
-                position: position.avPosition,
-                width: desc.config.width,
-                height: desc.config.height,
-                orientation: orientation.avOrientation
-            )
-            active.camera = camera
-            try await camera.start { [weak encoder] sampleBuffer in
-                encoder?.encode(sampleBuffer)
-            }
-
-        case .screen:
-            // Screen capture is started separately via shared instance
-            // Wire the video handler when screen capture starts
-            active.screenCapture = sharedScreenCapture
+        // Bind source → encoder
+        desc.source.onFrame = { [weak encoder] sampleBuffer in
+            guard let encoder else { return false }
+            encoder.encode(sampleBuffer)
+            return true
         }
 
         // Set up individual track stop
         trackHandle.stopAction = { [weak self, weak active] in
             guard let self, let active else { return }
-            print("stopping camera")
-            active.camera?.stop()
-            print("stopping encoder")
+            active.source?.onFrame = { (_: CMSampleBuffer) in false }
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
             self.activeVideoTracks.removeValue(forKey: trackHandle.name)
             trackHandle.transition(to: .stopped)
             self.eventsContinuation.yield(.trackStopped(trackHandle.name))
             self.checkAllTracksStopped()
-            print("stopped")
         }
 
         activeVideoTracks[desc.track.name] = active
@@ -528,10 +384,11 @@ public final class MoQPublisher {
 
     // MARK: - Private: Audio Track Wiring
 
-    private func startAudioTrack(_ desc: AudioTrackDescriptor) async throws {
+    private func startAudioTrack(_ desc: AudioTrackDescriptor) throws {
         let active = ActiveAudioTrack()
         let encoder = MoQAudioEncoder(config: desc.config)
         active.encoder = encoder
+        active.source = desc.source
 
         let trackHandle = desc.track
         let clock = self.clock
@@ -567,7 +424,6 @@ public final class MoQPublisher {
 
             let timestampUs = clock.timestampUs(from: frame.presentationTime)
             do {
-                MoQLogger.publish.warning("Writing video frame")
                 try active.mediaProducer?.writeFrame(payload: frame.data, timestampUs: timestampUs)
             } catch {
                 MoQLogger.publish.error("Failed to write audio frame: \(error)")
@@ -576,23 +432,17 @@ public final class MoQPublisher {
 
         trackHandle.transition(to: .starting)
 
-        // Wire source → encoder
-        switch desc.input {
-        case .microphone:
-            let mic = MicrophoneCapture()
-            active.microphone = mic
-            try await mic.start { [weak encoder] sampleBuffer in
-                encoder?.encode(sampleBuffer)
-            }
-
-        case .screenAudio:
-            active.screenCapture = sharedScreenCapture
+        // Bind source → encoder
+        desc.source.onFrame = { [weak encoder] sampleBuffer in
+            guard let encoder else { return false }
+            encoder.encode(sampleBuffer)
+            return true
         }
 
         // Set up individual track stop
         trackHandle.stopAction = { [weak self, weak active] in
             guard let self, let active else { return }
-            active.microphone?.stop()
+            active.source?.onFrame = { (_: CMSampleBuffer) in false }
             active.encoder?.stop()
             try? active.mediaProducer?.finish()
             self.activeAudioTracks.removeValue(forKey: trackHandle.name)
@@ -602,42 +452,6 @@ public final class MoQPublisher {
         }
 
         activeAudioTracks[desc.track.name] = active
-    }
-
-    // MARK: - Private: Screen Capture
-
-    private func startSharedScreenCapture() async throws {
-        guard let screenCapture = sharedScreenCapture else { return }
-
-        // Find the video encoder for screen video
-        let screenVideoEncoder =
-            videoDescriptors
-            .first {
-                if case .screen = $0.input { return true }
-                return false
-            }
-            .flatMap { activeVideoTracks[$0.track.name]?.encoder }
-
-        // Find the audio encoder for screen audio
-        let screenAudioEncoder =
-            audioDescriptors
-            .first {
-                if case .screenAudio = $0.input { return true }
-                return false
-            }
-            .flatMap { activeAudioTracks[$0.track.name]?.encoder }
-
-        let videoHandler: (CMSampleBuffer) -> Void = { [weak screenVideoEncoder] sampleBuffer in
-            screenVideoEncoder?.encode(sampleBuffer)
-        }
-
-        let audioHandler: ((CMSampleBuffer) -> Void)? = screenAudioEncoder.map { encoder in
-            return { [weak encoder] sampleBuffer in
-                encoder?.encode(sampleBuffer)
-            }
-        }
-
-        try await screenCapture.start(videoHandler: videoHandler, audioHandler: audioHandler)
     }
 
     // MARK: - Private: Lifecycle

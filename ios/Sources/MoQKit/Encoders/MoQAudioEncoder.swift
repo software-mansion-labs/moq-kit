@@ -59,7 +59,7 @@ struct MoQEncodedAudioFrame {
 }
 
 /// Codec for audio encoding.
-public enum MoQAudioCodec: Sendable {
+public enum MoQAudioCodec: Sendable, Hashable {
     case aac
     case opus
 }

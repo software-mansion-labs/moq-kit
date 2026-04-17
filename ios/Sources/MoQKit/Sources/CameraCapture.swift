@@ -1,10 +1,43 @@
 import AVFoundation
 
+/// Camera position for video capture.
+public enum MoQCameraPosition: Sendable {
+    case front, back
+
+    var position: AVCaptureDevice.Position {
+        switch self {
+        case .front: return .front
+        case .back: return .back
+        }
+    }
+}
+
+/// Video capture orientation.
+public enum MoQVideoOrientation: Sendable {
+    case portrait
+    case portraitUpsideDown
+    case landscapeRight
+    case landscapeLeft
+
+    var avOrientation: AVCaptureVideoOrientation {
+        switch self {
+        case .portrait: return .portrait
+        case .portraitUpsideDown: return .portraitUpsideDown
+        case .landscapeRight: return .landscapeRight
+        case .landscapeLeft: return .landscapeLeft
+        }
+    }
+
+    var isLandscape: Bool {
+        self == .landscapeRight || self == .landscapeLeft
+    }
+}
+
 /// Wraps `AVCaptureSession` to capture video frames from a camera device.
-final class CameraCapture: NSObject, @unchecked Sendable {
-    private let session = AVCaptureSession()
+public final class CameraCapture: NSObject, MoQFrameSource, @unchecked Sendable {
+    public let captureSession = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.swmansion.MoQKit.CameraCapture")
-    private var handler: ((CMSampleBuffer) -> Void)?
+    public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
 
     private(set) var position: AVCaptureDevice.Position
     private let width: Int32
@@ -13,32 +46,30 @@ final class CameraCapture: NSObject, @unchecked Sendable {
     private var currentOutput: AVCaptureVideoDataOutput?
     private(set) var currentOrientation: AVCaptureVideoOrientation
 
-    init(
-        position: AVCaptureDevice.Position,
-        width: Int32,
-        height: Int32,
-        orientation: AVCaptureVideoOrientation = .portrait
+    public init(
+        position: MoQCameraPosition = .back,
+        width: Int32 = 720,
+        height: Int32 = 1280,
+        orientation: MoQVideoOrientation = .portrait
     ) {
-        self.position = position
+        self.position = position.position
         self.width = width
         self.height = height
-        self.currentOrientation = orientation
+        self.currentOrientation = orientation.avOrientation
         super.init()
     }
 
-    func start(handler: @escaping (CMSampleBuffer) -> Void) async throws {
-        self.handler = handler
-
+    public func start() async throws {
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 do {
-                    session.beginConfiguration()
+                    captureSession.beginConfiguration()
 
                     // Pick a session preset based on requested dimensions
                     let preset = sessionPreset(for: width, height: height)
-                    if session.canSetSessionPreset(preset) {
-                        session.sessionPreset = preset
+                    if captureSession.canSetSessionPreset(preset) {
+                        captureSession.sessionPreset = preset
                     }
 
                     // Camera input
@@ -52,10 +83,10 @@ final class CameraCapture: NSObject, @unchecked Sendable {
                     }
 
                     let input = try AVCaptureDeviceInput(device: device)
-                    guard session.canAddInput(input) else {
+                    guard captureSession.canAddInput(input) else {
                         throw MoQSessionError.invalidConfiguration("Cannot add camera input")
                     }
-                    session.addInput(input)
+                    captureSession.addInput(input)
                     currentInput = input
 
                     // Video output
@@ -67,10 +98,10 @@ final class CameraCapture: NSObject, @unchecked Sendable {
                     output.alwaysDiscardsLateVideoFrames = true
                     output.setSampleBufferDelegate(self, queue: queue)
 
-                    guard session.canAddOutput(output) else {
+                    guard captureSession.canAddOutput(output) else {
                         throw MoQSessionError.invalidConfiguration("Cannot add video output")
                     }
-                    session.addOutput(output)
+                    captureSession.addOutput(output)
                     currentOutput = output
 
                     if let connection = output.connection(with: .video) {
@@ -79,8 +110,8 @@ final class CameraCapture: NSObject, @unchecked Sendable {
                         }
                     }
 
-                    session.commitConfiguration()
-                    session.startRunning()
+                    captureSession.commitConfiguration()
+                    captureSession.startRunning()
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -89,54 +120,69 @@ final class CameraCapture: NSObject, @unchecked Sendable {
         }
     }
 
-    func stop() {
+    public func stop() {
         queue.async { [self] in
-            self.session.stopRunning()
+            self.captureSession.stopRunning()
         }
-        handler = nil
+        onFrame = nil
     }
 
     /// Switch to a different camera while the session is running.
-    func switchCamera(to newPosition: AVCaptureDevice.Position) throws {
+    public func switchCamera(to newPosition: MoQCameraPosition) throws {
+        let avPosition = newPosition.position
         try queue.sync {
             guard let oldInput = currentInput else {
                 throw MoQSessionError.invalidConfiguration("No current camera input")
             }
             guard
                 let device = AVCaptureDevice.default(
-                    .builtInWideAngleCamera, for: .video, position: newPosition
+                    .builtInWideAngleCamera, for: .video, position: avPosition
                 )
             else {
                 throw MoQSessionError.invalidConfiguration(
-                    "No camera available for position \(newPosition)")
+                    "No camera available for position \(avPosition)")
             }
 
             let newInput = try AVCaptureDeviceInput(device: device)
 
-            session.beginConfiguration()
-            session.removeInput(oldInput)
-            if session.canAddInput(newInput) {
-                session.addInput(newInput)
+            captureSession.beginConfiguration()
+            
+            // Pick a session preset based on requested dimensions
+            let preset = sessionPreset(for: width, height: height)
+            if captureSession.canSetSessionPreset(preset) {
+                captureSession.sessionPreset = preset
+            }
+            
+            captureSession.removeInput(oldInput)
+            if captureSession.canAddInput(newInput) {
+                captureSession.addInput(newInput)
                 currentInput = newInput
-                position = newPosition
+                position = avPosition
+
+                // Re-apply orientation to the new connection
+                if let connection = currentOutput?.connection(with: .video),
+                   connection.isVideoOrientationSupported {
+                    connection.videoOrientation = currentOrientation
+                }
             } else {
                 // Rollback
-                session.addInput(oldInput)
-                session.commitConfiguration()
+                captureSession.addInput(oldInput)
+                captureSession.commitConfiguration()
                 throw MoQSessionError.invalidConfiguration("Cannot add new camera input")
             }
-            session.commitConfiguration()
+            captureSession.commitConfiguration()
         }
     }
 
     /// Update the capture orientation.
-    func setOrientation(_ orientation: AVCaptureVideoOrientation) {
+    public func setOrientation(_ orientation: MoQVideoOrientation) {
+        let avOrientation = orientation.avOrientation
         queue.async { [self] in
-            currentOrientation = orientation
+            currentOrientation = avOrientation
             if let connection = currentOutput?.connection(with: .video),
                 connection.isVideoOrientationSupported
             {
-                connection.videoOrientation = orientation
+                connection.videoOrientation = avOrientation
             }
         }
     }
@@ -151,11 +197,13 @@ final class CameraCapture: NSObject, @unchecked Sendable {
 }
 
 extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
-    func captureOutput(
+    public func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        handler?(sampleBuffer)
+        if let onFrame, !onFrame(sampleBuffer) {
+            self.onFrame = nil
+        }
     }
 }

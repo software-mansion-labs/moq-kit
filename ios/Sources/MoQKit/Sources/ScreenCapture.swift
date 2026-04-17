@@ -2,18 +2,17 @@ import ReplayKit
 import CoreMedia
 
 /// Wraps `RPScreenRecorder` to capture the device screen and optionally app audio.
-final class ScreenCapture: @unchecked Sendable {
-    private var videoHandler: ((CMSampleBuffer) -> Void)?
-    private var audioHandler: ((CMSampleBuffer) -> Void)?
+public final class ScreenCapture: @unchecked Sendable {
+    /// Frame source for captured video frames.
+    public let videoSource = MoQFrameRelay()
+    /// Frame source for captured app audio frames.
+    public let audioSource = MoQFrameRelay()
+
     private var isRunning = false
 
-    func start(
-        videoHandler: @escaping (CMSampleBuffer) -> Void,
-        audioHandler: ((CMSampleBuffer) -> Void)? = nil
-    ) async throws {
-        self.videoHandler = videoHandler
-        self.audioHandler = audioHandler
+    public init() {}
 
+    public func start() async throws {
         let recorder = RPScreenRecorder.shared()
         guard recorder.isAvailable else {
             throw MoQSessionError.invalidConfiguration("Screen recording is not available")
@@ -23,9 +22,13 @@ final class ScreenCapture: @unchecked Sendable {
             guard error == nil, let self else { return }
             switch sampleType {
             case .video:
-                self.videoHandler?(sampleBuffer)
+                if !self.videoSource.send(sampleBuffer) {
+                    Task { await self.stop() }
+                }
             case .audioApp:
-                self.audioHandler?(sampleBuffer)
+                if !self.audioSource.send(sampleBuffer) {
+                    Task { await self.stop() }
+                }
             case .audioMic:
                 // Mic audio from screen capture is not used; use MicrophoneCapture instead
                 break
@@ -36,11 +39,11 @@ final class ScreenCapture: @unchecked Sendable {
         isRunning = true
     }
 
-    func stop() async {
+    public func stop() async {
         guard isRunning else { return }
         isRunning = false
         try? await RPScreenRecorder.shared().stopCapture()
-        videoHandler = nil
-        audioHandler = nil
+        videoSource.onFrame = nil
+        audioSource.onFrame = nil
     }
 }

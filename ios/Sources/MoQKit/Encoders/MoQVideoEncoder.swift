@@ -142,7 +142,11 @@ final class MoQVideoEncoder: @unchecked Sendable {
             dataBuffer, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &totalLength,
             dataPointerOut: &dataPointer)
         guard let dataPointer, totalLength > 0 else { return }
-        let data = Data(bytes: dataPointer, count: totalLength)
+        var data = Data(bytes: dataPointer, count: totalLength)
+
+        if config.naluFormat == .annexB {
+            convertLengthPrefixedToAnnexB(&data)
+        }
 
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
@@ -163,6 +167,21 @@ final class MoQVideoEncoder: @unchecked Sendable {
             initData: initData
         )
         handler?(frame)
+    }
+
+    /// Replace 4-byte big-endian length prefixes with Annex B start codes (`00 00 00 01`) in-place.
+    /// Both representations are exactly 4 bytes, so the data size is unchanged.
+    private func convertLengthPrefixedToAnnexB(_ data: inout Data) {
+        let startCode: [UInt8] = [0x00, 0x00, 0x00, 0x01]
+        var offset = 0
+        while offset + 4 <= data.count {
+            let naluLength = Int(data[offset]) << 24
+                | Int(data[offset + 1]) << 16
+                | Int(data[offset + 2]) << 8
+                | Int(data[offset + 3])
+            data.replaceSubrange(offset..<offset + 4, with: startCode)
+            offset += 4 + naluLength
+        }
     }
 
     private func buildInitData(from formatDesc: CMFormatDescription) -> Data? {
@@ -297,9 +316,17 @@ struct MoQEncodedVideoFrame {
 }
 
 /// Codec for video encoding.
-public enum MoQVideoCodec: Sendable {
+public enum MoQVideoCodec: Sendable, Hashable {
     case h264
     case h265
+}
+
+/// NAL unit framing format.
+public enum MoQNaluFormat: Sendable {
+    /// Annex B start codes (`00 00 00 01`).
+    case annexB
+    /// 4-byte big-endian length prefix (AVCC/HVCC box style).
+    case avcc
 }
 
 /// Configuration for the hardware video encoder.
@@ -311,6 +338,7 @@ public struct MoQVideoEncoderConfig: Sendable {
     public var keyframeInterval: Double
     public var maxFrameRate: Double
     public var profileLevel: String?
+    public var naluFormat: MoQNaluFormat
 
     public init(
         codec: MoQVideoCodec = .h264,
@@ -319,7 +347,8 @@ public struct MoQVideoEncoderConfig: Sendable {
         bitrate: UInt32 = 1_500_000,
         keyframeInterval: Double = 2.0,
         maxFrameRate: Double = 30.0,
-        profileLevel: String? = nil
+        profileLevel: String? = nil,
+        naluFormat: MoQNaluFormat? = nil
     ) {
         self.codec = codec
         self.width = width
@@ -328,6 +357,7 @@ public struct MoQVideoEncoderConfig: Sendable {
         self.keyframeInterval = keyframeInterval
         self.maxFrameRate = maxFrameRate
         self.profileLevel = profileLevel
+        self.naluFormat = naluFormat ?? (codec == .h265 ? .annexB : .avcc)
     }
 
     var format: String {

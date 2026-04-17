@@ -1,15 +1,18 @@
 import AVFoundation
 
 /// Wraps `AVCaptureSession` to capture raw PCM audio from the microphone.
-final class MicrophoneCapture: NSObject, @unchecked Sendable {
+public final class MicrophoneCapture: NSObject, MoQFrameSource, @unchecked Sendable {
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.swmansion.MoQKit.MicrophoneCapture")
-    private var handler: ((CMSampleBuffer) -> Void)?
+    public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
 
-    func start(handler: @escaping (CMSampleBuffer) -> Void) async throws {
-        self.handler = handler
+    public override init() {
+        super.init()
+    }
 
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+    public func start() async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 do {
                     session.beginConfiguration()
@@ -41,18 +44,22 @@ final class MicrophoneCapture: NSObject, @unchecked Sendable {
         }
     }
 
-    func stop() {
-        session.stopRunning()
-        handler = nil
+    public func stop() {
+        queue.async { [self] in
+            self.session.stopRunning()
+        }
+        onFrame = nil
     }
 }
 
 extension MicrophoneCapture: AVCaptureAudioDataOutputSampleBufferDelegate {
-    func captureOutput(
+    public func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        handler?(sampleBuffer)
+        if let onFrame, !onFrame(sampleBuffer) {
+            stop()
+        }
     }
 }

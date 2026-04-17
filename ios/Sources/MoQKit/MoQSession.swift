@@ -124,6 +124,9 @@ public final class MoQSession {
     ///
     /// - Parameter url: The WebTransport URL of the MoQ relay (e.g. `"https://relay.example.com/moq"`).
     public init(url: String) {
+        do {
+            try moqLogLevel(level: "TRACE")
+        } catch {}
         self.url = url
 
         var stateCont: AsyncStream<MoQSessionState>.Continuation!
