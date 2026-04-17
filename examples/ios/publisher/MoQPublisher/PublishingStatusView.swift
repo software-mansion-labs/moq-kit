@@ -5,6 +5,7 @@ struct PublishingStatusView: View {
     let publisherState: MoQPublisherState
     let publisherStateLabel: String
     let publisherStateColor: Color
+    let tracks: [MoQPublishedTrack]
     let trackStates: [String: MoQPublishedTrackState]
     let lastError: String?
 
@@ -22,7 +23,7 @@ struct PublishingStatusView: View {
             }
 
             // Per-track status
-            if !trackStates.isEmpty {
+            if !tracks.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Tracks")
                         .font(.caption2)
@@ -30,29 +31,25 @@ struct PublishingStatusView: View {
                         .foregroundStyle(.tertiary)
                         .textCase(.uppercase)
 
-                    ForEach(trackStates.sorted(by: { $0.key < $1.key }), id: \.key) { name, state in
+                    ForEach(tracks.sorted(by: { $0.name < $1.name }), id: \.name) { track in
+                        let state = trackStates[track.name] ?? .idle
                         HStack(spacing: 6) {
                             Circle()
                                 .fill(trackStateColor(state))
                                 .frame(width: 6, height: 6)
-                            Text(name)
+                            Text(track.name)
                                 .font(.caption)
                                 .fontWeight(.medium)
                             Text(trackStateLabel(state))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Spacer()
+                            ForEach(codecPills(for: track.codecInfo), id: \.self) { pill in
+                                InfoPill(text: pill)
+                            }
                         }
                     }
                 }
-            }
-
-            // Info pills
-            HStack(spacing: 8) {
-                InfoPill(text: "H.264")
-                InfoPill(text: "1920x1080")
-                InfoPill(text: "AAC 48kHz")
-                Spacer()
             }
 
             // Error
@@ -81,6 +78,27 @@ struct PublishingStatusView: View {
         case .starting: return "starting"
         case .active: return "active"
         case .stopped: return "stopped"
+        }
+    }
+
+    private func codecPills(for info: MoQTrackCodecInfo) -> [String] {
+        switch info {
+        case .video(let codec, let width, let height, let frameRate):
+            let codecName: String
+            switch codec {
+            case .h264: codecName = "H.264"
+            case .h265: codecName = "H.265"
+            }
+            let frameRateInt = Int(frameRate)
+            return [codecName, "\(width)x\(height)@\(frameRateInt)"]
+        case .audio(let codec, let sampleRate):
+            let codecName: String
+            switch codec {
+            case .aac: codecName = "AAC"
+            case .opus: codecName = "Opus"
+            }
+            let sampleRateKHz = Int(sampleRate / 1000)
+            return ["\(codecName) \(sampleRateKHz)kHz"]
         }
     }
 }

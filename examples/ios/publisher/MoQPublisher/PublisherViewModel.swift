@@ -1,6 +1,7 @@
 import AVFoundation
 import MoQKit
 import SwiftUI
+import os
 
 @MainActor
 final class PublisherViewModel: ObservableObject {
@@ -14,12 +15,27 @@ final class PublisherViewModel: ObservableObject {
     @Published var micEnabled = true
     @Published var screenAudioEnabled = false
     @Published var cameraPosition: MoQCameraPosition = .front
+    @Published var videoCodec: MoQVideoCodec = .h265
+    @Published var videoResolution: VideoResolution = .hd
+    @Published var videoFrameRate: VideoFrameRate = .fps30
+    @Published var audioCodec: MoQAudioCodec = .opus
+    @Published var audioSampleRate: AudioSampleRate = .khz48
     @Published var trackStates: [String: MoQPublishedTrackState] = [:]
     @Published var lastError: String?
 
     // MARK: - Camera Preview
 
-    private(set) var captureSession: AVCaptureSession?
+    private var cameraCapture: CameraCapture?
+
+    var previewSession: AVCaptureSession? {
+        cameraCapture?.captureSession
+    }
+
+    // MARK: - Capture Sources
+
+    private var camera: CameraCapture?
+    private var microphone: MicrophoneCapture?
+    private var screenCapture: ScreenCapture?
 
     // MARK: - Computed Properties
 
@@ -85,49 +101,44 @@ final class PublisherViewModel: ObservableObject {
     private var stateObserverTask: Task<Void, Never>?
     private var publisherStateTask: Task<Void, Never>?
     private var publisherEventsTask: Task<Void, Never>?
-    private var publishedTracks: [MoQPublishedTrack] = []
+    @Published var publishedTracks: [MoQPublishedTrack] = []
 
     // MARK: - Camera Preview Lifecycle
 
     func startPreview() {
-        guard captureSession == nil, cameraEnabled else { return }
+        guard cameraCapture == nil, cameraEnabled else { return }
 
-        let session = AVCaptureSession()
-        session.sessionPreset = .high
-
-        guard let device = cameraDevice(for: cameraPosition),
-              let input = try? AVCaptureDeviceInput(device: device),
-              session.canAddInput(input)
-        else { return }
-
-        session.addInput(input)
-
-        captureSession = session
+        let cam = CameraCapture(position: cameraPosition)
+        cameraCapture = cam
         isPreviewRunning = true
-        Task.detached { session.startRunning() }
+
+        Task {
+            do {
+                try await cam.start()
+            } catch {
+                lastError = "Camera preview failed: \(error.localizedDescription)"
+                cameraCapture = nil
+                isPreviewRunning = false
+            }
+        }
     }
 
     func stopPreview() {
-        guard let session = captureSession else { return }
-        let s = session
-        captureSession = nil
+        cameraCapture?.stop()
+        cameraCapture = nil
         isPreviewRunning = false
-        Task.detached { s.stopRunning() }
     }
 
     func flipCamera() {
         let newPosition: MoQCameraPosition = cameraPosition == .front ? .back : .front
         cameraPosition = newPosition
 
-        if publisher != nil, case .publishing = publisherState {
+        if let cameraCapture {
             do {
-                try publisher?.switchCamera(trackName: "camera", to: newPosition)
+                try cameraCapture.switchCamera(to: newPosition)
             } catch {
                 lastError = "Camera switch failed: \(error.localizedDescription)"
             }
-        } else if isPreviewRunning {
-            stopPreview()
-            startPreview()
         }
     }
 
@@ -136,9 +147,6 @@ final class PublisherViewModel: ObservableObject {
     func publish(url: String, path: String) {
         lastError = nil
         trackStates = [:]
-
-        // Stop camera preview to release the camera for MoQPublisher
-        stopPreview()
 
         let s = MoQSession(url: url)
         session = s
@@ -156,25 +164,67 @@ final class PublisherViewModel: ObservableObject {
                 let pub = try MoQPublisher()
                 self.publisher = pub
 
+                // Create and start capture sources, then add tracks
+                let videoEncoderConfig = MoQVideoEncoderConfig(
+                    codec: self.videoCodec,
+                    width: self.videoResolution.width,
+                    height: self.videoResolution.height,
+                    maxFrameRate: self.videoFrameRate.value
+                )
+                let audioEncoderConfig = MoQAudioEncoderConfig(
+                    codec: self.audioCodec,
+                    sampleRate: self.audioSampleRate.value
+                )
+
                 if self.cameraEnabled {
-                    let track = pub.addVideoTrack(
-                        name: "camera",
-                        input: .camera(position: self.cameraPosition))
+                    // Reuse the preview CameraCapture, or create one if preview wasn't started
+                    let cam: CameraCapture
+                    if let existing = self.cameraCapture {
+                        cam = existing
+                    } else {
+                        cam = CameraCapture(position: self.cameraPosition)
+                        self.cameraCapture = cam
+                        try await cam.start()
+                    }
+                    self.camera = cam
+
+                    let track = pub.addVideoTrack(name: "camera", source: cam, config: videoEncoderConfig)
                     self.publishedTracks.append(track)
                     self.trackStates["camera"] = .idle
                 }
+
                 if self.screenEnabled {
-                    let track = pub.addVideoTrack(name: "screen", input: .screen)
+                    let sc = ScreenCapture()
+                    self.screenCapture = sc
+                    try await sc.start()
+
+                    let track = pub.addVideoTrack(name: "screen", source: sc.videoSource, config: videoEncoderConfig)
                     self.publishedTracks.append(track)
                     self.trackStates["screen"] = .idle
                 }
+
                 if self.micEnabled {
-                    let track = pub.addAudioTrack(name: "mic", input: .microphone)
+                    let mic = MicrophoneCapture()
+                    self.microphone = mic
+                    try await mic.start()
+
+                    let track = pub.addAudioTrack(name: "mic", source: mic, config: audioEncoderConfig)
                     self.publishedTracks.append(track)
                     self.trackStates["mic"] = .idle
                 }
+
                 if self.screenAudioEnabled {
-                    let track = pub.addAudioTrack(name: "screen-audio", input: .screenAudio)
+                    // Reuse existing screen capture or create a new one
+                    let sc: ScreenCapture
+                    if let existing = self.screenCapture {
+                        sc = existing
+                    } else {
+                        sc = ScreenCapture()
+                        self.screenCapture = sc
+                        try await sc.start()
+                    }
+
+                    let track = pub.addAudioTrack(name: "screen-audio", source: sc.audioSource, config: audioEncoderConfig)
                     self.publishedTracks.append(track)
                     self.trackStates["screen-audio"] = .idle
                 }
@@ -186,21 +236,26 @@ final class PublisherViewModel: ObservableObject {
             } catch {
                 self.lastError = error.localizedDescription
                 self.publisherState = .error(error.localizedDescription)
-                if self.cameraEnabled { self.startPreview() }
+                self.cleanupCaptureSources()
             }
         }
     }
 
     func stop() {
+        let logger = Logger(subsystem: "viewing", category: "PublisherModel")
+
+        logger.info("cancelling tasks")
         publisherStateTask?.cancel()
         publisherStateTask = nil
         publisherEventsTask?.cancel()
         publisherEventsTask = nil
         stateObserverTask?.cancel()
         stateObserverTask = nil
+        logger.info("tasks cancelled")
 
+        // Capture references before clearing — the detached task needs them.
         let pub = publisher
-        let s = session
+        let sess = session
 
         publisher = nil
         session = nil
@@ -209,19 +264,36 @@ final class PublisherViewModel: ObservableObject {
         publisherState = .idle
         sessionState = .idle
 
-        Task {
-            if let pub {
-                pub.stop()
-            }
-            await s?.close()
+        // Stop publisher and close session off the main thread.
+        // publisher.stop() flushes encoders synchronously — with @MainActor
+        // removed from MoQPublisher, this now actually runs off-main.
+        Task.detached {
+            logger.info("stopping publisher")
+            pub?.stop()
+            logger.info("publisher stopped")
+            logger.info("closing session")
+            // await sess?.close()
+            logger.info("session closed")
         }
 
-        if cameraEnabled {
-            startPreview()
-        }
+        logger.info("cleaning up capture sources")
+        cleanupCaptureSources()
+        logger.info("capture sources cleaned up")
     }
 
     // MARK: - Private
+
+    private func cleanupCaptureSources() {
+        // Don't stop the camera — it's shared with preview via cameraCapture
+        camera = nil
+        microphone?.stop()
+        microphone = nil
+        if let sc = screenCapture {
+            let capture = sc
+            screenCapture = nil
+            Task { await capture.stop() }
+        }
+    }
 
     private func observePublisher(_ pub: MoQPublisher) {
         publisherStateTask = Task {
@@ -255,8 +327,4 @@ final class PublisherViewModel: ObservableObject {
         }
     }
 
-    private func cameraDevice(for position: MoQCameraPosition) -> AVCaptureDevice? {
-        let avPosition: AVCaptureDevice.Position = position == .front ? .front : .back
-        return AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: avPosition)
-    }
 }

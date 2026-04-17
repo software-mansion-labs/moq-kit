@@ -15,6 +15,7 @@
 		B10000000000000000000006 /* CameraPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000015 /* CameraPreviewView.swift */; };
 		B10000000000000000000007 /* SourceConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000016 /* SourceConfigView.swift */; };
 		B10000000000000000000008 /* PublishingStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000017 /* PublishingStatusView.swift */; };
+		B10000000000000000000009 /* CodecConfigView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000018 /* CodecConfigView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -25,6 +26,7 @@
 		B10000000000000000000015 /* CameraPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPreviewView.swift; sourceTree = "<group>"; };
 		B10000000000000000000016 /* SourceConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceConfigView.swift; sourceTree = "<group>"; };
 		B10000000000000000000017 /* PublishingStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublishingStatusView.swift; sourceTree = "<group>"; };
+		B10000000000000000000018 /* CodecConfigView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodecConfigView.swift; sourceTree = "<group>"; };
 		B10000000000000000000032 /* MoQPublisher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MoQPublisher.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -58,6 +60,7 @@
 				B10000000000000000000015 /* CameraPreviewView.swift */,
 				B10000000000000000000016 /* SourceConfigView.swift */,
 				B10000000000000000000017 /* PublishingStatusView.swift */,
+				B10000000000000000000018 /* CodecConfigView.swift */,
 			);
 			path = MoQPublisher;
 			sourceTree = "<group>";
@@ -146,6 +149,7 @@
 				B10000000000000000000006 /* CameraPreviewView.swift in Sources */,
 				B10000000000000000000007 /* SourceConfigView.swift in Sources */,
 				B10000000000000000000008 /* PublishingStatusView.swift in Sources */,
+				B10000000000000000000009 /* CodecConfigView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

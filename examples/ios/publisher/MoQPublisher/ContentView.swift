@@ -40,13 +40,23 @@ struct ContentView: View {
                     Spacer()
                 }
 
-                // Camera preview (when camera enabled + not publishing)
+                // Camera preview
                 if viewModel.cameraEnabled && viewModel.isPreviewRunning,
-                    let captureSession = viewModel.captureSession
+                    let previewSession = viewModel.previewSession
                 {
-                    CameraPreviewView(session: captureSession)
+                    CameraPreviewView(session: previewSession)
                         .aspectRatio(16 / 9, contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(alignment: .bottomTrailing) {
+                            Button(action: viewModel.flipCamera) {
+                                Image(systemName: "camera.rotate")
+                                    .font(.title2)
+                                    .padding(10)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(Circle())
+                            }
+                            .padding(12)
+                        }
                 }
 
                 // Source configuration (when not publishing)
@@ -60,6 +70,14 @@ struct ContentView: View {
                         isPublishing: isPublishing,
                         onFlipCamera: viewModel.flipCamera
                     )
+
+                    CodecConfigView(
+                        videoCodec: $viewModel.videoCodec,
+                        videoResolution: $viewModel.videoResolution,
+                        videoFrameRate: $viewModel.videoFrameRate,
+                        audioCodec: $viewModel.audioCodec,
+                        audioSampleRate: $viewModel.audioSampleRate
+                    )
                 }
 
                 // Publishing status (when publishing)
@@ -68,6 +86,7 @@ struct ContentView: View {
                         publisherState: viewModel.publisherState,
                         publisherStateLabel: viewModel.publisherStateLabel,
                         publisherStateColor: viewModel.publisherStateColor,
+                        tracks: viewModel.publishedTracks,
                         trackStates: viewModel.trackStates,
                         lastError: viewModel.lastError
                     )
