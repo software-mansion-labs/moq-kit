@@ -1161,6 +1161,13 @@ public protocol MoqBroadcastProducerProtocol: AnyObject, Sendable {
      */
     func publishMedia(format: String, `init`: Data) throws  -> MoqMediaProducer
     
+    /**
+     * Create a new raw object track for this broadcast.
+     *
+     * Each written object becomes one MoQ object/frame on the named track.
+     */
+    func publishObject(name: String) throws  -> MoqObjectProducer
+    
 }
 open class MoqBroadcastProducer: MoqBroadcastProducerProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1248,6 +1255,20 @@ open func publishMedia(format: String, `init`: Data)throws  -> MoqMediaProducer 
             self.uniffiCloneHandle(),
         FfiConverterString.lower(format),
         FfiConverterData.lower(`init`),$0
+    )
+})
+}
+    
+    /**
+     * Create a new raw object track for this broadcast.
+     *
+     * Each written object becomes one MoQ object/frame on the named track.
+     */
+open func publishObject(name: String)throws  -> MoqObjectProducer  {
+    return try  FfiConverterTypeMoqObjectProducer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastproducer_publish_object(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),$0
     )
 })
 }
@@ -1937,6 +1958,148 @@ public func FfiConverterTypeMoqMediaProducer_lift(_ handle: UInt64) throws -> Mo
 #endif
 public func FfiConverterTypeMoqMediaProducer_lower(_ value: MoqMediaProducer) -> UInt64 {
     return FfiConverterTypeMoqMediaProducer.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqObjectProducerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Finish this object track.
+     */
+    func finish() throws 
+    
+    /**
+     * Write a raw object to this track.
+     *
+     * If `end_group` is true, this object finalizes the current group.
+     */
+    func writeObject(payload: Data, endGroup: Bool) throws 
+    
+}
+open class MoqObjectProducer: MoqObjectProducerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqobjectproducer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqobjectproducer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Finish this object track.
+     */
+open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqobjectproducer_finish(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Write a raw object to this track.
+     *
+     * If `end_group` is true, this object finalizes the current group.
+     */
+open func writeObject(payload: Data, endGroup: Bool)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqobjectproducer_write_object(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(payload),
+        FfiConverterBool.lower(endGroup),$0
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqObjectProducer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqObjectProducer
+
+    public static func lift(_ handle: UInt64) throws -> MoqObjectProducer {
+        return MoqObjectProducer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqObjectProducer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqObjectProducer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqObjectProducer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqObjectProducer_lift(_ handle: UInt64) throws -> MoqObjectProducer {
+    return try FfiConverterTypeMoqObjectProducer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqObjectProducer_lower(_ value: MoqObjectProducer) -> UInt64 {
+    return FfiConverterTypeMoqObjectProducer.lower(value)
 }
 
 
@@ -3345,10 +3508,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_publish_media() != 59397) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_publish_object() != 21350) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_moq_ffi_checksum_method_moqmediaproducer_finish() != 13508) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqmediaproducer_write_frame() != 4813) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqobjectproducer_finish() != 17371) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqobjectproducer_write_object() != 4891) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqclient_cancel() != 42343) {

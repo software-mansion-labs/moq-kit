@@ -110,17 +110,7 @@ final class PacketTimingTracer: @unchecked Sendable {
         lastPtsUs = ptsUs
         packetCount += 1
 
-        let shouldReport = packetCount >= reportInterval
-        let snapshot: (Int, Double, Double, Int, Int, Int, Double, Double, Double)?
-        if shouldReport {
-            let minG = minGapMs == .greatestFiniteMagnitude ? 0.0 : minGapMs
-            snapshot = (
-                packetCount,
-                intervalCount > 0 ? wallIntervalSumMs / Double(intervalCount) : 0,
-                intervalCount > 0 ? ptsIntervalSumMs / Double(intervalCount) : 0,
-                stallCount, burstCount, outOfOrderCount,
-                maxOooDeltaMs, minG, maxGapMs
-            )
+        if packetCount >= reportInterval {
             packetCount = 0
             wallIntervalSumMs = 0
             ptsIntervalSumMs = 0
@@ -131,20 +121,9 @@ final class PacketTimingTracer: @unchecked Sendable {
             maxOooDeltaMs = 0
             maxGapMs = 0
             minGapMs = .greatestFiniteMagnitude
-        } else {
-            snapshot = nil
         }
 
         lock.unlock()
-
-        if let (pkts, avgWall, avgPts, stalls, bursts, ooo, maxOoo, minG, maxG) = snapshot {
-            let msg = String(
-                format:
-                    "[%@] %d pkts | avg wall %.1fms avg pts %.1fms | stalls: %d bursts: %d | ooo: %d (max -%.1fms) | gap [%.1f, %.1f]ms",
-                kind.rawValue, pkts, avgWall, avgPts, stalls, bursts, ooo, maxOoo, minG, maxG
-            )
-            // self.reportCallback(msg)
-        }
     }
 
     /// Reset all timing stats and latency.

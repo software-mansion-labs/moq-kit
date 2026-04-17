@@ -311,7 +311,7 @@ public final class MoQPlayer {
             MoQLogger.player.debug("\(report)")
         }
 
-        renderer.setPendingTrack(newTrack) { [weak self] in
+        renderer.setPendingTrack(newTrack) {
             // Called on enqueueQueue when the renderer promotes the pending track.
             oldTask?.cancel()
             oldSub?.close()
@@ -504,36 +504,30 @@ public final class MoQPlayer {
 
             for await frame in subscription.frames {
                 if Task.isCancelled { break }
-                do {
-                    if Self.isDiscontinuity(
-                        currentUs: frame.timestampUs, lastUs: lastPtsUs,
-                        keyframe: frame.keyframe
-                    ) {
-                        MoQLogger.player.debug("Video discontinuity detected")
-                        tracer?.reset()
-                    }
-                    lastPtsUs = frame.timestampUs
+                if Self.isDiscontinuity(
+                    currentUs: frame.timestampUs, lastUs: lastPtsUs,
+                    keyframe: frame.keyframe
+                ) {
+                    MoQLogger.player.debug("Video discontinuity detected")
+                    tracer?.reset()
+                }
+                lastPtsUs = frame.timestampUs
 
-                    metrics.recordVideoBytes(frame.payload.count)
-                    tracer?.record(ptsUs: frame.timestampUs)
+                metrics.recordVideoBytes(frame.payload.count)
+                tracer?.record(ptsUs: frame.timestampUs)
 
-                    guard try track.insert(
-                        payload: frame.payload,
-                        timestampUs: frame.timestampUs,
-                        keyframe: frame.keyframe) != nil
-                    else { continue }
+                track.insert(
+                    payload: frame.payload,
+                    timestampUs: frame.timestampUs,
+                    keyframe: frame.keyframe)
 
-                    if firstFrame && !isSwitch {
-                        firstFrame = false
-                        metrics.markFirstVideoFrame()
-                        continuation.yield(.trackPlaying(.video))
-                    } else if firstFrame {
-                        firstFrame = false
-                        metrics.markFirstVideoFrame()
-                    }
-                } catch {
-                    MoQLogger.player.error("Video frame processing error: \(error)")
-                    continuation.yield(.error(.video, error.localizedDescription))
+                if firstFrame && !isSwitch {
+                    firstFrame = false
+                    metrics.markFirstVideoFrame()
+                    continuation.yield(.trackPlaying(.video))
+                } else if firstFrame {
+                    firstFrame = false
+                    metrics.markFirstVideoFrame()
                 }
             }
             if !Task.isCancelled {

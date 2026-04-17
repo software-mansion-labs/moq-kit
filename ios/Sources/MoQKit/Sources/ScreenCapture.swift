@@ -42,7 +42,7 @@ public final class ScreenCapture: @unchecked Sendable {
     public func stop() async {
         guard isRunning else { return }
         isRunning = false
-        try? await RPScreenRecorder.shared().stopCapture()
+        RPScreenRecorder.shared().stopCapture()
         videoSource.onFrame = nil
         audioSource.onFrame = nil
     }
