@@ -9,12 +9,13 @@ final class BoyDemoViewModel: ObservableObject {
     private static let viewerPrefix = "viewer/boy"
     private static let repeatIntervalNs: UInt64 = 10_000_000
     private static let longPressThresholdNs: UInt64 = 300_000_000
+    private static let defaultTargetLatencyMs: UInt64 = 200
 
     @Published private(set) var sessionState: MoQSessionState = .idle
     @Published private(set) var games: [BoyGame] = []
     @Published private(set) var currentEntry: BroadcastEntry?
     @Published private(set) var selectedGamePath: String?
-    @Published private(set) var viewerId: String?
+    @Published var targetLatencyMs: Double = Double(defaultTargetLatencyMs)
     @Published var lastError: String?
 
     private var session: MoQSession?
@@ -41,12 +42,16 @@ final class BoyDemoViewModel: ObservableObject {
         sessionState == .connecting || sessionState == .connected
     }
 
-    var canSelectGame: Bool {
-        sessionState == .connected && !games.isEmpty
+    var isConnecting: Bool {
+        sessionState == .connecting
     }
 
-    var canOpenConsole: Bool {
-        sessionState == .connected && selectedGamePath != nil
+    var isConnected: Bool {
+        sessionState == .connected
+    }
+
+    var hasAvailableGames: Bool {
+        !games.isEmpty
     }
 
     var controlsEnabled: Bool {
@@ -54,68 +59,38 @@ final class BoyDemoViewModel: ObservableObject {
     }
 
     var selectedGameName: String? {
-        games.first(where: { $0.broadcastPath == selectedGamePath })?.name
-    }
-
-    var stateLabel: String {
-        switch sessionState {
-        case .idle:
-            return "idle"
-        case .connecting:
-            return "connecting"
-        case .connected:
-            return "connected"
-        case .error(let message):
-            return "error: \(message)"
-        case .closed:
-            return "closed"
-        }
-    }
-
-    var stateColor: Color {
-        switch sessionState {
-        case .idle, .closed:
-            return .gray
-        case .connecting:
-            return .orange
-        case .connected:
-            return .green
-        case .error:
-            return .red
-        }
-    }
-
-    var gamePickerPlaceholder: String {
-        if sessionState == .connecting {
-            return "Connecting..."
-        }
-        if sessionState != .connected {
-            return "Connect first"
-        }
-        if games.isEmpty {
-            return "Waiting for broadcasts"
-        }
-        return "Select"
+        guard let selectedGamePath else { return nil }
+        return games.first(where: { $0.broadcastPath == selectedGamePath })?.name
+            ?? Self.displayName(for: selectedGamePath)
     }
 
     var placeholderCopy: BoyScreenCopy {
         if sessionState == .connecting {
             return BoyScreenCopy(
-                title: "Booting link cable",
-                subtitle: "Waiting for the relay session to finish connecting."
+                title: "Powering on",
+                subtitle: "The relay session is starting up."
             )
         }
         if sessionState != .connected {
             return BoyScreenCopy(
-                title: "Press Connect",
-                subtitle:
-                    "The console stays on screen, but the relay session only starts when you tap Connect."
+                title: "Power is off",
+                subtitle: "Slide the switch at the top to connect this console."
+            )
+        }
+        if let selectedGameName {
+            return BoyScreenCopy(
+                title: "Waiting for \(selectedGameName)",
+                subtitle: "This cartridge will start as soon as its broadcast appears on the relay."
             )
         }
         return BoyScreenCopy(
-            title: "Choose a game",
-            subtitle: "Broadcasts announced under boy/game will appear in the dropdown."
+            title: "Insert a cartridge",
+            subtitle: "Flip the console, choose a game, then flip back to play."
         )
+    }
+
+    var latencyLabel: String {
+        "\(Int(targetLatencyMs)) ms"
     }
 
     func connect() {
@@ -181,7 +156,6 @@ final class BoyDemoViewModel: ObservableObject {
         self.viewerPath = nil
         self.commandPublisher = nil
         self.commandEmitter = nil
-        self.viewerId = nil
         self.announcedGames.removeAll()
         self.games = []
         self.selectedGamePath = nil
@@ -199,26 +173,25 @@ final class BoyDemoViewModel: ObservableObject {
     }
 
     func selectGame(path: String?) {
-        guard selectedGamePath != path else { return }
+        let changedSelection = selectedGamePath != path
         selectedGamePath = path
         heldButtons.removeAll()
         holdStartTimes.removeAll()
         repeatTask?.cancel()
         repeatTask = nil
         lastError = nil
-    }
 
-    func openConsole() {
-        lastError = nil
+        guard changedSelection || path == nil || currentEntry?.broadcastPath != path else { return }
 
         Task { [weak self] in
-            await self?.startSelectedGame()
-        }
-    }
+            guard let self else { return }
+            if path == nil {
+                await self.stopCurrentPlayback()
+                return
+            }
 
-    func closeConsole() {
-        Task { [weak self] in
-            await self?.stopCurrentPlayback()
+            guard self.sessionState == .connected else { return }
+            await self.startSelectedGame()
         }
     }
 
@@ -242,14 +215,27 @@ final class BoyDemoViewModel: ObservableObject {
         updateRepeatLoop()
     }
 
+    func updateTargetLatency(ms: Double) {
+        let steppedLatency = min(2000, max(50, (ms / 50).rounded() * 50))
+        targetLatencyMs = steppedLatency
+        currentEntry?.updateTargetLatency(ms: UInt64(steppedLatency))
+    }
+
     private func handleAvailableBroadcast(_ info: MoQBroadcastInfo) async {
         guard let game = Self.makeGame(from: info) else { return }
 
         announcedGames[game.broadcastPath] = info
         rebuildGameList()
 
-        if selectedGamePath == game.broadcastPath {
-            await replaceCurrentBroadcast(with: info)
+        if selectedGamePath == game.broadcastPath, sessionState == .connected {
+            let needsPlaybackRefresh =
+                currentEntry?.broadcastPath != game.broadcastPath
+                || currentEntry?.offline == true
+                || commandEmitter == nil
+
+            if needsPlaybackRefresh {
+                await startSelectedGame()
+            }
         }
     }
 
@@ -258,7 +244,6 @@ final class BoyDemoViewModel: ObservableObject {
         rebuildGameList()
 
         guard selectedGamePath == path else { return }
-        selectedGamePath = nil
         await stopCurrentPlayback()
     }
 
@@ -290,14 +275,14 @@ final class BoyDemoViewModel: ObservableObject {
         let entry = BroadcastEntry(
             info: info,
             initialVideoTrack: selectedTracks.videoTrack,
-            initialLatencyMs: 120
+            initialLatencyMs: UInt64(targetLatencyMs)
         )
         currentEntry = entry
 
         do {
             let player = try MoQPlayer(
                 tracks: selectedTracks.tracks,
-                targetBufferingMs: 120
+                targetBufferingMs: UInt64(targetLatencyMs)
             )
             entry.attach(player: player)
             try await player.play()
@@ -321,7 +306,6 @@ final class BoyDemoViewModel: ObservableObject {
         }
 
         viewerPath = nil
-        viewerId = nil
         commandPublisher = nil
         commandEmitter = nil
 
@@ -347,7 +331,6 @@ final class BoyDemoViewModel: ObservableObject {
             self.commandEmitter = emitter
             self.commandPublisher = publisher
             self.viewerPath = viewerPath
-            self.viewerId = viewerId
             sendHeldButtons()
             updateRepeatLoop()
         } catch {

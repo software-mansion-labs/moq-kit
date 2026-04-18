@@ -42,6 +42,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     func updateTargetLatency(ms: UInt64) {
+        targetLatencyMs = Double(ms)
         player?.updateTargetLatency(ms: ms)
     }
 

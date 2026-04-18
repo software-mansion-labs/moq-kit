@@ -3,59 +3,54 @@ import SwiftUI
 struct BoyDemoView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel = BoyDemoViewModel()
-    @State private var showsConsole = false
 
     var body: some View {
         ZStack {
-            Color(red: 0.95, green: 0.95, blue: 0.91)
+            LinearGradient(
+                colors: [
+                    Color(red: 0.98, green: 0.96, blue: 0.90),
+                    Color(red: 0.88, green: 0.91, blue: 0.84)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .overlay {
+                RadialGradient(
+                    colors: [
+                        .white.opacity(0.45),
+                        .clear
+                    ],
+                    center: .topLeading,
+                    startRadius: 40,
+                    endRadius: 420
+                )
+            }
                 .ignoresSafeArea()
 
-            if showsConsole {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
 
-                    BoyConsoleView(viewModel: viewModel)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 16)
+                BoyConsoleView(viewModel: viewModel)
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
 
-                    Spacer(minLength: 0)
-                }
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        BoyConnectionCardView(viewModel: viewModel) {
-                            showsConsole = true
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20)
-                }
+                Spacer(minLength: 0)
             }
         }
         .navigationTitle("Boy")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    if showsConsole {
-                        showsConsole = false
-                        viewModel.closeConsole()
-                    } else {
-                        viewModel.stop()
-                        dismiss()
-                    }
-                } label: {
-                    Label("Back", systemImage: "chevron.left")
-                }
-            }
-        }
         .onDisappear {
             viewModel.stop()
         }
-        .onChange(of: viewModel.sessionState) { _, state in
-            if state != .connected {
-                showsConsole = false
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    viewModel.stop()
+                    dismiss()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
             }
         }
     }
