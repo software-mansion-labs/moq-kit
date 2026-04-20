@@ -34,7 +34,7 @@ public enum MoQVideoOrientation: Sendable {
 }
 
 /// Wraps `AVCaptureSession` to capture video frames from a camera device.
-public final class CameraCapture: NSObject, MoQFrameSource, @unchecked Sendable {
+public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     public let captureSession = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.swmansion.MoQKit.CameraCapture")
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?

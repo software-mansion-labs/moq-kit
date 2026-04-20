@@ -1,7 +1,7 @@
 import AVFoundation
 
 /// Wraps `AVCaptureSession` to capture raw PCM audio from the microphone.
-public final class MicrophoneCapture: NSObject, MoQFrameSource, @unchecked Sendable {
+public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable {
     private let session = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.swmansion.MoQKit.MicrophoneCapture")
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?

@@ -1015,6 +1015,13 @@ public protocol MoqBroadcastConsumerProtocol: AnyObject, Sendable {
      */
     func subscribeMedia(name: String, container: Container, maxLatencyMs: UInt64) throws  -> MoqMediaConsumer
     
+    /**
+     * Subscribe to a track by name — same pattern as moq-boy's command/status tracks.
+     *
+     * Frames are returned as plain byte payloads with no codec or container parsing.
+     */
+    func subscribeTrack(name: String) throws  -> MoqTrackConsumer
+    
 }
 open class MoqBroadcastConsumer: MoqBroadcastConsumerProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1097,6 +1104,20 @@ open func subscribeMedia(name: String, container: Container, maxLatencyMs: UInt6
 })
 }
     
+    /**
+     * Subscribe to a track by name — same pattern as moq-boy's command/status tracks.
+     *
+     * Frames are returned as plain byte payloads with no codec or container parsing.
+     */
+open func subscribeTrack(name: String)throws  -> MoqTrackConsumer  {
+    return try  FfiConverterTypeMoqTrackConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastconsumer_subscribe_track(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),$0
+    )
+})
+}
+    
 
     
 }
@@ -1150,6 +1171,11 @@ public func FfiConverterTypeMoqBroadcastConsumer_lower(_ value: MoqBroadcastCons
 public protocol MoqBroadcastProducerProtocol: AnyObject, Sendable {
     
     /**
+     * Create a consumer that reads from this broadcast's tracks.
+     */
+    func consume() throws  -> MoqBroadcastConsumer
+    
+    /**
      * Finish this publisher, finalizing the catalog stream.
      */
     func finish() throws 
@@ -1162,11 +1188,12 @@ public protocol MoqBroadcastProducerProtocol: AnyObject, Sendable {
     func publishMedia(format: String, `init`: Data) throws  -> MoqMediaProducer
     
     /**
-     * Create a new raw object track for this broadcast.
+     * Create a track for arbitrary byte payloads — no codec or container.
      *
-     * Each written object becomes one MoQ object/frame on the named track.
+     * Same pattern as moq-boy's `status` and `command` tracks: raw UTF-8/JSON
+     * bytes written directly to moq-lite groups with no media framing.
      */
-    func publishObject(name: String) throws  -> MoqObjectProducer
+    func publishTrack(name: String) throws  -> MoqTrackProducer
     
 }
 open class MoqBroadcastProducer: MoqBroadcastProducerProtocol, @unchecked Sendable {
@@ -1235,6 +1262,17 @@ public convenience init()throws  {
 
     
     /**
+     * Create a consumer that reads from this broadcast's tracks.
+     */
+open func consume()throws  -> MoqBroadcastConsumer  {
+    return try  FfiConverterTypeMoqBroadcastConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastproducer_consume(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
      * Finish this publisher, finalizing the catalog stream.
      */
 open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
@@ -1260,13 +1298,14 @@ open func publishMedia(format: String, `init`: Data)throws  -> MoqMediaProducer 
 }
     
     /**
-     * Create a new raw object track for this broadcast.
+     * Create a track for arbitrary byte payloads — no codec or container.
      *
-     * Each written object becomes one MoQ object/frame on the named track.
+     * Same pattern as moq-boy's `status` and `command` tracks: raw UTF-8/JSON
+     * bytes written directly to moq-lite groups with no media framing.
      */
-open func publishObject(name: String)throws  -> MoqObjectProducer  {
-    return try  FfiConverterTypeMoqObjectProducer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqbroadcastproducer_publish_object(
+open func publishTrack(name: String)throws  -> MoqTrackProducer  {
+    return try  FfiConverterTypeMoqTrackProducer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqbroadcastproducer_publish_track(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(name),$0
     )
@@ -1677,6 +1716,331 @@ public func FfiConverterTypeMoqClient_lower(_ value: MoqClient) -> UInt64 {
 
 
 
+public protocol MoqGroupConsumerProtocol: AnyObject, Sendable {
+    
+    func cancel() 
+    
+    /**
+     * Read the next frame in this group. Returns `None` when the group ends.
+     */
+    func readFrame() async throws  -> Data?
+    
+    /**
+     * The sequence number of this group within the track.
+     */
+    func sequence()  -> UInt64
+    
+}
+open class MoqGroupConsumer: MoqGroupConsumerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqgroupconsumer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqgroupconsumer(handle, $0) }
+    }
+
+    
+
+    
+open func cancel()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqgroupconsumer_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Read the next frame in this group. Returns `None` when the group ends.
+     */
+open func readFrame()async throws  -> Data?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqgroupconsumer_read_frame(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_moq_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_moq_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionData.lift,
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+    /**
+     * The sequence number of this group within the track.
+     */
+open func sequence() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqgroupconsumer_sequence(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqGroupConsumer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqGroupConsumer
+
+    public static func lift(_ handle: UInt64) throws -> MoqGroupConsumer {
+        return MoqGroupConsumer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqGroupConsumer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqGroupConsumer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqGroupConsumer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqGroupConsumer_lift(_ handle: UInt64) throws -> MoqGroupConsumer {
+    return try FfiConverterTypeMoqGroupConsumer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqGroupConsumer_lower(_ value: MoqGroupConsumer) -> UInt64 {
+    return FfiConverterTypeMoqGroupConsumer.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqGroupProducerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Create a consumer that reads frames from this group.
+     */
+    func consume() throws  -> MoqGroupConsumer
+    
+    /**
+     * Mark the group as complete. No more frames can be written.
+     */
+    func finish() throws 
+    
+    /**
+     * The sequence number of this group within the track.
+     */
+    func sequence()  -> UInt64
+    
+    /**
+     * Write a frame into this group.
+     */
+    func writeFrame(payload: Data) throws 
+    
+}
+open class MoqGroupProducer: MoqGroupProducerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqgroupproducer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqgroupproducer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Create a consumer that reads frames from this group.
+     */
+open func consume()throws  -> MoqGroupConsumer  {
+    return try  FfiConverterTypeMoqGroupConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqgroupproducer_consume(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Mark the group as complete. No more frames can be written.
+     */
+open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqgroupproducer_finish(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * The sequence number of this group within the track.
+     */
+open func sequence() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqgroupproducer_sequence(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Write a frame into this group.
+     */
+open func writeFrame(payload: Data)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqgroupproducer_write_frame(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(payload),$0
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqGroupProducer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqGroupProducer
+
+    public static func lift(_ handle: UInt64) throws -> MoqGroupProducer {
+        return MoqGroupProducer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqGroupProducer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqGroupProducer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqGroupProducer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqGroupProducer_lift(_ handle: UInt64) throws -> MoqGroupProducer {
+    return try FfiConverterTypeMoqGroupProducer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqGroupProducer_lower(_ value: MoqGroupProducer) -> UInt64 {
+    return FfiConverterTypeMoqGroupProducer.lower(value)
+}
+
+
+
+
+
+
 public protocol MoqMediaConsumerProtocol: AnyObject, Sendable {
     
     /**
@@ -1958,148 +2322,6 @@ public func FfiConverterTypeMoqMediaProducer_lift(_ handle: UInt64) throws -> Mo
 #endif
 public func FfiConverterTypeMoqMediaProducer_lower(_ value: MoqMediaProducer) -> UInt64 {
     return FfiConverterTypeMoqMediaProducer.lower(value)
-}
-
-
-
-
-
-
-public protocol MoqObjectProducerProtocol: AnyObject, Sendable {
-    
-    /**
-     * Finish this object track.
-     */
-    func finish() throws 
-    
-    /**
-     * Write a raw object to this track.
-     *
-     * If `end_group` is true, this object finalizes the current group.
-     */
-    func writeObject(payload: Data, endGroup: Bool) throws 
-    
-}
-open class MoqObjectProducer: MoqObjectProducerProtocol, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_moq_ffi_fn_clone_moqobjectproducer(self.handle, $0) }
-    }
-    // No primary constructor declared for this class.
-
-    deinit {
-        if handle == 0 {
-            // Mock objects have handle=0 don't try to free them
-            return
-        }
-
-        try! rustCall { uniffi_moq_ffi_fn_free_moqobjectproducer(handle, $0) }
-    }
-
-    
-
-    
-    /**
-     * Finish this object track.
-     */
-open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqobjectproducer_finish(
-            self.uniffiCloneHandle(),$0
-    )
-}
-}
-    
-    /**
-     * Write a raw object to this track.
-     *
-     * If `end_group` is true, this object finalizes the current group.
-     */
-open func writeObject(payload: Data, endGroup: Bool)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
-    uniffi_moq_ffi_fn_method_moqobjectproducer_write_object(
-            self.uniffiCloneHandle(),
-        FfiConverterData.lower(payload),
-        FfiConverterBool.lower(endGroup),$0
-    )
-}
-}
-    
-
-    
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeMoqObjectProducer: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = MoqObjectProducer
-
-    public static func lift(_ handle: UInt64) throws -> MoqObjectProducer {
-        return MoqObjectProducer(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: MoqObjectProducer) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqObjectProducer {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: MoqObjectProducer, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMoqObjectProducer_lift(_ handle: UInt64) throws -> MoqObjectProducer {
-    return try FfiConverterTypeMoqObjectProducer.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeMoqObjectProducer_lower(_ value: MoqObjectProducer) -> UInt64 {
-    return FfiConverterTypeMoqObjectProducer.lower(value)
 }
 
 
@@ -2536,6 +2758,379 @@ public func FfiConverterTypeMoqSession_lift(_ handle: UInt64) throws -> MoqSessi
 #endif
 public func FfiConverterTypeMoqSession_lower(_ value: MoqSession) -> UInt64 {
     return FfiConverterTypeMoqSession.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqTrackConsumerProtocol: AnyObject, Sendable {
+    
+    func cancel() 
+    
+    /**
+     * Return the next group in sequence order, skipping forward if the reader
+     * has fallen behind. Returns `None` when the track ends.
+     */
+    func nextGroup() async throws  -> MoqGroupConsumer?
+    
+    /**
+     * Read the first frame of the next group.
+     *
+     * Convenience for tracks using one-frame-per-group (like moq-boy's
+     * status/command tracks). Returns `None` when the track ends.
+     */
+    func readFrame() async throws  -> Data?
+    
+    /**
+     * Return the next group in arrival order. Returns `None` when the track ends.
+     *
+     * Groups are returned as they arrive on the wire, which may be out of sequence
+     * order (e.g. if a later group lands before an earlier one on a separate stream).
+     */
+    func recvGroup() async throws  -> MoqGroupConsumer?
+    
+}
+open class MoqTrackConsumer: MoqTrackConsumerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqtrackconsumer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqtrackconsumer(handle, $0) }
+    }
+
+    
+
+    
+open func cancel()  {try! rustCall() {
+    uniffi_moq_ffi_fn_method_moqtrackconsumer_cancel(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Return the next group in sequence order, skipping forward if the reader
+     * has fallen behind. Returns `None` when the track ends.
+     */
+open func nextGroup()async throws  -> MoqGroupConsumer?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqtrackconsumer_next_group(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_moq_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_moq_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeMoqGroupConsumer.lift,
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+    /**
+     * Read the first frame of the next group.
+     *
+     * Convenience for tracks using one-frame-per-group (like moq-boy's
+     * status/command tracks). Returns `None` when the track ends.
+     */
+open func readFrame()async throws  -> Data?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqtrackconsumer_read_frame(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_moq_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_moq_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionData.lift,
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+    /**
+     * Return the next group in arrival order. Returns `None` when the track ends.
+     *
+     * Groups are returned as they arrive on the wire, which may be out of sequence
+     * order (e.g. if a later group lands before an earlier one on a separate stream).
+     */
+open func recvGroup()async throws  -> MoqGroupConsumer?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqtrackconsumer_recv_group(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_moq_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_moq_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionTypeMoqGroupConsumer.lift,
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqTrackConsumer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqTrackConsumer
+
+    public static func lift(_ handle: UInt64) throws -> MoqTrackConsumer {
+        return MoqTrackConsumer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqTrackConsumer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqTrackConsumer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqTrackConsumer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqTrackConsumer_lift(_ handle: UInt64) throws -> MoqTrackConsumer {
+    return try FfiConverterTypeMoqTrackConsumer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqTrackConsumer_lower(_ value: MoqTrackConsumer) -> UInt64 {
+    return FfiConverterTypeMoqTrackConsumer.lower(value)
+}
+
+
+
+
+
+
+public protocol MoqTrackProducerProtocol: AnyObject, Sendable {
+    
+    /**
+     * Append a new group to the track, returning a producer for writing frames into it.
+     */
+    func appendGroup() throws  -> MoqGroupProducer
+    
+    /**
+     * Create a consumer that reads from this producer's track.
+     *
+     * Useful for local pub/sub without going through an origin/broadcast.
+     */
+    func consume() throws  -> MoqTrackConsumer
+    
+    func finish() throws 
+    
+    /**
+     * Convenience: write a single-frame group in one call — the same pattern
+     * used by moq-boy's status/command tracks.
+     */
+    func writeFrame(payload: Data) throws 
+    
+}
+open class MoqTrackProducer: MoqTrackProducerProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_moq_ffi_fn_clone_moqtrackproducer(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_moq_ffi_fn_free_moqtrackproducer(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Append a new group to the track, returning a producer for writing frames into it.
+     */
+open func appendGroup()throws  -> MoqGroupProducer  {
+    return try  FfiConverterTypeMoqGroupProducer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqtrackproducer_append_group(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Create a consumer that reads from this producer's track.
+     *
+     * Useful for local pub/sub without going through an origin/broadcast.
+     */
+open func consume()throws  -> MoqTrackConsumer  {
+    return try  FfiConverterTypeMoqTrackConsumer_lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqtrackproducer_consume(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqtrackproducer_finish(
+            self.uniffiCloneHandle(),$0
+    )
+}
+}
+    
+    /**
+     * Convenience: write a single-frame group in one call — the same pattern
+     * used by moq-boy's status/command tracks.
+     */
+open func writeFrame(payload: Data)throws   {try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqtrackproducer_write_frame(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(payload),$0
+    )
+}
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMoqTrackProducer: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = MoqTrackProducer
+
+    public static func lift(_ handle: UInt64) throws -> MoqTrackProducer {
+        return MoqTrackProducer(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: MoqTrackProducer) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MoqTrackProducer {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: MoqTrackProducer, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqTrackProducer_lift(_ handle: UInt64) throws -> MoqTrackProducer {
+    return try FfiConverterTypeMoqTrackProducer.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMoqTrackProducer_lower(_ value: MoqTrackProducer) -> UInt64 {
+    return FfiConverterTypeMoqTrackProducer.lower(value)
 }
 
 
@@ -3232,6 +3827,30 @@ fileprivate struct FfiConverterOptionTypeMoqAnnouncement: FfiConverterRustBuffer
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeMoqGroupConsumer: FfiConverterRustBuffer {
+    typealias SwiftType = MoqGroupConsumer?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeMoqGroupConsumer.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeMoqGroupConsumer.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeMoqOriginProducer: FfiConverterRustBuffer {
     typealias SwiftType = MoqOriginProducer?
 
@@ -3460,16 +4079,40 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_media() != 62819) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastconsumer_subscribe_track() != 423) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_moq_ffi_checksum_method_moqcatalogconsumer_cancel() != 1059) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqcatalogconsumer_next() != 42881) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_moq_ffi_checksum_method_moqgroupconsumer_cancel() != 21782) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqgroupconsumer_read_frame() != 28945) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqgroupconsumer_sequence() != 61070) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_moq_ffi_checksum_method_moqmediaconsumer_cancel() != 12542) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqmediaconsumer_next() != 26125) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackconsumer_cancel() != 13373) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackconsumer_next_group() != 38789) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackconsumer_read_frame() != 36690) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackconsumer_recv_group() != 26719) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqannounced_cancel() != 11787) {
@@ -3502,13 +4145,28 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_method_moqoriginproducer_publish() != 24937) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_consume() != 46595) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_finish() != 23327) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_publish_media() != 59397) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_publish_object() != 21350) {
+    if (uniffi_moq_ffi_checksum_method_moqbroadcastproducer_publish_track() != 63909) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqgroupproducer_consume() != 12315) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqgroupproducer_finish() != 39760) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqgroupproducer_sequence() != 11821) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqgroupproducer_write_frame() != 35582) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqmediaproducer_finish() != 13508) {
@@ -3517,10 +4175,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_method_moqmediaproducer_write_frame() != 4813) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqobjectproducer_finish() != 17371) {
+    if (uniffi_moq_ffi_checksum_method_moqtrackproducer_append_group() != 28433) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_moq_ffi_checksum_method_moqobjectproducer_write_object() != 4891) {
+    if (uniffi_moq_ffi_checksum_method_moqtrackproducer_consume() != 57360) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackproducer_finish() != 52719) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackproducer_write_frame() != 62709) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqclient_cancel() != 42343) {

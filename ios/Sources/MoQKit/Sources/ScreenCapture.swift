@@ -1,12 +1,27 @@
-import ReplayKit
 import CoreMedia
+import ReplayKit
+
+/// A passthrough frame source for wiring non-conforming producers
+/// (e.g. ScreenCapture's separate video/audio streams).
+public final class FrameRelay: FrameSource, @unchecked Sendable {
+    public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
+
+    public init() {}
+
+    /// Feed a frame to the consumer. Returns `false` if the consumer signaled stop,
+    /// or `true` if no consumer is attached.
+    @discardableResult
+    public func send(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        onFrame?(sampleBuffer) ?? true
+    }
+}
 
 /// Wraps `RPScreenRecorder` to capture the device screen and optionally app audio.
 public final class ScreenCapture: @unchecked Sendable {
     /// Frame source for captured video frames.
-    public let videoSource = MoQFrameRelay()
+    public let videoSource = FrameRelay()
     /// Frame source for captured app audio frames.
-    public let audioSource = MoQFrameRelay()
+    public let audioSource = FrameRelay()
 
     private var isRunning = false
 

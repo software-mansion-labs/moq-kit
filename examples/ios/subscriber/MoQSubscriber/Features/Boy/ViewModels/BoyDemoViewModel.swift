@@ -23,7 +23,7 @@ final class BoyDemoViewModel: ObservableObject {
     private var stateObserverTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
     private var commandPublisher: MoQPublisher?
-    private var commandEmitter: MoQObjectEmitter?
+    private var commandEmitter: DataTrackEmitter?
     private var viewerPath: String?
     private var heldButtons: Set<BoyButton> = []
     private var holdStartTimes: [BoyButton: UInt64] = [:]
@@ -317,10 +317,10 @@ final class BoyDemoViewModel: ObservableObject {
     private func startCommandPublishing(for game: BoyGame) async {
         guard let session else { return }
 
-        let emitter = MoQObjectEmitter()
+        let emitter = DataTrackEmitter()
         do {
             let publisher = try MoQPublisher()
-            publisher.addObjectTrack(name: "command", source: emitter)
+            publisher.addDataTrack(name: "command", source: emitter)
 
             let viewerId = Self.makeViewerId()
             let viewerPath = "\(Self.viewerPrefix)/\(game.viewerPathComponent)/\(viewerId)"
