@@ -54,7 +54,7 @@ final class VideoRendererTrack: @unchecked Sendable {
 
                 notify = (shouldNotify || pendingKeyframe) ? onDataAvailable : nil
             } catch {
-                MoQLogger.player.error("Failed to insert video sample: \(error)")
+                KitLogger.player.error("Failed to insert video sample: \(error)")
             }
         }
 

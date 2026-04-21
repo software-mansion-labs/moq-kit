@@ -1,10 +1,10 @@
 import Foundation
 import MoQKitFFI
 
-// MARK: - MoQSessionError (codec/format related)
+// MARK: - SessionError (codec/format related)
 
-/// Errors thrown by ``MoQSession`` and ``MoQPlayer``.
-public enum MoQSessionError: Error, Sendable {
+/// Errors thrown by ``Session`` and ``Player``.
+public enum SessionError: Error, Sendable {
     /// The track uses a codec that MoQKit does not support.
     case unsupportedCodec(String)
     /// A video codec requires an out-of-band parameter set (SPS/PPS/VPS) but none was provided.
@@ -13,15 +13,15 @@ public enum MoQSessionError: Error, Sendable {
     case formatDescriptionFailed(OSStatus)
     /// `CMSampleBuffer` creation failed with the given OS status code.
     case sampleBufferFailed(OSStatus)
-    /// ``MoQSession/connect()`` was called on a session that is already connecting or connected.
+    /// ``Session/connect()`` was called on a session that is already connecting or connected.
     case alreadyConnected
-    /// ``MoQSession/connect()`` was called after ``MoQSession/close()`` — create a new session instead.
+    /// ``Session/connect()`` was called after ``Session/close()`` — create a new session instead.
     case alreadyClosed
     /// No tracks were found in the broadcast catalog.
     case noTracksAvailable
     /// No broadcast was found at the given path.
     case noBroadcastAvailable
-    /// ``MoQPlayer`` was initialised with an empty track list.
+    /// ``Player`` was initialised with an empty track list.
     case noTracksSelected
     /// A configuration invariant was violated (details in the associated string).
     case invalidConfiguration(String)
@@ -34,38 +34,38 @@ public enum MoQSessionError: Error, Sendable {
 
 // MARK: - State
 
-/// The lifecycle state of a ``MoQSession``.
-public enum MoQSessionState: Sendable, Equatable {
-    /// Initial state. ``MoQSession/connect()`` has not been called yet.
+/// The lifecycle state of a ``Session``.
+public enum SessionState: Sendable, Equatable {
+    /// Initial state. ``Session/connect()`` has not been called yet.
     case idle
     /// QUIC handshake is in progress.
     case connecting
     /// Transport is ready. The session is watching for broadcast announcements and
-    /// will emit events on ``MoQSession/broadcasts``.
+    /// will emit events on ``Session/broadcasts``.
     case connected
     /// An irrecoverable error occurred. The associated string contains a human-readable
     /// description. The session cannot be reused — create a new one.
     case error(String)
-    /// The session was closed via ``MoQSession/close()``. No further events will be emitted.
+    /// The session was closed via ``Session/close()``. No further events will be emitted.
     case closed
 }
 
-// MARK: - MoQSession
+// MARK: - Session
 
 /// Manages a single MoQ relay connection and surfaces available broadcasts.
 ///
-/// `MoQSession` is the primary entry point for the MoQKit SDK. Create one with a relay
+/// `Session` is the primary entry point for the MoQKit SDK. Create one with a relay
 /// URL and call ``connect()``. To discover live streams, call ``subscribe(prefix:)``
 /// after connecting and observe ``broadcasts``:
 ///
 /// ```swift
-/// let session = MoQSession(url: "https://relay.example.com/moq")
+/// let session = Session(url: "https://relay.example.com/moq")
 /// try await session.connect()
 /// try session.subscribe()
 ///
 /// for await event in session.broadcasts {
 ///     if case .available(let info) = event {
-///         let player = try MoQPlayer(tracks: info.videoTracks + info.audioTracks)
+///         let player = try Player(tracks: info.videoTracks + info.audioTracks)
 ///         try await player.play()
 ///     }
 /// }
@@ -74,32 +74,32 @@ public enum MoQSessionState: Sendable, Equatable {
 /// To publish without consuming, simply omit the ``subscribe(prefix:)`` call:
 ///
 /// ```swift
-/// let session = MoQSession(url: "https://relay.example.com/moq")
+/// let session = Session(url: "https://relay.example.com/moq")
 /// try await session.connect()
 /// try session.publish(path: "live/my-stream", publisher: publisher)
 /// ```
 ///
 /// The class is `@MainActor` — all calls must be made from the main actor.
 @MainActor
-public final class MoQSession {
-    /// Emits the current ``MoQSessionState`` and every subsequent state change.
+public final class Session {
+    /// Emits the current ``SessionState`` and every subsequent state change.
     ///
     /// The stream always yields `.idle` as its first element. It completes when the
     /// session reaches `.closed`.
-    public let state: AsyncStream<MoQSessionState>
+    public let state: AsyncStream<SessionState>
 
-    /// Emits ``MoQBroadcastEvent`` values as broadcasts appear and disappear on the relay.
+    /// Emits ``BroadcastEvent`` values as broadcasts appear and disappear on the relay.
     ///
-    /// Each `.available` event carries a ``MoQBroadcastInfo`` describing the catalog of
+    /// Each `.available` event carries a ``BroadcastInfo`` describing the catalog of
     /// tracks for that broadcast. A subsequent `.unavailable` event with the same path
     /// signals that the broadcast has ended.
-    public let broadcasts: AsyncStream<MoQBroadcastEvent>
+    public let broadcasts: AsyncStream<BroadcastEvent>
 
     private let url: String
 
-    private let stateContinuation: AsyncStream<MoQSessionState>.Continuation
-    private let broadcastsContinuation: AsyncStream<MoQBroadcastEvent>.Continuation
-    private var currentState: MoQSessionState = .idle
+    private let stateContinuation: AsyncStream<SessionState>.Continuation
+    private let broadcastsContinuation: AsyncStream<BroadcastEvent>.Continuation
+    private var currentState: SessionState = .idle
 
     // Pipeline objects
     private var client: MoqClient?
@@ -114,7 +114,7 @@ public final class MoQSession {
     private var catalogConsumers: [String: MoqCatalogConsumer] = [:]
 
     // Per-path publish state
-    private var activePublishers: [String: MoQPublisher] = [:]
+    private var activePublishers: [String: Publisher] = [:]
 
     // Background tasks
     private var sessionMonitorTask: Task<Void, Never>?
@@ -129,11 +129,11 @@ public final class MoQSession {
         } catch {}
         self.url = url
 
-        var stateCont: AsyncStream<MoQSessionState>.Continuation!
+        var stateCont: AsyncStream<SessionState>.Continuation!
         self.state = AsyncStream { stateCont = $0 }
         self.stateContinuation = stateCont
 
-        var broadcastsCont: AsyncStream<MoQBroadcastEvent>.Continuation!
+        var broadcastsCont: AsyncStream<BroadcastEvent>.Continuation!
         self.broadcasts = AsyncStream { broadcastsCont = $0 }
         self.broadcastsContinuation = broadcastsCont
 
@@ -145,16 +145,16 @@ public final class MoQSession {
     /// Transitions the session through `.connecting` → `.connected`. To start receiving
     /// broadcast announcements, call ``subscribe(prefix:)`` after connecting.
     ///
-    /// - Throws: ``MoQSessionError/alreadyConnected`` if called while connecting or connected.
-    /// - Throws: ``MoQSessionError/alreadyClosed`` if the session has already been closed.
-    /// - Throws: ``MoQSessionError/connectionFailed(_:)`` if the transport handshake fails.
+    /// - Throws: ``SessionError/alreadyConnected`` if called while connecting or connected.
+    /// - Throws: ``SessionError/alreadyClosed`` if the session has already been closed.
+    /// - Throws: ``SessionError/connectionFailed(_:)`` if the transport handshake fails.
     public func connect() async throws {
         guard currentState == .idle else {
-            if currentState == .closed { throw MoQSessionError.alreadyClosed }
-            throw MoQSessionError.alreadyConnected
+            if currentState == .closed { throw SessionError.alreadyClosed }
+            throw SessionError.alreadyConnected
         }
 
-        MoQLogger.session.debug("Connecting to \(self.url)")
+        KitLogger.session.debug("Connecting to \(self.url)")
         transition(to: .connecting)
 
         do {
@@ -184,31 +184,31 @@ public final class MoQSession {
                     try await session.closed()
                 } catch {
                     guard let self else { return }
-                    MoQLogger.session.warning("Session ended with error: \(error)")
+                    KitLogger.session.warning("Session ended with error: \(error)")
                     self.transition(to: .error("Session ended: \(error)"))
                     await self.close()
                     return
                 }
                 guard let self else { return }
                 if self.currentState == .connected {
-                    MoQLogger.session.warning("Session ended unexpectedly")
+                    KitLogger.session.warning("Session ended unexpectedly")
                     self.transition(to: .error("Session ended unexpectedly"))
                     await self.close()
                 }
             }
 
         } catch let error as MoqError {
-            MoQLogger.session.error("Connection failed: \(error)")
+            KitLogger.session.error("Connection failed: \(error)")
             transition(to: .error(error.localizedDescription))
             await tearDown()
-            throw MoQSessionError.connectionFailed(error.localizedDescription)
-        } catch let error as MoQSessionError {
-            MoQLogger.session.error("Connection failed: \(error)")
+            throw SessionError.connectionFailed(error.localizedDescription)
+        } catch let error as SessionError {
+            KitLogger.session.error("Connection failed: \(error)")
             transition(to: .error("\(error)"))
             await tearDown()
             throw error
         } catch {
-            MoQLogger.session.error("Connection failed: \(error)")
+            KitLogger.session.error("Connection failed: \(error)")
             transition(to: .error(error.localizedDescription))
             await tearDown()
             throw error
@@ -217,22 +217,22 @@ public final class MoQSession {
 
     /// Starts watching for broadcast announcements on the relay.
     ///
-    /// Call this after ``connect()`` to begin receiving ``MoQBroadcastEvent`` values on
+    /// Call this after ``connect()`` to begin receiving ``BroadcastEvent`` values on
     /// ``broadcasts``. This is not needed when the session is used only for publishing.
     ///
     /// - Parameter prefix: Only broadcasts whose path starts with this string will be surfaced.
     ///   Pass `""` (the default) to receive all broadcasts.
-    /// - Throws: ``MoQSessionError/invalidConfiguration(_:)`` if the session is not connected.
+    /// - Throws: ``SessionError/invalidConfiguration(_:)`` if the session is not connected.
     public func subscribe(prefix: String = "") throws {
         guard currentState == .connected else {
-            throw MoQSessionError.invalidConfiguration(
+            throw SessionError.invalidConfiguration(
                 "Session must be connected before subscribing")
         }
         guard let consumeOrigin else {
-            throw MoQSessionError.invalidConfiguration("Consume origin not available")
+            throw SessionError.invalidConfiguration("Consume origin not available")
         }
 
-        MoQLogger.session.debug("Subscribing to announcements with prefix: \(prefix)")
+        KitLogger.session.debug("Subscribing to announcements with prefix: \(prefix)")
 
         let consumer = consumeOrigin.consume()
         self.consumer = consumer
@@ -254,18 +254,18 @@ public final class MoQSession {
                     self.catalogConsumers[path]?.cancel()
                     self.catalogConsumers.removeValue(forKey: path)
 
-                    MoQLogger.session.debug("Broadcast active: \(path)")
+                    KitLogger.session.debug("Broadcast active: \(path)")
                     do {
                         try self.handleActiveBroadcast(
                             path: path, broadcast: broadcast)
                     } catch {
-                        MoQLogger.session.error(
+                        KitLogger.session.error(
                             "handleActiveBroadcast failed for \(path): \(error)")
                     }
                 } catch MoqError.Cancelled {
                     break
                 } catch {
-                    MoQLogger.session.error("announced() failed: \(error)")
+                    KitLogger.session.error("announced() failed: \(error)")
                     break
                 }
             }
@@ -275,31 +275,31 @@ public final class MoQSession {
     /// Publish a broadcast to the relay at the given path.
     ///
     /// The publisher's underlying `MoqBroadcastProducer` is registered with the relay origin.
-    /// Call ``MoQPublisher/start()`` after this to begin sending frames.
+    /// Call ``Publisher/start()`` after this to begin sending frames.
     ///
     /// - Parameters:
     ///   - path: The broadcast path on the relay (e.g. `"live/my-stream"`).
-    ///   - publisher: A configured ``MoQPublisher`` with at least one track added.
-    /// - Throws: ``MoQSessionError/invalidConfiguration(_:)`` if the session is not connected.
-    public func publish(path: String, publisher: MoQPublisher) throws {
+    ///   - publisher: A configured ``Publisher`` with at least one track added.
+    /// - Throws: ``SessionError/invalidConfiguration(_:)`` if the session is not connected.
+    public func publish(path: String, publisher: Publisher) throws {
         guard currentState == .connected else {
-            throw MoQSessionError.invalidConfiguration(
+            throw SessionError.invalidConfiguration(
                 "Session must be connected before publishing")
         }
         guard let publishOrigin else {
-            throw MoQSessionError.invalidConfiguration("Publish origin not available")
+            throw SessionError.invalidConfiguration("Publish origin not available")
         }
-        MoQLogger.publish.debug("Publishing broadcast at path: \(path)")
+        KitLogger.publish.debug("Publishing broadcast at path: \(path)")
         try publishOrigin.publish(path: path, broadcast: publisher.broadcast)
         activePublishers[path] = publisher
     }
 
     /// Stop publishing at the given path.
     ///
-    /// Calls ``MoQPublisher/stop()`` on the publisher and removes it from the session.
+    /// Calls ``Publisher/stop()`` on the publisher and removes it from the session.
     public func unpublish(path: String) {
         guard let publisher = activePublishers.removeValue(forKey: path) else { return }
-        MoQLogger.publish.debug("Unpublishing broadcast at path: \(path)")
+        KitLogger.publish.debug("Unpublishing broadcast at path: \(path)")
         publisher.stop()
     }
 
@@ -309,7 +309,7 @@ public final class MoQSession {
     /// streams. Safe to call multiple times — subsequent calls are no-ops.
     public func close() async {
         guard currentState != .closed else { return }
-        MoQLogger.session.debug("Closing session")
+        KitLogger.session.debug("Closing session")
         await tearDown()
         transition(to: .closed)
         stateContinuation.finish()
@@ -331,7 +331,7 @@ public final class MoQSession {
     // MARK: - Private
 
     private func handleActiveBroadcast(path: String, broadcast: MoqBroadcastConsumer) throws {
-        MoQLogger.session.debug("Subscribing to catalog for \(path)")
+        KitLogger.session.debug("Subscribing to catalog for \(path)")
         let catalogConsumer = try broadcast.subscribeCatalog()
         self.catalogConsumers[path] = catalogConsumer
 
@@ -340,13 +340,13 @@ public final class MoQSession {
             while !Task.isCancelled {
                 do {
                     guard let catalog = try await catalogConsumer.next() else {
-                        MoQLogger.session.debug("Catalog stream ended for \(path)")
+                        KitLogger.session.debug("Catalog stream ended for \(path)")
                         self.broadcastsContinuation.yield(.unavailable(path: path))
                         self.catalogConsumers.removeValue(forKey: path)
                         break
                     }
                     guard !Task.isCancelled else { break }
-                    MoQLogger.session.debug("Catalog updated for \(path)")
+                    KitLogger.session.debug("Catalog updated for \(path)")
                     let info = self.buildBroadcastInfo(
                         from: catalog, broadcast: broadcast, path: path)
                     self.broadcastsContinuation.yield(.available(info))
@@ -354,7 +354,7 @@ public final class MoQSession {
                     self.catalogConsumers.removeValue(forKey: path)
                     break
                 } catch {
-                    MoQLogger.session.error("subscribeCatalog() failed (\(path)): \(error)")
+                    KitLogger.session.error("subscribeCatalog() failed (\(path)): \(error)")
                     self.catalogConsumers.removeValue(forKey: path)
                     break
                 }
@@ -363,29 +363,29 @@ public final class MoQSession {
         self.activeBroadcasts[path] = task
     }
 
-    private func transition(to newState: MoQSessionState) {
-        MoQLogger.session.debug(
+    private func transition(to newState: SessionState) {
+        KitLogger.session.debug(
             "State: \(String(describing: self.currentState)) → \(String(describing: newState))")
         currentState = newState
         stateContinuation.yield(newState)
     }
 
-    /// Build a `MoQBroadcastInfo` by enumerating all video and audio renditions in the catalog.
+    /// Build a `BroadcastInfo` by enumerating all video and audio renditions in the catalog.
     private func buildBroadcastInfo(
         from catalog: MoqCatalog, broadcast: MoqBroadcastConsumer, path: String
-    ) -> MoQBroadcastInfo {
+    ) -> BroadcastInfo {
         let videoTracks = catalog.video.map { (name, rendition) in
-            MoQVideoTrackInfo(name: name, config: rendition, broadcast: broadcast)
+            VideoTrackInfo(name: name, config: rendition, broadcast: broadcast)
         }
         let audioTracks = catalog.audio.map { (name, rendition) in
-            MoQAudioTrackInfo(name: name, config: rendition, broadcast: broadcast)
+            AudioTrackInfo(name: name, config: rendition, broadcast: broadcast)
         }
 
-        return MoQBroadcastInfo(path: path, videoTracks: videoTracks, audioTracks: audioTracks)
+        return BroadcastInfo(path: path, videoTracks: videoTracks, audioTracks: audioTracks)
     }
 
     private func tearDown() async {
-        MoQLogger.session.debug("Tearing down session")
+        KitLogger.session.debug("Tearing down session")
 
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil

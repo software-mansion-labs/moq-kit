@@ -2,18 +2,18 @@ import AVFoundation
 import CoreMedia
 import Foundation
 
-/// Opus encoder using `AVAudioConverter`.
-final class OpusEncoder: AudioEncoding {
+/// AAC encoder using `AVAudioConverter`.
+final class AACEncoder: AudioEncoding {
     private var converter: AVAudioConverter?
     private var resamplingConverter: AVAudioConverter?
 
-    let config: MoQAudioEncoderConfig
+    let config: AudioEncoderConfig
 
-    init(config: MoQAudioEncoderConfig) {
+    init(config: AudioEncoderConfig) {
         self.config = config
     }
 
-    func encode(_ sampleBuffer: CMSampleBuffer) -> [MoQEncodedAudioFrame] {
+    func encode(_ sampleBuffer: CMSampleBuffer) -> [EncodedAudioFrame] {
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
             let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)
         else { return [] }
@@ -25,7 +25,7 @@ final class OpusEncoder: AudioEncoding {
             do {
                 try createConverter(inputASBD: inputASBD)
             } catch {
-                MoQLogger.publish.error("Failed to create Opus audio converter: \(error)")
+                KitLogger.publish.error("Failed to create AAC audio converter: \(error)")
                 return []
             }
         }
@@ -35,22 +35,20 @@ final class OpusEncoder: AudioEncoding {
             return []
         }
 
-        // Drain all available packets — the converter's internal buffer may hold
-        // leftover frames from previous calls, so one input buffer can yield
-        // more than one Opus packet.
-        var frames: [MoQEncodedAudioFrame] = []
+        var frames: [EncodedAudioFrame] = []
         var fed = false
-        let outputSamplesPerPacket = Int64(converter.outputFormat.streamDescription.pointee.mFramesPerPacket)
+        let outputSamplesPerPacket = Int64(
+            converter.outputFormat.streamDescription.pointee.mFramesPerPacket
+        )
+        let maximumPacketSize = max(converter.maximumOutputPacketSize, 4096)
         var packetsDrained: Int64 = 0
 
         while true {
-            guard
-                let outputBuffer = AVAudioCompressedBuffer(
-                    format: converter.outputFormat,
-                    packetCapacity: 1,
-                    maximumPacketSize: 4096
-                ) as AVAudioBuffer? as? AVAudioCompressedBuffer
-            else { break }
+            let outputBuffer = AVAudioCompressedBuffer(
+                format: converter.outputFormat,
+                packetCapacity: 1,
+                maximumPacketSize: maximumPacketSize
+            )
 
             var error: NSError?
             let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
@@ -63,23 +61,31 @@ final class OpusEncoder: AudioEncoding {
                 return pcmBuffer
             }
 
-            guard status != .error, outputBuffer.byteLength > 0 else { break }
+            if status == .error {
+                let message = error?.localizedDescription ?? "unknown"
+                KitLogger.publish.error("AAC conversion failed: \(message)")
+                break
+            }
+
+            guard outputBuffer.byteLength > 0, outputBuffer.packetCount > 0 else { break }
 
             let offsetSeconds = Double(packetsDrained * outputSamplesPerPacket) / config.sampleRate
             let currentPTS = CMTimeAdd(pts, CMTime(seconds: offsetSeconds, preferredTimescale: pts.timescale))
             packetsDrained += 1
 
-            frames.append(MoQEncodedAudioFrame(
-                data: Data(bytes: outputBuffer.data, count: Int(outputBuffer.byteLength)),
-                presentationTime: currentPTS
-            ))
+            frames.append(
+                EncodedAudioFrame(
+                    data: Data(bytes: outputBuffer.data, count: Int(outputBuffer.byteLength)),
+                    presentationTime: currentPTS
+                )
+            )
         }
 
         return frames
     }
 
     func buildInitData() -> Data {
-        buildOpusHead()
+        buildAudioSpecificConfig()
     }
 
     func stop() {
@@ -95,18 +101,18 @@ final class OpusEncoder: AudioEncoding {
                 commonFormat: .pcmFormatFloat32,
                 sampleRate: config.sampleRate,
                 channels: AVAudioChannelCount(config.channels),
-                interleaved: false  // We'll provide non-interleaved data to Opus
+                interleaved: false
             )
         else {
-            throw MoQSessionError.invalidConfiguration("Failed to create input AVAudioFormat")
+            throw SessionError.invalidConfiguration("Failed to create input AVAudioFormat")
         }
 
         var outputASBD = AudioStreamBasicDescription(
             mSampleRate: config.sampleRate,
-            mFormatID: kAudioFormatOpus,
+            mFormatID: kAudioFormatMPEG4AAC,
             mFormatFlags: 0,
             mBytesPerPacket: 0,
-            mFramesPerPacket: UInt32(config.sampleRate * 0.020),  // 20ms frames
+            mFramesPerPacket: 1024,
             mBytesPerFrame: 0,
             mChannelsPerFrame: config.channels,
             mBitsPerChannel: 0,
@@ -114,35 +120,40 @@ final class OpusEncoder: AudioEncoding {
         )
 
         guard let outputAVFormat = AVAudioFormat(streamDescription: &outputASBD) else {
-            throw MoQSessionError.invalidConfiguration("Failed to create Opus output AVAudioFormat")
+            throw SessionError.invalidConfiguration("Failed to create AAC output AVAudioFormat")
         }
 
         guard let converter = AVAudioConverter(from: inputAVFormat, to: outputAVFormat) else {
-            throw MoQSessionError.invalidConfiguration("Failed to create AVAudioConverter for Opus")
+            throw SessionError.invalidConfiguration("Failed to create AVAudioConverter for AAC")
         }
 
         converter.bitRate = Int(config.bitrate)
         self.converter = converter
     }
 
-    /// Build an OpusHead identification header (RFC 7845 §5.1).
-    private func buildOpusHead() -> Data {
-        var head = Data()
-        head.append(contentsOf: [0x4F, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64])  // "OpusHead"
-        head.append(1)  // version
-        head.append(UInt8(config.channels))
+    /// Build a 2-byte AudioSpecificConfig for AAC-LC.
+    private func buildAudioSpecificConfig() -> Data {
+        let objectType: UInt8 = 2  // AAC-LC
+        let freqIndex = aacFrequencyIndex(for: config.sampleRate)
+        let channelConfig = UInt8(config.channels)
 
-        var preSkip: UInt16 = 3840  // standard encoder delay at 48kHz
-        withUnsafeBytes(of: &preSkip) { head.append(contentsOf: $0) }
+        let byte0 = (objectType << 3) | (freqIndex >> 1)
+        let byte1 = ((freqIndex & 0x01) << 7) | (channelConfig << 3)
+        return Data([byte0, byte1])
+    }
 
-        var sampleRate = UInt32(config.sampleRate)
-        withUnsafeBytes(of: &sampleRate) { head.append(contentsOf: $0) }
-
-        var outputGain: Int16 = 0
-        withUnsafeBytes(of: &outputGain) { head.append(contentsOf: $0) }
-
-        head.append(0)  // channel mapping family 0
-        return head
+    private func aacFrequencyIndex(for sampleRate: Double) -> UInt8 {
+        let table: [(Double, UInt8)] = [
+            (96000, 0), (88200, 1), (64000, 2), (48000, 3),
+            (44100, 4), (32000, 5), (24000, 6), (22050, 7),
+            (16000, 8), (12000, 9), (11025, 10), (8000, 11),
+            (7350, 12),
+        ]
+        let roundedRate = round(sampleRate)
+        for (freq, index) in table {
+            if abs(roundedRate - freq) < 1.0 { return index }
+        }
+        return 15
     }
 
     private func asPCMBuffer(
@@ -157,7 +168,9 @@ final class OpusEncoder: AudioEncoding {
         let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
         guard
             let sourceBuffer = AVAudioPCMBuffer(
-                pcmFormat: sourceFormat, frameCapacity: AVAudioFrameCount(frameCount))
+                pcmFormat: sourceFormat,
+                frameCapacity: AVAudioFrameCount(frameCount)
+            )
         else { return nil }
 
         sourceBuffer.frameLength = AVAudioFrameCount(frameCount)
@@ -170,12 +183,8 @@ final class OpusEncoder: AudioEncoding {
         )
         guard status == noErr else { return nil }
 
-        // Return directly if formats already match
         if sourceFormat == targetFormat { return sourceBuffer }
 
-        // Reuse the resampling converter so SRC filter state (phase, history)
-        // carries across buffer boundaries — recreating it each call produces
-        // discontinuities at ~43 Hz.
         if resamplingConverter == nil {
             resamplingConverter = AVAudioConverter(from: sourceFormat, to: targetFormat)
         }
@@ -186,7 +195,9 @@ final class OpusEncoder: AudioEncoding {
         )
         guard
             let targetBuffer = AVAudioPCMBuffer(
-                pcmFormat: targetFormat, frameCapacity: targetFrameCount)
+                pcmFormat: targetFormat,
+                frameCapacity: targetFrameCount
+            )
         else { return nil }
 
         var error: NSError?

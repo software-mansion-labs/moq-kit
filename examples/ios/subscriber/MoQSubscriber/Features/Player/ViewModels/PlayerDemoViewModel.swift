@@ -3,10 +3,10 @@ import SwiftUI
 
 @MainActor
 final class PlayerDemoViewModel: ObservableObject {
-    @Published var sessionState: MoQSessionState = .idle
+    @Published var sessionState: SessionState = .idle
     @Published var broadcasts: [BroadcastEntry] = []
 
-    private var session: MoQSession?
+    private var session: Session?
     private var targetLatencyMs: UInt64 = 200
     private var stateObserverTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
@@ -47,7 +47,7 @@ final class PlayerDemoViewModel: ObservableObject {
     func connect(url: String, prefix: String, targetLatencyMs: UInt64 = 200) {
         stop()
         self.targetLatencyMs = targetLatencyMs
-        let s = MoQSession(url: url)
+        let s = Session(url: url)
         session = s
 
         stateObserverTask = Task {
@@ -96,7 +96,7 @@ final class PlayerDemoViewModel: ObservableObject {
         }
     }
 
-    private func replaceBroadcast(with info: MoQBroadcastInfo) async {
+    private func replaceBroadcast(with info: BroadcastInfo) async {
         let existingEntries = broadcasts.filter { $0.broadcastPath == info.path }
         for entry in existingEntries {
             await entry.stop()
@@ -113,7 +113,7 @@ final class PlayerDemoViewModel: ObservableObject {
         )
         broadcasts.append(entry)
 
-        guard let player = try? MoQPlayer(
+        guard let player = try? Player(
             tracks: selectedTracks.tracks,
             targetBufferingMs: targetLatencyMs
         ) else {
@@ -134,12 +134,12 @@ final class PlayerDemoViewModel: ObservableObject {
     }
 
     private func preferredTracks(
-        for info: MoQBroadcastInfo
-    ) -> (videoTrack: MoQVideoTrackInfo?, tracks: [any MoQTrackInfo]) {
+        for info: BroadcastInfo
+    ) -> (videoTrack: VideoTrackInfo?, tracks: [any TrackInfo]) {
         let audioTrack = info.audioTracks.first
         let highestVideoTrack = info.videoTracks.max(by: isLowerQualityVideoTrack)
 
-        var tracks: [any MoQTrackInfo] = []
+        var tracks: [any TrackInfo] = []
         if let highestVideoTrack {
             tracks.append(highestVideoTrack)
         }
@@ -151,13 +151,13 @@ final class PlayerDemoViewModel: ObservableObject {
     }
 
     private func isLowerQualityVideoTrack(
-        _ lhs: MoQVideoTrackInfo,
-        _ rhs: MoQVideoTrackInfo
+        _ lhs: VideoTrackInfo,
+        _ rhs: VideoTrackInfo
     ) -> Bool {
         codedPixelCount(for: lhs) < codedPixelCount(for: rhs)
     }
 
-    private func codedPixelCount(for track: MoQVideoTrackInfo) -> UInt64 {
+    private func codedPixelCount(for track: VideoTrackInfo) -> UInt64 {
         guard let coded = track.config.coded else { return 0 }
         return UInt64(coded.width) * UInt64(coded.height)
     }

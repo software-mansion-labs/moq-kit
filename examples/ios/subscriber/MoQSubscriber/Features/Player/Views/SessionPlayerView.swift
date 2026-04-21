@@ -367,11 +367,11 @@ private struct StatRow: View {
 // MARK: - Rendition Picker
 
 private struct RenditionPickerView: View {
-    let tracks: [MoQVideoTrackInfo]
-    let selected: MoQVideoTrackInfo?
-    let onSelect: (MoQVideoTrackInfo) -> Void
+    let tracks: [VideoTrackInfo]
+    let selected: VideoTrackInfo?
+    let onSelect: (VideoTrackInfo) -> Void
 
-    private var sortedTracks: [MoQVideoTrackInfo] {
+    private var sortedTracks: [VideoTrackInfo] {
         tracks.sorted {
             ($0.config.coded.map { UInt64($0.width) * UInt64($0.height) } ?? 0)
                 > ($1.config.coded.map { UInt64($0.width) * UInt64($0.height) } ?? 0)
@@ -399,7 +399,7 @@ private struct RenditionPickerView: View {
         }
     }
 
-    private func renditionLabel(_ track: MoQVideoTrackInfo) -> String {
+    private func renditionLabel(_ track: VideoTrackInfo) -> String {
         if let h = track.config.coded?.height {
             return "\(h)p"
         }

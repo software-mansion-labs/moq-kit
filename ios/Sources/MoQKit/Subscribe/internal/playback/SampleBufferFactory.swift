@@ -12,7 +12,7 @@ enum SampleBufferFactory {
         -> CMFormatDescription
     {
         guard let descData = config.description else {
-            throw MoQSessionError.missingCodecDescription
+            throw SessionError.missingCodecDescription
         }
 
         let codec = config.codec.lowercased()
@@ -25,7 +25,7 @@ enum SampleBufferFactory {
             let height = Int32(config.coded?.height ?? 0)
             return try makeAV1FormatDescription(av1cData: descData, width: width, height: height)
         } else {
-            throw MoQSessionError.unsupportedCodec(config.codec)
+            throw SessionError.unsupportedCodec(config.codec)
         }
     }
 
@@ -43,7 +43,7 @@ enum SampleBufferFactory {
                 formatDescriptionOut: &formatDescription
             )
             guard status == noErr, let fd = formatDescription else {
-                throw MoQSessionError.formatDescriptionFailed(status)
+                throw SessionError.formatDescriptionFailed(status)
             }
             return fd
         }
@@ -64,7 +64,7 @@ enum SampleBufferFactory {
                 formatDescriptionOut: &formatDescription
             )
             guard status == noErr, let fd = formatDescription else {
-                throw MoQSessionError.formatDescriptionFailed(status)
+                throw SessionError.formatDescriptionFailed(status)
             }
             return fd
         }
@@ -91,7 +91,7 @@ enum SampleBufferFactory {
             formatDescriptionOut: &formatDescription
         )
         guard status == noErr, let fd = formatDescription else {
-            throw MoQSessionError.formatDescriptionFailed(status)
+            throw SessionError.formatDescriptionFailed(status)
         }
         return fd
     }
@@ -146,7 +146,7 @@ enum SampleBufferFactory {
         } else if codec == "opus" {
             formatID = kAudioFormatOpus
         } else {
-            throw MoQSessionError.unsupportedCodec(config.codec)
+            throw SessionError.unsupportedCodec(config.codec)
         }
 
         var asbd = AudioStreamBasicDescription(
@@ -178,7 +178,7 @@ enum SampleBufferFactory {
                 )
             }
             guard status == noErr, let fd = formatDescription else {
-                throw MoQSessionError.formatDescriptionFailed(status)
+                throw SessionError.formatDescriptionFailed(status)
             }
             return fd
         } else {
@@ -193,7 +193,7 @@ enum SampleBufferFactory {
                 formatDescriptionOut: &formatDescription
             )
             guard status == noErr, let fd = formatDescription else {
-                throw MoQSessionError.formatDescriptionFailed(status)
+                throw SessionError.formatDescriptionFailed(status)
             }
             return fd
         }
@@ -233,7 +233,7 @@ enum SampleBufferFactory {
         )
         guard status == noErr, let block = blockBuffer else {
             retained.release()  // clean up on failure
-            throw MoQSessionError.sampleBufferFailed(status)
+            throw SessionError.sampleBufferFailed(status)
         }
 
         let pts = CMTime(value: CMTimeValue(timestampUs), timescale: 1_000_000)
@@ -274,7 +274,7 @@ enum SampleBufferFactory {
             sampleBufferOut: &sampleBuffer
         )
         guard status == noErr, let sb = sampleBuffer else {
-            throw MoQSessionError.sampleBufferFailed(status)
+            throw SessionError.sampleBufferFailed(status)
         }
 
         return sb
@@ -309,7 +309,7 @@ enum SampleBufferFactory {
         // ensuring our `pointers` were perfectly valid during the C function call.
 
         guard status == noErr, let fd = formatDescription else {
-            throw MoQSessionError.formatDescriptionFailed(status)
+            throw SessionError.formatDescriptionFailed(status)
         }
 
         return fd
@@ -339,7 +339,7 @@ enum SampleBufferFactory {
         )
 
         guard status == noErr, let fd = formatDescription else {
-            throw MoQSessionError.formatDescriptionFailed(status)
+            throw SessionError.formatDescriptionFailed(status)
         }
 
         return fd
@@ -393,7 +393,7 @@ private struct ParameterSetCollection {
 /// ```
 private func parseAVCCParameterSets(_ data: Data) throws -> ParameterSetCollection {
     guard data.count >= 7 else {
-        throw MoQSessionError.missingCodecDescription
+        throw SessionError.missingCodecDescription
     }
 
     var offset = 5
@@ -403,29 +403,29 @@ private func parseAVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
     let numSPS = Int(data[offset]) & 0x1F
     offset += 1
     for _ in 0..<numSPS {
-        guard offset + 2 <= data.count else { throw MoQSessionError.missingCodecDescription }
+        guard offset + 2 <= data.count else { throw SessionError.missingCodecDescription }
         let length = Int(data[offset]) << 8 | Int(data[offset + 1])
         offset += 2
-        guard offset + length <= data.count else { throw MoQSessionError.missingCodecDescription }
+        guard offset + length <= data.count else { throw SessionError.missingCodecDescription }
         parameterSets.append(data.subdata(in: offset..<(offset + length)))
         offset += length
     }
 
     // PPS
-    guard offset + 1 <= data.count else { throw MoQSessionError.missingCodecDescription }
+    guard offset + 1 <= data.count else { throw SessionError.missingCodecDescription }
     let numPPS = Int(data[offset])
     offset += 1
     for _ in 0..<numPPS {
-        guard offset + 2 <= data.count else { throw MoQSessionError.missingCodecDescription }
+        guard offset + 2 <= data.count else { throw SessionError.missingCodecDescription }
         let length = Int(data[offset]) << 8 | Int(data[offset + 1])
         offset += 2
-        guard offset + length <= data.count else { throw MoQSessionError.missingCodecDescription }
+        guard offset + length <= data.count else { throw SessionError.missingCodecDescription }
         parameterSets.append(data.subdata(in: offset..<(offset + length)))
         offset += length
     }
 
     guard !parameterSets.isEmpty else {
-        throw MoQSessionError.missingCodecDescription
+        throw SessionError.missingCodecDescription
     }
 
     return ParameterSetCollection(sets: parameterSets)
@@ -446,7 +446,7 @@ private func parseAVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
 /// ```
 private func parseHVCCParameterSets(_ data: Data) throws -> ParameterSetCollection {
     guard data.count >= 23 else {
-        throw MoQSessionError.missingCodecDescription
+        throw SessionError.missingCodecDescription
     }
 
     var offset = 22
@@ -456,17 +456,17 @@ private func parseHVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
     var parameterSets: [Data] = []
 
     for _ in 0..<numArrays {
-        guard offset + 3 <= data.count else { throw MoQSessionError.missingCodecDescription }
+        guard offset + 3 <= data.count else { throw SessionError.missingCodecDescription }
         // Skip NAL unit type byte
         offset += 1
         let numNalus = Int(data[offset]) << 8 | Int(data[offset + 1])
         offset += 2
         for _ in 0..<numNalus {
-            guard offset + 2 <= data.count else { throw MoQSessionError.missingCodecDescription }
+            guard offset + 2 <= data.count else { throw SessionError.missingCodecDescription }
             let length = Int(data[offset]) << 8 | Int(data[offset + 1])
             offset += 2
             guard offset + length <= data.count else {
-                throw MoQSessionError.missingCodecDescription
+                throw SessionError.missingCodecDescription
             }
             parameterSets.append(data.subdata(in: offset..<(offset + length)))
             offset += length
@@ -474,7 +474,7 @@ private func parseHVCCParameterSets(_ data: Data) throws -> ParameterSetCollecti
     }
 
     guard !parameterSets.isEmpty else {
-        throw MoQSessionError.missingCodecDescription
+        throw SessionError.missingCodecDescription
     }
 
     return ParameterSetCollection(sets: parameterSets)

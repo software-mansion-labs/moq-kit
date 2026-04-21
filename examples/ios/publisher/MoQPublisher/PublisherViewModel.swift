@@ -7,20 +7,20 @@ import os
 final class PublisherViewModel: ObservableObject {
     // MARK: - Published State
 
-    @Published var sessionState: MoQSessionState = .idle
-    @Published var publisherState: MoQPublisherState = .idle
+    @Published var sessionState: SessionState = .idle
+    @Published var publisherState: PublisherState = .idle
     @Published var isPreviewRunning = false
     @Published var cameraEnabled = true
     @Published var screenEnabled = false
     @Published var micEnabled = true
     @Published var screenAudioEnabled = false
-    @Published var cameraPosition: MoQCameraPosition = .front
-    @Published var videoCodec: MoQVideoCodec = .h265
+    @Published var cameraPosition: CameraPosition = .front
+    @Published var videoCodec: VideoCodec = .h265
     @Published var videoResolution: VideoResolution = .hd
     @Published var videoFrameRate: VideoFrameRate = .fps30
-    @Published var audioCodec: MoQAudioCodec = .opus
+    @Published var audioCodec: MoQKit.AudioCodec = .opus
     @Published var audioSampleRate: AudioSampleRate = .khz48
-    @Published var trackStates: [String: MoQPublishedTrackState] = [:]
+    @Published var trackStates: [String: PublishedTrackState] = [:]
     @Published var lastError: String?
 
     // MARK: - Camera Preview
@@ -96,12 +96,12 @@ final class PublisherViewModel: ObservableObject {
 
     // MARK: - Private State
 
-    private var session: MoQSession?
-    private var publisher: MoQPublisher?
+    private var session: Session?
+    private var publisher: Publisher?
     private var stateObserverTask: Task<Void, Never>?
     private var publisherStateTask: Task<Void, Never>?
     private var publisherEventsTask: Task<Void, Never>?
-    @Published var publishedTracks: [MoQPublishedTrack] = []
+    @Published var publishedTracks: [PublishedTrack] = []
 
     // MARK: - Camera Preview Lifecycle
 
@@ -130,7 +130,7 @@ final class PublisherViewModel: ObservableObject {
     }
 
     func flipCamera() {
-        let newPosition: MoQCameraPosition = cameraPosition == .front ? .back : .front
+        let newPosition: CameraPosition = cameraPosition == .front ? .back : .front
         cameraPosition = newPosition
 
         if let cameraCapture {
@@ -148,7 +148,7 @@ final class PublisherViewModel: ObservableObject {
         lastError = nil
         trackStates = [:]
 
-        let s = MoQSession(url: url)
+        let s = Session(url: url)
         session = s
 
         stateObserverTask = Task {
@@ -161,17 +161,17 @@ final class PublisherViewModel: ObservableObject {
             do {
                 try await s.connect()
 
-                let pub = try MoQPublisher()
+                let pub = try Publisher()
                 self.publisher = pub
 
                 // Create and start capture sources, then add tracks
-                let videoEncoderConfig = MoQVideoEncoderConfig(
+                let videoEncoderConfig = VideoEncoderConfig(
                     codec: self.videoCodec,
                     width: self.videoResolution.width,
                     height: self.videoResolution.height,
                     maxFrameRate: self.videoFrameRate.value
                 )
-                let audioEncoderConfig = MoQAudioEncoderConfig(
+                let audioEncoderConfig = AudioEncoderConfig(
                     codec: self.audioCodec,
                     sampleRate: self.audioSampleRate.value
                 )
@@ -266,7 +266,7 @@ final class PublisherViewModel: ObservableObject {
 
         // Stop publisher and close session off the main thread.
         // publisher.stop() flushes encoders synchronously — with @MainActor
-        // removed from MoQPublisher, this now actually runs off-main.
+        // removed from Publisher, this now actually runs off-main.
         Task.detached {
             logger.info("stopping publisher")
             pub?.stop()
@@ -295,7 +295,7 @@ final class PublisherViewModel: ObservableObject {
         }
     }
 
-    private func observePublisher(_ pub: MoQPublisher) {
+    private func observePublisher(_ pub: Publisher) {
         publisherStateTask = Task {
             for await state in pub.state {
                 self.publisherState = state

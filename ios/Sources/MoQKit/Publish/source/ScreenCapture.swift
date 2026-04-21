@@ -30,7 +30,7 @@ public final class ScreenCapture: @unchecked Sendable {
     public func start() async throws {
         let recorder = RPScreenRecorder.shared()
         guard recorder.isAvailable else {
-            throw MoQSessionError.invalidConfiguration("Screen recording is not available")
+            throw SessionError.invalidConfiguration("Screen recording is not available")
         }
 
         try await recorder.startCapture { [weak self] sampleBuffer, sampleType, error in

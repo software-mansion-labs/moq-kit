@@ -2,11 +2,11 @@ import MoQKit
 import SwiftUI
 
 struct PublishingStatusView: View {
-    let publisherState: MoQPublisherState
+    let publisherState: PublisherState
     let publisherStateLabel: String
     let publisherStateColor: Color
-    let tracks: [MoQPublishedTrack]
-    let trackStates: [String: MoQPublishedTrackState]
+    let tracks: [PublishedTrack]
+    let trackStates: [String: PublishedTrackState]
     let lastError: String?
 
     var body: some View {
@@ -63,7 +63,7 @@ struct PublishingStatusView: View {
         .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private func trackStateColor(_ state: MoQPublishedTrackState) -> Color {
+    private func trackStateColor(_ state: PublishedTrackState) -> Color {
         switch state {
         case .idle: return .gray
         case .starting: return .orange
@@ -72,7 +72,7 @@ struct PublishingStatusView: View {
         }
     }
 
-    private func trackStateLabel(_ state: MoQPublishedTrackState) -> String {
+    private func trackStateLabel(_ state: PublishedTrackState) -> String {
         switch state {
         case .idle: return "idle"
         case .starting: return "starting"
@@ -81,7 +81,7 @@ struct PublishingStatusView: View {
         }
     }
 
-    private func codecPills(for info: MoQTrackCodecInfo) -> [String] {
+    private func codecPills(for info: TrackCodecInfo) -> [String] {
         switch info {
         case .video(let codec, let width, let height, let frameRate):
             let codecName: String

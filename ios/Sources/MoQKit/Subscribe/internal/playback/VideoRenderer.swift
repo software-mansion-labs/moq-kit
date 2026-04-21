@@ -81,7 +81,7 @@ final class VideoRenderer: @unchecked Sendable {
         let queue = self.enqueueQueue
         activeTrack.setOnDataAvailable(makeDataAvailableCallback())
         queue.async { self.armVideoEnqueue() }
-        MoQLogger.player.debug("VideoRenderer started")
+        KitLogger.player.debug("VideoRenderer started")
     }
 
     /// Stops requesting media data, removes track callbacks, pauses timebase if owned.
@@ -270,7 +270,7 @@ final class VideoRenderer: @unchecked Sendable {
         activeTrack = newTrack
         pendingTrack = nil
         newTrack.setOnDataAvailable(makeDataAvailableCallback())
-        MoQLogger.player.debug("VideoRenderer: swapped to pending track")
+        KitLogger.player.debug("VideoRenderer: swapped to pending track")
         onTrackActivated?()
         onTrackActivated = nil
     }

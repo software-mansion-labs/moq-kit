@@ -18,19 +18,19 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
                     session.beginConfiguration()
 
                     guard let device = AVCaptureDevice.default(for: .audio) else {
-                        throw MoQSessionError.invalidConfiguration("No microphone available")
+                        throw SessionError.invalidConfiguration("No microphone available")
                     }
 
                     let input = try AVCaptureDeviceInput(device: device)
                     guard session.canAddInput(input) else {
-                        throw MoQSessionError.invalidConfiguration("Cannot add microphone input")
+                        throw SessionError.invalidConfiguration("Cannot add microphone input")
                     }
                     session.addInput(input)
 
                     let output = AVCaptureAudioDataOutput()
                     output.setSampleBufferDelegate(self, queue: queue)
                     guard session.canAddOutput(output) else {
-                        throw MoQSessionError.invalidConfiguration("Cannot add audio output")
+                        throw SessionError.invalidConfiguration("Cannot add audio output")
                     }
                     session.addOutput(output)
 

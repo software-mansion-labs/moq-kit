@@ -4,8 +4,8 @@ import MoQKitFFI
 
 // MARK: - Publisher State & Events
 
-/// The lifecycle state of a ``MoQPublisher``.
-public enum MoQPublisherState: Sendable, Equatable {
+/// The lifecycle state of a ``Publisher``.
+public enum PublisherState: Sendable, Equatable {
     /// Created, no tracks publishing yet.
     case idle
     /// At least one track is actively sending.
@@ -16,8 +16,8 @@ public enum MoQPublisherState: Sendable, Equatable {
     case error(String)
 }
 
-/// Events emitted by ``MoQPublisher`` as tracks start, stop, or encounter errors.
-public enum MoQPublisherEvent: Sendable {
+/// Events emitted by ``Publisher`` as tracks start, stop, or encounter errors.
+public enum PublisherEvent: Sendable {
     case trackStarted(String)
     case trackStopped(String)
     case error(String, String)
@@ -26,7 +26,7 @@ public enum MoQPublisherEvent: Sendable {
 // MARK: - Published Track State
 
 /// The lifecycle state of a single published track.
-public enum MoQPublishedTrackState: Sendable {
+public enum PublishedTrackState: Sendable {
     /// Added but not yet started.
     case idle
     /// Source started, waiting for first encoded frame.
@@ -40,31 +40,31 @@ public enum MoQPublishedTrackState: Sendable {
 // MARK: - Track Codec Info
 
 /// Codec information associated with a published track.
-public enum MoQTrackCodecInfo: Sendable {
-    case video(codec: MoQVideoCodec, width: Int32, height: Int32, frameRate: Double)
-    case audio(codec: MoQAudioCodec, sampleRate: Double)
+public enum TrackCodecInfo: Sendable {
+    case video(codec: VideoCodec, width: Int32, height: Int32, frameRate: Double)
+    case audio(codec: AudioCodec, sampleRate: Double)
     case data
 }
 
-// MARK: - MoQPublishedTrack
+// MARK: - PublishedTrack
 
 /// A handle for controlling an individual track's lifecycle.
-public final class MoQPublishedTrack: @unchecked Sendable {
+public final class PublishedTrack: @unchecked Sendable {
     /// The track name.
     public let name: String
     /// Codec information for the track.
-    public let codecInfo: MoQTrackCodecInfo
-    /// A stream of ``MoQPublishedTrackState`` transitions.
-    public let state: AsyncStream<MoQPublishedTrackState>
+    public let codecInfo: TrackCodecInfo
+    /// A stream of ``PublishedTrackState`` transitions.
+    public let state: AsyncStream<PublishedTrackState>
 
-    internal let stateContinuation: AsyncStream<MoQPublishedTrackState>.Continuation
-    internal var currentState: MoQPublishedTrackState = .idle
+    internal let stateContinuation: AsyncStream<PublishedTrackState>.Continuation
+    internal var currentState: PublishedTrackState = .idle
     internal var stopAction: (() -> Void)?
 
-    init(name: String, codecInfo: MoQTrackCodecInfo) {
+    init(name: String, codecInfo: TrackCodecInfo) {
         self.name = name
         self.codecInfo = codecInfo
-        var cont: AsyncStream<MoQPublishedTrackState>.Continuation!
+        var cont: AsyncStream<PublishedTrackState>.Continuation!
         self.state = AsyncStream { cont = $0 }
         self.stateContinuation = cont
         stateContinuation.yield(.idle)
@@ -76,7 +76,7 @@ public final class MoQPublishedTrack: @unchecked Sendable {
         stopAction?()
     }
 
-    internal func transition(to newState: MoQPublishedTrackState) {
+    internal func transition(to newState: PublishedTrackState) {
         currentState = newState
         stateContinuation.yield(newState)
         if newState == .stopped {
@@ -93,21 +93,21 @@ public final class MoQPublishedTrack: @unchecked Sendable {
 
 /// Describes a video track to be started when `start()` is called.
 private struct VideoTrackDescriptor {
-    let track: MoQPublishedTrack
+    let track: PublishedTrack
     let source: any FrameSource
-    let config: MoQVideoEncoderConfig
+    let config: VideoEncoderConfig
 }
 
 /// Describes an audio track to be started when `start()` is called.
 private struct AudioTrackDescriptor {
-    let track: MoQPublishedTrack
+    let track: PublishedTrack
     let source: any FrameSource
-    let config: MoQAudioEncoderConfig
+    let config: AudioEncoderConfig
 }
 
 /// Describes an object track to be started when `start()` is called.
 private struct DataTrackDescriptor {
-    let track: MoQPublishedTrack
+    let track: PublishedTrack
     let emitter: DataTrackEmitter
 }
 
@@ -116,14 +116,14 @@ private struct DataTrackDescriptor {
 /// Holds the runtime objects for an active video track.
 private final class VideoTrack {
     var source: (any FrameSource)?
-    var encoder: MoQVideoEncoder?
+    var encoder: VideoEncoder?
     var mediaProducer: MoqMediaProducer?
 }
 
 /// Holds the runtime objects for an active audio track.
 private final class AudioTrack {
     var source: (any FrameSource)?
-    var encoder: MoQAudioEncoder?
+    var encoder: AudioEncoder?
     var mediaProducer: MoqMediaProducer?
 }
 
@@ -133,7 +133,7 @@ private final class DataTrack {
     var producer: MoqTrackProducer?
 }
 
-// MARK: - MoQPublisher
+// MARK: - Publisher
 
 /// Orchestrates the encode → publish pipeline for a MoQ broadcast.
 ///
@@ -145,25 +145,25 @@ private final class DataTrack {
 /// let camera = CameraCapture(position: .back, width: 1920, height: 1080)
 /// try await camera.start()
 ///
-/// let publisher = try MoQPublisher()
+/// let publisher = try Publisher()
 /// let video = publisher.addVideoTrack(name: "video", source: camera)
 /// try session.publish(path: "live/stream", publisher: publisher)
 /// try await publisher.start()
 /// ```
-public final class MoQPublisher {
-    /// Emits ``MoQPublisherState`` as the publisher transitions through its lifecycle.
-    public let state: AsyncStream<MoQPublisherState>
-    /// Emits ``MoQPublisherEvent`` values as tracks start, stop, or encounter errors.
-    public let events: AsyncStream<MoQPublisherEvent>
+public final class Publisher {
+    /// Emits ``PublisherState`` as the publisher transitions through its lifecycle.
+    public let state: AsyncStream<PublisherState>
+    /// Emits ``PublisherEvent`` values as tracks start, stop, or encounter errors.
+    public let events: AsyncStream<PublisherEvent>
 
     /// The underlying FFI broadcast producer.
     internal let broadcast: MoqBroadcastProducer
 
-    internal let clock = MoQClock()
+    internal let clock = Clock()
 
-    private let stateContinuation: AsyncStream<MoQPublisherState>.Continuation
-    private let eventsContinuation: AsyncStream<MoQPublisherEvent>.Continuation
-    private var currentState: MoQPublisherState = .idle
+    private let stateContinuation: AsyncStream<PublisherState>.Continuation
+    private let eventsContinuation: AsyncStream<PublisherEvent>.Continuation
+    private var currentState: PublisherState = .idle
 
     // Track descriptors (added before start)
     private var videoDescriptors: [VideoTrackDescriptor] = []
@@ -179,11 +179,11 @@ public final class MoQPublisher {
     public init() throws {
         self.broadcast = try MoqBroadcastProducer()
 
-        var stateCont: AsyncStream<MoQPublisherState>.Continuation!
+        var stateCont: AsyncStream<PublisherState>.Continuation!
         self.state = AsyncStream { stateCont = $0 }
         self.stateContinuation = stateCont
 
-        var eventsCont: AsyncStream<MoQPublisherEvent>.Continuation!
+        var eventsCont: AsyncStream<PublisherEvent>.Continuation!
         self.events = AsyncStream { eventsCont = $0 }
         self.eventsContinuation = eventsCont
 
@@ -202,9 +202,9 @@ public final class MoQPublisher {
     public func addVideoTrack(
         name: String = "video",
         source: any FrameSource,
-        config: MoQVideoEncoderConfig = MoQVideoEncoderConfig()
-    ) -> MoQPublishedTrack {
-        let track = MoQPublishedTrack(
+        config: VideoEncoderConfig = VideoEncoderConfig()
+    ) -> PublishedTrack {
+        let track = PublishedTrack(
             name: name,
             codecInfo: .video(
                 codec: config.codec, width: config.width, height: config.height,
@@ -224,9 +224,9 @@ public final class MoQPublisher {
     public func addAudioTrack(
         name: String = "audio",
         source: any FrameSource,
-        config: MoQAudioEncoderConfig = MoQAudioEncoderConfig()
-    ) -> MoQPublishedTrack {
-        let track = MoQPublishedTrack(
+        config: AudioEncoderConfig = AudioEncoderConfig()
+    ) -> PublishedTrack {
+        let track = PublishedTrack(
             name: name,
             codecInfo: .audio(codec: config.codec, sampleRate: config.sampleRate))
         audioDescriptors.append(AudioTrackDescriptor(track: track, source: source, config: config))
@@ -243,8 +243,8 @@ public final class MoQPublisher {
     public func addDataTrack(
         name: String = "data",
         source: DataTrackEmitter
-    ) -> MoQPublishedTrack {
-        let track = MoQPublishedTrack(name: name, codecInfo: .data)
+    ) -> PublishedTrack {
+        let track = PublishedTrack(name: name, codecInfo: .data)
         datatDescriptors.append(DataTrackDescriptor(track: track, emitter: source))
         return track
     }
@@ -256,10 +256,10 @@ public final class MoQPublisher {
     /// codec config for audio).
     public func start() async throws {
         guard currentState == .idle else {
-            throw MoQSessionError.invalidConfiguration("Publisher already started")
+            throw SessionError.invalidConfiguration("Publisher already started")
         }
 
-        MoQLogger.publish.debug(
+        KitLogger.publish.debug(
             "Starting publisher with \(self.videoDescriptors.count) video + \(self.audioDescriptors.count) audio tracks"
         )
 
@@ -284,7 +284,7 @@ public final class MoQPublisher {
     /// Stop all tracks and finalize the broadcast.
     public func stop() {
         guard currentState == .publishing || currentState == .idle else { return }
-        MoQLogger.publish.debug("Stopping publisher")
+        KitLogger.publish.debug("Stopping publisher")
 
         for (_, active) in activeVideoTracks {
             active.source?.onFrame = { (_: CMSampleBuffer) in false }
@@ -349,8 +349,8 @@ public final class MoQPublisher {
 
     // MARK: - Private: State
 
-    private func transition(to newState: MoQPublisherState) {
-        MoQLogger.publish.debug(
+    private func transition(to newState: PublisherState) {
+        KitLogger.publish.debug(
             "Publisher state: \(String(describing: self.currentState)) → \(String(describing: newState))"
         )
         currentState = newState
@@ -361,7 +361,7 @@ public final class MoQPublisher {
 
     private func startVideoTrack(_ desc: VideoTrackDescriptor) throws {
         let active = VideoTrack()
-        let encoder = MoQVideoEncoder(config: desc.config)
+        let encoder = VideoEncoder(config: desc.config)
         active.encoder = encoder
         active.source = desc.source
 
@@ -381,14 +381,14 @@ public final class MoQPublisher {
                 do {
                     let producer = try broadcast.publishMedia(format: formatString, init: initData)
                     active.mediaProducer = producer
-                    MoQLogger.publish.debug(
+                    KitLogger.publish.debug(
                         "Video track '\(trackHandle.name)' media producer created")
                     Task { @MainActor in
                         trackHandle.transition(to: .active)
                         eventsContinuation.yield(.trackStarted(trackHandle.name))
                     }
                 } catch {
-                    MoQLogger.publish.error("Failed to create video media producer: \(error)")
+                    KitLogger.publish.error("Failed to create video media producer: \(error)")
                     Task { @MainActor in
                         trackHandle.transition(to: .stopped)
                         eventsContinuation.yield(
@@ -402,7 +402,7 @@ public final class MoQPublisher {
             do {
                 try active.mediaProducer?.writeFrame(payload: frame.data, timestampUs: timestampUs)
             } catch {
-                MoQLogger.publish.error("Failed to write video frame: \(error)")
+                KitLogger.publish.error("Failed to write video frame: \(error)")
             }
         }
 
@@ -434,7 +434,7 @@ public final class MoQPublisher {
 
     private func startAudioTrack(_ desc: AudioTrackDescriptor) throws {
         let active = AudioTrack()
-        let encoder = MoQAudioEncoder(config: desc.config)
+        let encoder = AudioEncoder(config: desc.config)
         active.encoder = encoder
         active.source = desc.source
 
@@ -453,14 +453,14 @@ public final class MoQPublisher {
                 do {
                     let producer = try broadcast.publishMedia(format: formatString, init: initData)
                     active.mediaProducer = producer
-                    MoQLogger.publish.debug(
+                    KitLogger.publish.debug(
                         "Audio track '\(trackHandle.name)' media producer created")
                     Task { @MainActor in
                         trackHandle.transition(to: .active)
                         eventsContinuation.yield(.trackStarted(trackHandle.name))
                     }
                 } catch {
-                    MoQLogger.publish.error("Failed to create audio media producer: \(error)")
+                    KitLogger.publish.error("Failed to create audio media producer: \(error)")
                     Task { @MainActor in
                         trackHandle.transition(to: .stopped)
                         eventsContinuation.yield(
@@ -474,7 +474,7 @@ public final class MoQPublisher {
             do {
                 try active.mediaProducer?.writeFrame(payload: frame.data, timestampUs: timestampUs)
             } catch {
-                MoQLogger.publish.error("Failed to write audio frame: \(error)")
+                KitLogger.publish.error("Failed to write audio frame: \(error)")
             }
         }
 

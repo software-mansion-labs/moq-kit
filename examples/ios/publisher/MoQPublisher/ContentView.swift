@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var relayURL = "http://192.168.92.140:4443/anon"
+    @State private var relayURL = "http://192.168.92.173:4443/anon"
 
     @State private var broadcastPath = "bbb/hey"
     @StateObject private var viewModel = PublisherViewModel()

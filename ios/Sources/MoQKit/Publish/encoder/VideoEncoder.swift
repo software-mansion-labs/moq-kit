@@ -2,18 +2,18 @@ import CoreMedia
 import VideoToolbox
 
 /// Hardware H.264 encoder using `VTCompressionSession`.
-final class MoQVideoEncoder: @unchecked Sendable {
+final class VideoEncoder: @unchecked Sendable {
     private var session: VTCompressionSession?
-    private var handler: ((MoQEncodedVideoFrame) -> Void)?
+    private var handler: ((EncodedVideoFrame) -> Void)?
     private var sentInitData = false
 
-    var config: MoQVideoEncoderConfig
+    var config: VideoEncoderConfig
 
-    init(config: MoQVideoEncoderConfig) {
+    init(config: VideoEncoderConfig) {
         self.config = config
     }
 
-    func start(handler: @escaping (MoQEncodedVideoFrame) -> Void) throws {
+    func start(handler: @escaping (EncodedVideoFrame) -> Void) throws {
         self.handler = handler
         sentInitData = false
 
@@ -28,7 +28,7 @@ final class MoQVideoEncoder: @unchecked Sendable {
         var sessionRef: VTCompressionSession?
         let callback: VTCompressionOutputCallback = { refcon, _, status, _, sampleBuffer in
             guard let refcon, status == noErr, let sampleBuffer else { return }
-            let encoder = Unmanaged<MoQVideoEncoder>.fromOpaque(refcon).takeUnretainedValue()
+            let encoder = Unmanaged<VideoEncoder>.fromOpaque(refcon).takeUnretainedValue()
             encoder.handleEncodedFrame(sampleBuffer)
         }
         let status = VTCompressionSessionCreate(
@@ -45,7 +45,7 @@ final class MoQVideoEncoder: @unchecked Sendable {
         )
 
         guard status == noErr, let session = sessionRef else {
-            throw MoQSessionError.invalidConfiguration(
+            throw SessionError.invalidConfiguration(
                 "Failed to create compression session: \(status)")
         }
         self.session = session
@@ -160,7 +160,7 @@ final class MoQVideoEncoder: @unchecked Sendable {
             }
         }
 
-        let frame = MoQEncodedVideoFrame(
+        let frame = EncodedVideoFrame(
             data: data,
             presentationTime: pts,
             isKeyframe: isKeyframe,
@@ -308,7 +308,7 @@ final class MoQVideoEncoder: @unchecked Sendable {
 
 // MARK: - Types
 
-struct MoQEncodedVideoFrame {
+struct EncodedVideoFrame {
     let data: Data
     let presentationTime: CMTime
     let isKeyframe: Bool
@@ -316,13 +316,13 @@ struct MoQEncodedVideoFrame {
 }
 
 /// Codec for video encoding.
-public enum MoQVideoCodec: Sendable, Hashable {
+public enum VideoCodec: Sendable, Hashable {
     case h264
     case h265
 }
 
 /// NAL unit framing format.
-public enum MoQNaluFormat: Sendable {
+public enum NaluFormat: Sendable {
     /// Annex B start codes (`00 00 00 01`).
     case annexB
     /// 4-byte big-endian length prefix (AVCC/HVCC box style).
@@ -330,25 +330,25 @@ public enum MoQNaluFormat: Sendable {
 }
 
 /// Configuration for the hardware video encoder.
-public struct MoQVideoEncoderConfig: Sendable {
-    public var codec: MoQVideoCodec
+public struct VideoEncoderConfig: Sendable {
+    public var codec: VideoCodec
     public var width: Int32
     public var height: Int32
     public var bitrate: UInt32
     public var keyframeInterval: Double
     public var maxFrameRate: Double
     public var profileLevel: String?
-    public var naluFormat: MoQNaluFormat
+    public var naluFormat: NaluFormat
 
     public init(
-        codec: MoQVideoCodec = .h264,
+        codec: VideoCodec = .h264,
         width: Int32 = 1920,
         height: Int32 = 1080,
         bitrate: UInt32 = 1_500_000,
         keyframeInterval: Double = 2.0,
         maxFrameRate: Double = 30.0,
         profileLevel: String? = nil,
-        naluFormat: MoQNaluFormat? = nil
+        naluFormat: NaluFormat? = nil
     ) {
         self.codec = codec
         self.width = width

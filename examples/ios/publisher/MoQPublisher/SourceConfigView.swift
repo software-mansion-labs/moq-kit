@@ -6,7 +6,7 @@ struct SourceConfigView: View {
     @Binding var screenEnabled: Bool
     @Binding var micEnabled: Bool
     @Binding var screenAudioEnabled: Bool
-    @Binding var cameraPosition: MoQCameraPosition
+    @Binding var cameraPosition: CameraPosition
     let isPublishing: Bool
     let onFlipCamera: () -> Void
 

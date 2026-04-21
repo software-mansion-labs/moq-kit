@@ -23,7 +23,7 @@ final class AudioDecoder: @unchecked Sendable {
             formatID = kAudioFormatOpus
             fpp = 960
         } else {
-            throw MoQSessionError.unsupportedCodec(config.codec)
+            throw SessionError.unsupportedCodec(config.codec)
         }
         self.framesPerPacket = fpp
 
@@ -41,7 +41,7 @@ final class AudioDecoder: @unchecked Sendable {
         )
 
         guard let inFmt = AVAudioFormat(streamDescription: &asbd) else {
-            throw MoQSessionError.audioDecoderFailed("Failed to create input AVAudioFormat")
+            throw SessionError.audioDecoderFailed("Failed to create input AVAudioFormat")
         }
 
         // Apply magic cookie if present
@@ -60,12 +60,12 @@ final class AudioDecoder: @unchecked Sendable {
                 interleaved: false
             )
         else {
-            throw MoQSessionError.audioDecoderFailed("Failed to create output AVAudioFormat")
+            throw SessionError.audioDecoderFailed("Failed to create output AVAudioFormat")
         }
         self.outputFormat = outFmt
 
         guard let conv = AVAudioConverter(from: inFmt, to: outFmt) else {
-            throw MoQSessionError.audioDecoderFailed(
+            throw SessionError.audioDecoderFailed(
                 "Failed to create AVAudioConverter from \(inFmt) to \(outFmt)")
         }
         self.converter = conv
@@ -79,7 +79,7 @@ final class AudioDecoder: @unchecked Sendable {
                 frameCapacity: framesPerPacket
             )
         else {
-            throw MoQSessionError.audioDecoderFailed("Failed to allocate output PCM buffer")
+            throw SessionError.audioDecoderFailed("Failed to allocate output PCM buffer")
         }
 
         // Wrap payload in a compressed buffer
@@ -114,7 +114,7 @@ final class AudioDecoder: @unchecked Sendable {
 
         if status == .error {
             let msg = conversionError?.localizedDescription ?? "unknown"
-            throw MoQSessionError.audioDecoderFailed("AVAudioConverter failed: \(msg)")
+            throw SessionError.audioDecoderFailed("AVAudioConverter failed: \(msg)")
         }
 
         return outputBuffer

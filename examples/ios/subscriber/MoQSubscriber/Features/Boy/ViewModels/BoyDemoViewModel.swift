@@ -11,18 +11,18 @@ final class BoyDemoViewModel: ObservableObject {
     private static let longPressThresholdNs: UInt64 = 300_000_000
     private static let defaultTargetLatencyMs: UInt64 = 200
 
-    @Published private(set) var sessionState: MoQSessionState = .idle
+    @Published private(set) var sessionState: SessionState = .idle
     @Published private(set) var games: [BoyGame] = []
     @Published private(set) var currentEntry: BroadcastEntry?
     @Published private(set) var selectedGamePath: String?
     @Published var targetLatencyMs: Double = Double(defaultTargetLatencyMs)
     @Published var lastError: String?
 
-    private var session: MoQSession?
-    private var announcedGames: [String: MoQBroadcastInfo] = [:]
+    private var session: Session?
+    private var announcedGames: [String: BroadcastInfo] = [:]
     private var stateObserverTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
-    private var commandPublisher: MoQPublisher?
+    private var commandPublisher: Publisher?
     private var commandEmitter: DataTrackEmitter?
     private var viewerPath: String?
     private var heldButtons: Set<BoyButton> = []
@@ -99,7 +99,7 @@ final class BoyDemoViewModel: ObservableObject {
         stop()
         lastError = nil
 
-        let session = MoQSession(url: Self.relayURL)
+        let session = Session(url: Self.relayURL)
         self.session = session
 
         stateObserverTask = Task { [weak self] in
@@ -221,7 +221,7 @@ final class BoyDemoViewModel: ObservableObject {
         currentEntry?.updateTargetLatency(ms: UInt64(steppedLatency))
     }
 
-    private func handleAvailableBroadcast(_ info: MoQBroadcastInfo) async {
+    private func handleAvailableBroadcast(_ info: BroadcastInfo) async {
         guard let game = Self.makeGame(from: info) else { return }
 
         announcedGames[game.broadcastPath] = info
@@ -264,7 +264,7 @@ final class BoyDemoViewModel: ObservableObject {
         }
     }
 
-    private func replaceCurrentBroadcast(with info: MoQBroadcastInfo) async {
+    private func replaceCurrentBroadcast(with info: BroadcastInfo) async {
         let previousEntry = currentEntry
         currentEntry = nil
         await previousEntry?.stop()
@@ -280,7 +280,7 @@ final class BoyDemoViewModel: ObservableObject {
         currentEntry = entry
 
         do {
-            let player = try MoQPlayer(
+            let player = try Player(
                 tracks: selectedTracks.tracks,
                 targetBufferingMs: UInt64(targetLatencyMs)
             )
@@ -319,7 +319,7 @@ final class BoyDemoViewModel: ObservableObject {
 
         let emitter = DataTrackEmitter()
         do {
-            let publisher = try MoQPublisher()
+            let publisher = try Publisher()
             publisher.addDataTrack(name: "command", source: emitter)
 
             let viewerId = Self.makeViewerId()
@@ -394,12 +394,12 @@ final class BoyDemoViewModel: ObservableObject {
     }
 
     private func preferredTracks(
-        for info: MoQBroadcastInfo
-    ) -> (videoTrack: MoQVideoTrackInfo?, tracks: [any MoQTrackInfo]) {
+        for info: BroadcastInfo
+    ) -> (videoTrack: VideoTrackInfo?, tracks: [any TrackInfo]) {
         let audioTrack = info.audioTracks.first
         let highestVideoTrack = info.videoTracks.max(by: isLowerQualityVideoTrack)
 
-        var tracks: [any MoQTrackInfo] = []
+        var tracks: [any TrackInfo] = []
         if let highestVideoTrack {
             tracks.append(highestVideoTrack)
         }
@@ -411,18 +411,18 @@ final class BoyDemoViewModel: ObservableObject {
     }
 
     private func isLowerQualityVideoTrack(
-        _ lhs: MoQVideoTrackInfo,
-        _ rhs: MoQVideoTrackInfo
+        _ lhs: VideoTrackInfo,
+        _ rhs: VideoTrackInfo
     ) -> Bool {
         codedPixelCount(for: lhs) < codedPixelCount(for: rhs)
     }
 
-    private func codedPixelCount(for track: MoQVideoTrackInfo) -> UInt64 {
+    private func codedPixelCount(for track: VideoTrackInfo) -> UInt64 {
         guard let coded = track.config.coded else { return 0 }
         return UInt64(coded.width) * UInt64(coded.height)
     }
 
-    private static func makeGame(from info: MoQBroadcastInfo) -> BoyGame? {
+    private static func makeGame(from info: BroadcastInfo) -> BoyGame? {
         let component = pathComponent(from: info.path)
         return BoyGame(
             name: component,

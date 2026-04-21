@@ -1,13 +1,13 @@
 import Foundation
 import MoQKitFFI
 
-// MARK: - MoQFrame
+// MARK: - MediaFrame
 
 /// A single compressed media frame received from the relay.
 ///
-/// Frames are delivered in presentation order on ``MoQMediaTrack/frames``.
-/// Most consumers should use ``MoQPlayer`` rather than working with frames directly.
-public struct MoQFrame: Sendable {
+/// Frames are delivered in presentation order on ``MediaTrack/frames``.
+/// Most consumers should use ``Player`` rather than working with frames directly.
+public struct MediaFrame: Sendable {
     /// The raw compressed payload bytes (e.g. an H.264 NAL unit, an AAC packet).
     public let payload: Data
     /// Presentation timestamp in microseconds, relative to the stream origin.
@@ -25,11 +25,11 @@ public struct MoQFrame: Sendable {
 
 // MARK: - Track State
 
-/// The lifecycle state of a ``MoQMediaTrack``.
-public enum MoQTrackState: Sendable, Equatable {
+/// The lifecycle state of a ``MediaTrack``.
+public enum MediaTrackState: Sendable, Equatable {
     /// Subscribed to the track but no frames have arrived yet.
     case idle
-    /// Frames are arriving and being emitted on ``MoQMediaTrack/frames``.
+    /// Frames are arriving and being emitted on ``MediaTrack/frames``.
     case active
     /// The track ended normally (the remote sender closed it).
     case closed
@@ -41,20 +41,20 @@ public enum MoQTrackState: Sendable, Equatable {
 
 /// A low-level subscription to a single MoQ media track.
 ///
-/// `MoQMediaTrack` surfaces raw ``MoQFrame`` values from the relay. In most cases you should
-/// use ``MoQPlayer`` instead, which manages subscriptions and rendering internally.
+/// `MediaTrack` surfaces raw ``MediaFrame`` values from the relay. In most cases you should
+/// use ``Player`` instead, which manages subscriptions and rendering internally.
 ///
 /// Both ``frames`` and ``state`` are `AsyncStream`s that complete when the track ends or when
 /// ``close()`` is called.
-public final class MoQMediaTrack: @unchecked Sendable {
+public final class MediaTrack: @unchecked Sendable {
     /// A stream of raw media frames as they arrive from the relay.
-    public let frames: AsyncStream<MoQFrame>
-    /// A stream of ``MoQTrackState`` transitions. Always yields `.idle` as its first element.
-    public let state: AsyncStream<MoQTrackState>
+    public let frames: AsyncStream<MediaFrame>
+    /// A stream of ``MediaTrackState`` transitions. Always yields `.idle` as its first element.
+    public let state: AsyncStream<MediaTrackState>
 
     private let track: MoqMediaConsumer
-    private let framesContinuation: AsyncStream<MoQFrame>.Continuation
-    private let stateContinuation: AsyncStream<MoQTrackState>.Continuation
+    private let framesContinuation: AsyncStream<MediaFrame>.Continuation
+    private let stateContinuation: AsyncStream<MediaTrackState>.Continuation
     private var readTask: Task<Void, Never>?
 
     init(
@@ -65,11 +65,11 @@ public final class MoQMediaTrack: @unchecked Sendable {
 
         self.track = track
 
-        var framesCont: AsyncStream<MoQFrame>.Continuation!
-        let framesStream = AsyncStream<MoQFrame> { framesCont = $0 }
+        var framesCont: AsyncStream<MediaFrame>.Continuation!
+        let framesStream = AsyncStream<MediaFrame> { framesCont = $0 }
 
-        var stateCont: AsyncStream<MoQTrackState>.Continuation!
-        let stateStream = AsyncStream<MoQTrackState> { stateCont = $0 }
+        var stateCont: AsyncStream<MediaTrackState>.Continuation!
+        let stateStream = AsyncStream<MediaTrackState> { stateCont = $0 }
 
         self.frames = framesStream
         self.state = stateStream
@@ -95,7 +95,7 @@ public final class MoQMediaTrack: @unchecked Sendable {
                         stateCont.yield(.active)
                         isFirstFrame = false
                     }
-                    framesCont.yield(MoQFrame(frame))
+                    framesCont.yield(MediaFrame(frame))
                 } catch {
                     stateCont.yield(.error(error.localizedDescription))
                     return

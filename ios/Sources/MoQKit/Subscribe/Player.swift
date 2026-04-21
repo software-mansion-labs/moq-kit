@@ -6,7 +6,7 @@ import MoQKitFFI
 
 /// A snapshot of playback quality metrics, sampled over the most recent one-second window.
 ///
-/// Obtain the current snapshot via ``MoQPlayer/stats``, which is safe to call from any
+/// Obtain the current snapshot via ``Player/stats``, which is safe to call from any
 /// thread or actor without holding the main actor.
 public struct PlaybackStats: Sendable {
     /// Estimated end-to-end audio latency in milliseconds (wall-clock delay from sender to speaker).
@@ -26,10 +26,10 @@ public struct PlaybackStats: Sendable {
     /// Video bitrate of the incoming stream in kilobits per second. `nil` when no video track is active.
     public let videoBitrateKbps: Double?
 
-    /// Time from ``MoQPlayer/play()`` to the first decoded audio frame, in milliseconds.
+    /// Time from ``Player/play()`` to the first decoded audio frame, in milliseconds.
     /// `nil` before the first frame arrives or when no audio track is active.
     public let timeToFirstAudioFrameMs: Double?
-    /// Time from ``MoQPlayer/play()`` to the first decoded video frame, in milliseconds.
+    /// Time from ``Player/play()`` to the first decoded video frame, in milliseconds.
     /// `nil` before the first frame arrives or when no video track is active.
     public let timeToFirstVideoFrameMs: Double?
 
@@ -58,13 +58,13 @@ public struct StallStats: Sendable {
     public let rebufferingRatio: Double
 }
 
-// MARK: - MoQPlayerEvent
+// MARK: - PlayerEvent
 
-/// Events emitted on ``MoQPlayer/events`` during playback.
-public enum MoQPlayerEvent: Sendable {
+/// Events emitted on ``Player/events`` during playback.
+public enum PlayerEvent: Sendable {
     /// The first frame of the given track kind was successfully decoded and rendered.
     case trackPlaying(TrackKind)
-    /// Playback of the given track kind was paused via ``MoQPlayer/pause()``.
+    /// Playback of the given track kind was paused via ``Player/pause()``.
     case trackPaused(TrackKind)
     /// The remote sender stopped the given track (the track stream ended).
     case trackStopped(TrackKind)
@@ -73,7 +73,7 @@ public enum MoQPlayerEvent: Sendable {
     /// A non-fatal error occurred on the given track. Playback of other tracks continues.
     case error(TrackKind, String)
     /// The first frame of a switched-in rendition was rendered. Emitted after a successful
-    /// ``MoQPlayer/switchTrack(to:)-7ugy3`` or ``MoQPlayer/switchTrack(to:)-3kgck`` call.
+    /// ``Player/switchTrack(to:)-7ugy3`` or ``Player/switchTrack(to:)-3kgck`` call.
     case trackSwitched(TrackKind)
 
     /// Identifies which type of media track an event relates to.
@@ -82,11 +82,11 @@ public enum MoQPlayerEvent: Sendable {
     }
 }
 
-// MARK: - MoQPlayer
+// MARK: - Player
 
 /// Adaptive real-time player for MoQ media streams.
 ///
-/// `MoQPlayer` subscribes to one or two tracks from a ``MoQBroadcastInfo`` (one video and/or
+/// `Player` subscribes to one or two tracks from a ``BroadcastInfo`` (one video and/or
 /// one audio track), decodes the incoming frames, and renders them in sync:
 ///
 /// - Video frames are rendered into ``videoLayer`` — an `AVSampleBufferDisplayLayer` you can
@@ -95,33 +95,33 @@ public enum MoQPlayerEvent: Sendable {
 ///   default audio output. No additional audio session configuration is required.
 ///
 /// ```swift
-/// let player = try MoQPlayer(tracks: broadcastInfo.videoTracks + broadcastInfo.audioTracks)
+/// let player = try Player(tracks: broadcastInfo.videoTracks + broadcastInfo.audioTracks)
 /// view.layer.addSublayer(player.videoLayer)
 /// try await player.play()
 /// ```
 ///
 /// The class is `@MainActor` — all calls must be made from the main actor.
 @MainActor
-public final class MoQPlayer {
+public final class Player {
     /// The `AVSampleBufferDisplayLayer` that receives decoded video frames.
     ///
     /// Add this layer to your view hierarchy before calling ``play()``.
     public let videoLayer: AVSampleBufferDisplayLayer
-    /// Emits ``MoQPlayerEvent`` values as playback progresses.
+    /// Emits ``PlayerEvent`` values as playback progresses.
     ///
     /// The stream completes after ``allTracksStopped`` is emitted or after ``stopAll()`` is called.
-    public let events: AsyncStream<MoQPlayerEvent>
+    public let events: AsyncStream<PlayerEvent>
 
-    private let tracks: [any MoQTrackInfo]
+    private let tracks: [any TrackInfo]
     private var targetBufferingMs: UInt64
-    private let eventsContinuation: AsyncStream<MoQPlayerEvent>.Continuation
+    private let eventsContinuation: AsyncStream<PlayerEvent>.Continuation
 
     private var audioRenderer: AudioRenderer?
     private var videoRenderer: VideoRenderer?
     private var videoRendererTrack: VideoRendererTrack?
 
-    private var videoSubscription: MoQMediaTrack?
-    private var audioSubscription: MoQMediaTrack?
+    private var videoSubscription: MediaTrack?
+    private var audioSubscription: MediaTrack?
 
     private var videoTask: Task<Void, Never>?
     private var audioTask: Task<Void, Never>?
@@ -142,36 +142,36 @@ public final class MoQPlayer {
     }
 
     private nonisolated var hasVideoTrack: Bool {
-        tracks.contains(where: { $0 is MoQVideoTrackInfo })
+        tracks.contains(where: { $0 is VideoTrackInfo })
     }
     private nonisolated var hasAudioTrack: Bool {
-        tracks.contains(where: { $0 is MoQAudioTrackInfo })
+        tracks.contains(where: { $0 is AudioTrackInfo })
     }
 
     /// Creates a player for the given tracks.
     ///
     /// - Parameters:
-    ///   - tracks: One or two ``MoQTrackInfo`` values from ``MoQBroadcastInfo``. Pass at most one
+    ///   - tracks: One or two ``TrackInfo`` values from ``BroadcastInfo``. Pass at most one
     ///     video track and one audio track. Mixing two video or two audio tracks is not supported.
     ///   - targetBufferingMs: Target playout delay in milliseconds. Higher values improve
     ///     resilience to network jitter at the cost of increased end-to-end latency. Defaults
     ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(ms:)``.
-    /// - Throws: ``MoQSessionError/invalidConfiguration(_:)`` if `tracks` is empty or contains
+    /// - Throws: ``SessionError/invalidConfiguration(_:)`` if `tracks` is empty or contains
     ///   more than two entries.
     public init(
-        tracks: [any MoQTrackInfo],
+        tracks: [any TrackInfo],
         targetBufferingMs: UInt64 = 100
     ) throws {
         if tracks.isEmpty || tracks.count > 2 {
-            throw MoQSessionError.invalidConfiguration("expected one or two tracks")
+            throw SessionError.invalidConfiguration("expected one or two tracks")
         }
 
         self.tracks = tracks
         self.targetBufferingMs = targetBufferingMs
         self.videoLayer = AVSampleBufferDisplayLayer()
 
-        let hasVideo = tracks.contains(where: { $0 is MoQVideoTrackInfo })
-        let hasAudio = tracks.contains(where: { $0 is MoQAudioTrackInfo })
+        let hasVideo = tracks.contains(where: { $0 is VideoTrackInfo })
+        let hasAudio = tracks.contains(where: { $0 is AudioTrackInfo })
         if hasVideo && hasAudio {
             mode = .audioVideo
         } else if hasAudio {
@@ -180,7 +180,7 @@ public final class MoQPlayer {
             mode = .videoOnly
         }
 
-        var cont: AsyncStream<MoQPlayerEvent>.Continuation!
+        var cont: AsyncStream<PlayerEvent>.Continuation!
         self.events = AsyncStream { cont = $0 }
         self.eventsContinuation = cont
     }
@@ -219,7 +219,7 @@ public final class MoQPlayer {
     /// Playback events are emitted on ``events``. Call ``pause()`` to temporarily suspend
     /// rendering without releasing the track subscriptions, or ``stopAll()`` to fully tear down.
     ///
-    /// - Throws: ``MoQSessionError`` if a track subscription or renderer initialisation fails.
+    /// - Throws: ``SessionError`` if a track subscription or renderer initialisation fails.
     public func play() async throws {
         guard videoTask == nil && audioTask == nil else { return }
 
@@ -229,12 +229,12 @@ public final class MoQPlayer {
 
         if hasAudioTrack {
             audioTracer = PacketTimingTracer(kind: .audio, timebase: timebase) { report in
-                MoQLogger.player.debug("\(report)")
+                KitLogger.player.debug("\(report)")
             }
         }
         if hasVideoTrack {
             videoTracer = PacketTimingTracer(kind: .video, timebase: timebase) { report in
-                MoQLogger.player.debug("\(report)")
+                KitLogger.player.debug("\(report)")
             }
         }
 
@@ -248,7 +248,7 @@ public final class MoQPlayer {
 
     /// Pauses playback and cancels all track subscriptions.
     ///
-    /// Emits ``MoQPlayerEvent/trackPaused(_:)`` for each active track. To resume, call
+    /// Emits ``PlayerEvent/trackPaused(_:)`` for each active track. To resume, call
     /// ``play()`` again — it will re-subscribe to the tracks and restart rendering from the
     /// current live position.
     public func pause() async {
@@ -265,9 +265,9 @@ public final class MoQPlayer {
     /// Stops playback, closes all track subscriptions, and releases all rendering resources.
     ///
     /// The ``events`` stream completes after this call. The player cannot be reused — create a
-    /// new ``MoQPlayer`` instance to start playback again.
+    /// new ``Player`` instance to start playback again.
     public func stopAll() async {
-        MoQLogger.player.debug("Stopping real-time player")
+        KitLogger.player.debug("Stopping real-time player")
         teardown(permanent: true)
     }
 
@@ -279,23 +279,23 @@ public final class MoQPlayer {
     /// continuity, and `AVSampleBufferDisplayLayer` handles per-frame format description
     /// changes natively.
     ///
-    /// Emits ``MoQPlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
+    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
     /// is rendered.
     ///
-    /// - Parameter track: A ``MoQVideoTrackInfo`` from the same broadcast.
-    /// - Throws: ``MoQSessionError`` if subscribing to the new track fails.
-    public func switchTrack(to track: MoQVideoTrackInfo) async throws {
+    /// - Parameter track: A ``VideoTrackInfo`` from the same broadcast.
+    /// - Throws: ``SessionError`` if subscribing to the new track fails.
+    public func switchTrack(to track: VideoTrackInfo) async throws {
         guard videoTask != nil, let renderer = videoRenderer, !renderer.hasPendingTrack else { return }
 
-        MoQLogger.player.debug("Switching video track to \(track.name)")
+        KitLogger.player.debug("Switching video track to \(track.name)")
 
-        let newSub = try MoQMediaTrack(
+        let newSub = try MediaTrack(
             broadcast: track.broadcast,
             name: track.name,
             container: track.rawConfig.container,
             maxLatencyMs: targetBufferingMs)
         
-        MoQLogger.player.debug(
+        KitLogger.player.debug(
             "[Switch] Video track: \(track.name), codec=\(track.config.codec), config=\(track.config.debugDescription), container=\(track.rawConfig.container)"
         )
 
@@ -308,7 +308,7 @@ public final class MoQPlayer {
         let continuation = eventsContinuation
 
         let newTracer = PacketTimingTracer(kind: .video, timebase: renderer.timebase) { report in
-            MoQLogger.player.debug("\(report)")
+            KitLogger.player.debug("\(report)")
         }
 
         renderer.setPendingTrack(newTrack) {
@@ -338,17 +338,17 @@ public final class MoQPlayer {
     /// write identical PCM to the same positions — there is no audible glitch, and no
     /// ring buffer reset is needed.
     ///
-    /// Emits ``MoQPlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
+    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
     /// is rendered.
     ///
-    /// - Parameter track: A ``MoQAudioTrackInfo`` from the same broadcast.
-    /// - Throws: ``MoQSessionError`` if subscribing to the new track fails.
-    public func switchTrack(to track: MoQAudioTrackInfo) async throws {
+    /// - Parameter track: A ``AudioTrackInfo`` from the same broadcast.
+    /// - Throws: ``SessionError`` if subscribing to the new track fails.
+    public func switchTrack(to track: AudioTrackInfo) async throws {
         guard audioTask != nil else { return }
 
-        MoQLogger.player.debug("Switching audio track to \(track.name)")
+        KitLogger.player.debug("Switching audio track to \(track.name)")
 
-        let newSub = try MoQMediaTrack(
+        let newSub = try MediaTrack(
             broadcast: track.broadcast,
             name: track.name,
             container: track.rawConfig.container,
@@ -421,7 +421,7 @@ public final class MoQPlayer {
             timebaseOut: &tb
         )
         guard let tb else {
-            throw MoQSessionError.invalidConfiguration("Failed to create CMTimebase")
+            throw SessionError.invalidConfiguration("Failed to create CMTimebase")
         }
         CMTimebaseSetTime(tb, time: .zero)
         CMTimebaseSetRate(tb, rate: 0)
@@ -429,7 +429,7 @@ public final class MoQPlayer {
     }
 
     private func setupAudioRenderer(timebase: CMTimebase) throws {
-        guard let aInfo = tracks.compactMap({ $0 as? MoQAudioTrackInfo }).first else {
+        guard let aInfo = tracks.compactMap({ $0 as? AudioTrackInfo }).first else {
             return
         }
 
@@ -445,14 +445,14 @@ public final class MoQPlayer {
     }
 
     private func setupVideoRenderer(timebase: CMTimebase) {
-        guard let vInfo = tracks.compactMap({ $0 as? MoQVideoTrackInfo }).first else { return }
+        guard let vInfo = tracks.compactMap({ $0 as? VideoTrackInfo }).first else { return }
 
         let track: VideoRendererTrack
         do {
             track = try VideoRendererTrack(
                 config: vInfo.rawConfig, targetBufferingMs: targetBufferingMs)
         } catch {
-            MoQLogger.player.error("Failed to create VideoRendererTrack: \(error)")
+            KitLogger.player.error("Failed to create VideoRendererTrack: \(error)")
             return
         }
 
@@ -470,7 +470,7 @@ public final class MoQPlayer {
     }
 
     private func startIngestTasks() {
-        if let aTrack = audioSubscription, let aConfig = tracks.compactMap({ $0 as? MoQAudioTrackInfo }).first?.rawConfig {
+        if let aTrack = audioSubscription, let aConfig = tracks.compactMap({ $0 as? AudioTrackInfo }).first?.rawConfig {
             audioTask = startAudioIngestTask(subscription: aTrack, config: aConfig, isSwitch: false)
         }
 
@@ -486,7 +486,7 @@ public final class MoQPlayer {
     // MARK: - Private: per-track ingest tasks
 
     private func startVideoIngestTask(
-        subscription: MoQMediaTrack,
+        subscription: MediaTrack,
         track: VideoRendererTrack,
         tracer: PacketTimingTracer?,
         isSwitch: Bool
@@ -499,7 +499,7 @@ public final class MoQPlayer {
             var firstFrame = true
             
             defer {
-                MoQLogger.player.debug("Exited reading task")
+                KitLogger.player.debug("Exited reading task")
             }
 
             for await frame in subscription.frames {
@@ -508,7 +508,7 @@ public final class MoQPlayer {
                     currentUs: frame.timestampUs, lastUs: lastPtsUs,
                     keyframe: frame.keyframe
                 ) {
-                    MoQLogger.player.debug("Video discontinuity detected")
+                    KitLogger.player.debug("Video discontinuity detected")
                     tracer?.reset()
                 }
                 lastPtsUs = frame.timestampUs
@@ -537,7 +537,7 @@ public final class MoQPlayer {
     }
 
     private func startAudioIngestTask(
-        subscription: MoQMediaTrack,
+        subscription: MediaTrack,
         config: MoqAudio,
         isSwitch: Bool
     ) -> Task<Void, Never> {
@@ -545,7 +545,7 @@ public final class MoQPlayer {
         let audioTracer = self.audioTracer
         let metrics = self.accumulator
         guard let renderer = self.audioRenderer else {
-            MoQLogger.player.error("startAudioIngestTask called without an active AudioRenderer")
+            KitLogger.player.error("startAudioIngestTask called without an active AudioRenderer")
             return Task.detached {}
         }
 
@@ -554,7 +554,7 @@ public final class MoQPlayer {
             do {
                 decoder = try AudioDecoder(config: config)
             } catch {
-                MoQLogger.player.error("Failed to create AudioDecoder: \(error)")
+                KitLogger.player.error("Failed to create AudioDecoder: \(error)")
                 continuation.yield(.error(.audio, error.localizedDescription))
                 return
             }
@@ -569,7 +569,7 @@ public final class MoQPlayer {
                         currentUs: frame.timestampUs, lastUs: lastPtsUs,
                         keyframe: frame.keyframe
                     ) {
-                        MoQLogger.player.debug("Audio discontinuity detected, flushing")
+                        KitLogger.player.debug("Audio discontinuity detected, flushing")
                         renderer.flush()
                         audioTracer?.reset()
                     }
@@ -583,11 +583,11 @@ public final class MoQPlayer {
                     if firstFrame {
                         firstFrame = false
                         metrics.markFirstAudioFrame()
-                        let event: MoQPlayerEvent = isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
+                        let event: PlayerEvent = isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
                         continuation.yield(event)
                     }
                 } catch {
-                    MoQLogger.player.error("Audio decode error: \(error)")
+                    KitLogger.player.error("Audio decode error: \(error)")
                     continuation.yield(.error(.audio, error.localizedDescription))
                 }
             }
@@ -627,30 +627,30 @@ public final class MoQPlayer {
 
     private func subscribe() throws {
         for track in tracks {
-            if let vInfo = track as? MoQVideoTrackInfo {
-                MoQLogger.player.debug(
+            if let vInfo = track as? VideoTrackInfo {
+                KitLogger.player.debug(
                     "Video track: \(vInfo.name), codec=\(vInfo.config.codec), config=\(vInfo.config.debugDescription), container=\(vInfo.rawConfig.container)"
                 )
                 do {
-                    videoSubscription = try MoQMediaTrack(
+                    videoSubscription = try MediaTrack(
                         broadcast: vInfo.broadcast, name: vInfo.name,
                         container: vInfo.rawConfig.container,
                         maxLatencyMs: targetBufferingMs)
                 } catch {
-                    MoQLogger.player.error(
+                    KitLogger.player.error(
                         "Failed to subscribe to video track \(vInfo.name): \(error)")
                 }
-            } else if let aInfo = track as? MoQAudioTrackInfo {
-                MoQLogger.player.debug(
+            } else if let aInfo = track as? AudioTrackInfo {
+                KitLogger.player.debug(
                     "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription), container=\(aInfo.rawConfig.container)"
                 )
                 do {
-                    audioSubscription = try MoQMediaTrack(
+                    audioSubscription = try MediaTrack(
                         broadcast: aInfo.broadcast, name: aInfo.name,
                         container: aInfo.rawConfig.container,
                         maxLatencyMs: targetBufferingMs)
                 } catch {
-                    MoQLogger.player.error(
+                    KitLogger.player.error(
                         "Failed to subscribe to audio track \(aInfo.name): \(error)")
                 }
             }

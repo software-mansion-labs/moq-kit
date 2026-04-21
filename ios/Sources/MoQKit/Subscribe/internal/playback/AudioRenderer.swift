@@ -113,7 +113,7 @@ final class AudioRenderer: @unchecked Sendable {
         engine.prepare()
         self.engine = engine
 
-        MoQLogger.player.debug(
+        KitLogger.player.debug(
             "AudioRenderer created, format = \(formatDecoder.outputFormat)")
     }
 
@@ -128,12 +128,12 @@ final class AudioRenderer: @unchecked Sendable {
 
     func start() throws {
         try engine.start()
-        MoQLogger.player.debug("AudioRenderer started")
+        KitLogger.player.debug("AudioRenderer started")
     }
 
     func stop() {
         engine.stop()
-        MoQLogger.player.debug("AudioRenderer stopped")
+        KitLogger.player.debug("AudioRenderer stopped")
     }
 
     func updateTargetLatency(ms: Int) {

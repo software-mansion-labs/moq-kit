@@ -6,9 +6,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     let id: String
     let broadcastPath: String
 
-    @Published var selectedVideoTrack: MoQVideoTrackInfo?
-    @Published var info: MoQBroadcastInfo
-    @Published var player: MoQPlayer?
+    @Published var selectedVideoTrack: VideoTrackInfo?
+    @Published var info: BroadcastInfo
+    @Published var player: Player?
     @Published var offline = false
     @Published var isPlaying = false
     @Published var isPaused = false
@@ -21,9 +21,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     private var eventTask: Task<Void, Never>?
     private var statsTimer: Timer?
-    private var pendingVideoTrack: MoQVideoTrackInfo?
+    private var pendingVideoTrack: VideoTrackInfo?
 
-    init(info: MoQBroadcastInfo, initialVideoTrack: MoQVideoTrackInfo?, initialLatencyMs: UInt64) {
+    init(info: BroadcastInfo, initialVideoTrack: VideoTrackInfo?, initialLatencyMs: UInt64) {
         self.id = info.path
         self.broadcastPath = info.path
         self.selectedVideoTrack = initialVideoTrack
@@ -31,12 +31,12 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         self.targetLatencyMs = Double(initialLatencyMs)
     }
 
-    func attach(player: MoQPlayer) {
+    func attach(player: Player) {
         self.player = player
         observeEvents(of: player.events)
     }
 
-    func switchVideoTrack(to track: MoQVideoTrackInfo) {
+    func switchVideoTrack(to track: VideoTrackInfo) {
         pendingVideoTrack = track
         Task { try? await player?.switchTrack(to: track) }
     }
@@ -55,7 +55,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         isPlaying = false
     }
 
-    private func observeEvents(of events: AsyncStream<MoQPlayerEvent>) {
+    private func observeEvents(of events: AsyncStream<PlayerEvent>) {
         eventTask?.cancel()
         eventTask = Task {
             for await event in events {

@@ -3,24 +3,24 @@ import Foundation
 
 /// Common interface for codec-specific audio encoders.
 protocol AudioEncoding {
-    func encode(_ sampleBuffer: CMSampleBuffer) -> [MoQEncodedAudioFrame]
+    func encode(_ sampleBuffer: CMSampleBuffer) -> [EncodedAudioFrame]
     func buildInitData() -> Data
     func stop()
 }
 
 /// Coordinates audio encoding by delegating to a codec-specific encoder (AAC or Opus).
-final class MoQAudioEncoder: @unchecked Sendable {
+final class AudioEncoder: @unchecked Sendable {
     private var encoder: AudioEncoding?
-    private var handler: ((MoQEncodedAudioFrame) -> Void)?
+    private var handler: ((EncodedAudioFrame) -> Void)?
     private var sentInitData = false
 
-    let config: MoQAudioEncoderConfig
+    let config: AudioEncoderConfig
 
-    init(config: MoQAudioEncoderConfig) {
+    init(config: AudioEncoderConfig) {
         self.config = config
     }
 
-    func start(handler: @escaping (MoQEncodedAudioFrame) -> Void) throws {
+    func start(handler: @escaping (EncodedAudioFrame) -> Void) throws {
         self.handler = handler
         sentInitData = false
 
@@ -52,27 +52,27 @@ final class MoQAudioEncoder: @unchecked Sendable {
 
 // MARK: - Types
 
-struct MoQEncodedAudioFrame {
+struct EncodedAudioFrame {
     let data: Data
     let presentationTime: CMTime
     var initData: Data?
 }
 
 /// Codec for audio encoding.
-public enum MoQAudioCodec: Sendable, Hashable {
+public enum AudioCodec: Sendable, Hashable {
     case aac
     case opus
 }
 
 /// Configuration for the audio encoder.
-public struct MoQAudioEncoderConfig: Sendable {
-    public var codec: MoQAudioCodec
+public struct AudioEncoderConfig: Sendable {
+    public var codec: AudioCodec
     public var sampleRate: Double
     public var channels: UInt32
     public var bitrate: UInt32
 
     public init(
-        codec: MoQAudioCodec = .opus,
+        codec: AudioCodec = .opus,
         sampleRate: Double = 48000,
         channels: UInt32 = 1,
         bitrate: UInt32 = 128_000

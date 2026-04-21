@@ -62,10 +62,10 @@ enum AudioSampleRate: Double, CaseIterable, Identifiable {
 // MARK: - View
 
 struct CodecConfigView: View {
-    @Binding var videoCodec: MoQVideoCodec
+    @Binding var videoCodec: VideoCodec
     @Binding var videoResolution: VideoResolution
     @Binding var videoFrameRate: VideoFrameRate
-    @Binding var audioCodec: MoQAudioCodec
+    @Binding var audioCodec: AudioCodec
     @Binding var audioSampleRate: AudioSampleRate
 
     var body: some View {
@@ -79,8 +79,8 @@ struct CodecConfigView: View {
                     .textCase(.uppercase)
 
                 Picker("Codec", selection: $videoCodec) {
-                    Text("H.264").tag(MoQVideoCodec.h264)
-                    Text("H.265").tag(MoQVideoCodec.h265)
+                    Text("H.264").tag(VideoCodec.h264)
+                    Text("H.265").tag(VideoCodec.h265)
                 }
                 .pickerStyle(.segmented)
 
@@ -106,8 +106,8 @@ struct CodecConfigView: View {
                     .textCase(.uppercase)
 
                 Picker("Codec", selection: $audioCodec) {
-                    Text("Opus").tag(MoQAudioCodec.opus)
-                    Text("AAC").tag(MoQAudioCodec.aac)
+                    Text("Opus").tag(AudioCodec.opus)
+                    Text("AAC").tag(AudioCodec.aac)
                 }
                 .pickerStyle(.segmented)
 

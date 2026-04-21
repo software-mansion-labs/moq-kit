@@ -5,7 +5,7 @@ import MoQKitFFI
 ///
 /// Use the per-component `Logger` instances for structured logging. Call
 /// `setNativeLogLevel(_:)` once at startup to configure the Rust log output.
-public enum MoQLogger {
+public enum KitLogger {
     public static let subsystem = "com.swmansion.MoQKit"
 
     static let session = Logger(subsystem: subsystem, category: "session")
