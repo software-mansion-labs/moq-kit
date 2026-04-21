@@ -99,7 +99,10 @@ struct PublishingStatusView: View {
             }
             let sampleRateKHz = Int(sampleRate / 1000)
             return ["\(codecName) \(sampleRateKHz)kHz"]
+        case .data:
+            return []
         }
+            
     }
 }
 

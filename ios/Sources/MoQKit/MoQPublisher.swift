@@ -43,7 +43,7 @@ public enum MoQPublishedTrackState: Sendable {
 public enum MoQTrackCodecInfo: Sendable {
     case video(codec: MoQVideoCodec, width: Int32, height: Int32, frameRate: Double)
     case audio(codec: MoQAudioCodec, sampleRate: Double)
-    case object
+    case data
 }
 
 // MARK: - MoQPublishedTrack
@@ -244,7 +244,7 @@ public final class MoQPublisher {
         name: String = "data",
         source: DataTrackEmitter
     ) -> MoQPublishedTrack {
-        let track = MoQPublishedTrack(name: name, codecInfo: .object)
+        let track = MoQPublishedTrack(name: name, codecInfo: .data)
         datatDescriptors.append(DataTrackDescriptor(track: track, emitter: source))
         return track
     }
