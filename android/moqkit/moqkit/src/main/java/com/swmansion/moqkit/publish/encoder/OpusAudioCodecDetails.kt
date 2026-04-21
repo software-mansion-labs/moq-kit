@@ -4,16 +4,16 @@ import android.media.MediaFormat
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-internal object OpusAudioCodecDetails : MoQAudioCodecDetails {
+internal object OpusAudioCodecDetails : AudioCodecDetails {
     override val mimeType: String = MediaFormat.MIMETYPE_AUDIO_OPUS
 
-    override fun configureFormat(format: MediaFormat, config: MoQAudioEncoderConfig) {
+    override fun configureFormat(format: MediaFormat, config: AudioEncoderConfig) {
         format.setInteger(MediaFormat.KEY_BIT_RATE, config.bitrate)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
     }
 
     override fun buildInitData(
-        config: MoQAudioEncoderConfig,
+        config: AudioEncoderConfig,
         outputFormat: MediaFormat?,
         codecConfig: ByteArray?,
     ): ByteArray {

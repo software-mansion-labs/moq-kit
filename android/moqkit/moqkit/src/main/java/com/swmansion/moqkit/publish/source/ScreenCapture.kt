@@ -40,7 +40,7 @@ class ScreenCapture(
         }, null)
 
         virtualDisplay = proj.createVirtualDisplay(
-            "MoQScreenCapture",
+            "ScreenCapture",
             width, height,
             context.resources.displayMetrics.densityDpi,
             DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,

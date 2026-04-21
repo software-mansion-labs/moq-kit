@@ -5,7 +5,7 @@ package com.swmansion.moqkit.publish
  *
  * NOTE: Full support requires Android bindings rebuild to expose `MoqTrackProducer`.
  * Run `mise run build-android` to regenerate bindings from the current Rust source.
- * After rebuild, update [MoQPublisher.startDataTrack] to wire a real `MoqTrackProducer`.
+ * After rebuild, update `Publisher.startDataTrack` to wire a real `MoqTrackProducer`.
  */
 class DataTrackEmitter {
     @Volatile internal var frameWriter: ((ByteArray) -> Unit)? = null

@@ -19,7 +19,7 @@ import java.util.concurrent.CountDownLatch
 private const val TAG = "GlFanOutRenderer"
 
 internal class GlFanOutRenderer {
-    private val thread = HandlerThread("MoQGlFanOut")
+    private val thread = HandlerThread("GlFanOut")
     private lateinit var handler: Handler
 
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
