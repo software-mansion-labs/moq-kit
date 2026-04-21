@@ -29,11 +29,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.swmansion.moqkit.MoQSession
-import com.swmansion.moqkit.publish.MoQPublishedTrackState
-import com.swmansion.moqkit.publish.MoQPublisherState
-import com.swmansion.moqkit.publish.encoder.MoQAudioCodec
-import com.swmansion.moqkit.publish.encoder.MoQVideoCodec
+import com.swmansion.moqkit.Session
+import com.swmansion.moqkit.publish.PublishedTrackState
+import com.swmansion.moqkit.publish.PublisherState
+import com.swmansion.moqkit.publish.encoder.AudioCodec
+import com.swmansion.moqkit.publish.encoder.VideoCodec
 
 @Composable
 fun MainScreen(vm: PublisherViewModel = viewModel()) {
@@ -119,7 +119,7 @@ fun MainScreen(vm: PublisherViewModel = viewModel()) {
         }
 
         // Publishing status (when publishing)
-        if (vm.isPublishing || vm.publisherState == MoQPublisherState.Stopped) {
+        if (vm.isPublishing || vm.publisherState == PublisherState.Stopped) {
             PublishingStatusCard(vm = vm)
         }
 
@@ -266,7 +266,7 @@ private fun SourceConfigCard(vm: PublisherViewModel) {
 
 @Composable
 private fun CodecConfigCard(vm: PublisherViewModel) {
-    val availableAudioSampleRates = if (vm.audioCodec == MoQAudioCodec.OPUS) {
+    val availableAudioSampleRates = if (vm.audioCodec == AudioCodec.OPUS) {
         listOf(48_000)
     } else {
         listOf(44_100, 48_000)
@@ -279,11 +279,11 @@ private fun CodecConfigCard(vm: PublisherViewModel) {
             // Video codec
             LabeledRow("Video codec") {
                 SingleChoiceSegmentedButtonRow {
-                    MoQVideoCodec.entries.forEachIndexed { i, codec ->
+                    VideoCodec.entries.forEachIndexed { i, codec ->
                         SegmentedButton(
                             selected = vm.videoCodec == codec,
                             onClick = { vm.videoCodec = codec },
-                            shape = SegmentedButtonDefaults.itemShape(i, MoQVideoCodec.entries.size),
+                            shape = SegmentedButtonDefaults.itemShape(i, VideoCodec.entries.size),
                             label = { Text(codec.name) },
                         )
                     }
@@ -321,12 +321,12 @@ private fun CodecConfigCard(vm: PublisherViewModel) {
             // Audio codec
             LabeledRow("Audio codec") {
                 SingleChoiceSegmentedButtonRow {
-                    MoQAudioCodec.entries.forEachIndexed { i, codec ->
+                    AudioCodec.entries.forEachIndexed { i, codec ->
                         SegmentedButton(
                             selected = vm.audioCodec == codec,
                             onClick = { vm.selectAudioCodec(codec) },
-                            shape = SegmentedButtonDefaults.itemShape(i, MoQAudioCodec.entries.size),
-                            label = { Text(if (codec == MoQAudioCodec.OPUS) "Opus" else "AAC") },
+                            shape = SegmentedButtonDefaults.itemShape(i, AudioCodec.entries.size),
+                            label = { Text(if (codec == AudioCodec.OPUS) "Opus" else "AAC") },
                         )
                     }
                 }
@@ -371,7 +371,7 @@ private fun PublishingStatusCard(vm: PublisherViewModel) {
             if (vm.publishedTracks.isNotEmpty()) {
                 HorizontalDivider()
                 vm.publishedTracks.forEach { track ->
-                    val trackState = vm.trackStates[track.name] ?: MoQPublishedTrackState.Idle
+                    val trackState = vm.trackStates[track.name] ?: PublishedTrackState.Idle
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
@@ -405,24 +405,24 @@ private fun LabeledRow(label: String, content: @Composable () -> Unit) {
     }
 }
 
-private fun stateColor(state: MoQSession.State): Color = when (state) {
-    MoQSession.State.Idle -> Color.Gray
-    MoQSession.State.Connecting -> Color(0xFFFFA500)
-    MoQSession.State.Connected -> Color(0xFF2196F3)
-    is MoQSession.State.Error -> Color.Red
-    MoQSession.State.Closed -> Color.Gray
+private fun stateColor(state: Session.State): Color = when (state) {
+    Session.State.Idle -> Color.Gray
+    Session.State.Connecting -> Color(0xFFFFA500)
+    Session.State.Connected -> Color(0xFF2196F3)
+    is Session.State.Error -> Color.Red
+    Session.State.Closed -> Color.Gray
 }
 
-private fun publisherStateColor(state: MoQPublisherState): Color = when (state) {
-    MoQPublisherState.Idle -> Color.Gray
-    MoQPublisherState.Publishing -> Color(0xFF4CAF50)
-    MoQPublisherState.Stopped -> Color(0xFFFFA500)
-    is MoQPublisherState.Error -> Color.Red
+private fun publisherStateColor(state: PublisherState): Color = when (state) {
+    PublisherState.Idle -> Color.Gray
+    PublisherState.Publishing -> Color(0xFF4CAF50)
+    PublisherState.Stopped -> Color(0xFFFFA500)
+    is PublisherState.Error -> Color.Red
 }
 
-private fun trackStateColor(state: MoQPublishedTrackState): Color = when (state) {
-    MoQPublishedTrackState.Idle -> Color.Gray
-    MoQPublishedTrackState.Starting -> Color(0xFFFFA500)
-    MoQPublishedTrackState.Active -> Color(0xFF4CAF50)
-    MoQPublishedTrackState.Stopped -> Color.Gray
+private fun trackStateColor(state: PublishedTrackState): Color = when (state) {
+    PublishedTrackState.Idle -> Color.Gray
+    PublishedTrackState.Starting -> Color(0xFFFFA500)
+    PublishedTrackState.Active -> Color(0xFF4CAF50)
+    PublishedTrackState.Stopped -> Color.Gray
 }

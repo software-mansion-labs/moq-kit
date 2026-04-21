@@ -7,31 +7,31 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.swmansion.moqkit.MoQBroadcastEvent
-import com.swmansion.moqkit.MoQBroadcastInfo
-import com.swmansion.moqkit.MoQPlayer
-import com.swmansion.moqkit.MoQSession
-import com.swmansion.moqkit.MoQTrackInfo
-import com.swmansion.moqkit.MoQVideoTrackInfo
-import com.swmansion.moqkit.PlaybackStats
+import com.swmansion.moqkit.Session
+import com.swmansion.moqkit.subscribe.BroadcastEvent
+import com.swmansion.moqkit.subscribe.BroadcastInfo
+import com.swmansion.moqkit.subscribe.PlaybackStats
+import com.swmansion.moqkit.subscribe.Player
+import com.swmansion.moqkit.subscribe.TrackInfo
+import com.swmansion.moqkit.subscribe.VideoTrackInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 
-class BroadcastEntry(info: MoQBroadcastInfo) {
+class BroadcastEntry(info: BroadcastInfo) {
     val id: String = info.path
     var info by mutableStateOf(info)
-    var player by mutableStateOf<MoQPlayer?>(null)
+    var player by mutableStateOf<Player?>(null)
     var offline by mutableStateOf(false)
     var isPlaying by mutableStateOf(false)
     var isPaused by mutableStateOf(false)
     var targetLatencyMs by mutableStateOf(200)
 
     var playbackStats by mutableStateOf<PlaybackStats?>(null)
-    var selectedVideoTrack by mutableStateOf<MoQVideoTrackInfo?>(null)
-    var pendingVideoTrack by mutableStateOf<MoQVideoTrackInfo?>(null)
+    var selectedVideoTrack by mutableStateOf<VideoTrackInfo?>(null)
+    var pendingVideoTrack by mutableStateOf<VideoTrackInfo?>(null)
 
     internal var eventJob: Job? = null
     internal var statsJob: Job? = null
@@ -39,16 +39,16 @@ class BroadcastEntry(info: MoQBroadcastInfo) {
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    var relayUrl by mutableStateOf("http://192.168.92.140:4443")
+    var relayUrl by mutableStateOf("http://192.168.92.173:4443")
 
-    var sessionState by mutableStateOf<MoQSession.State>(MoQSession.State.Idle)
+    var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
 
-    private var session: MoQSession? = null
+    private var session: Session? = null
     private var sessionJobs: List<Job> = emptyList()
 
     fun connect() {
-        val s = MoQSession(
+        val s = Session(
             url = relayUrl,
             parentScope = viewModelScope,
         )
@@ -61,23 +61,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope.launch {
                 s.broadcasts.collect { event ->
                     when (event) {
-                        is MoQBroadcastEvent.Available -> {
+                        is BroadcastEvent.Available -> {
                             val info = event.info
                             val existing = broadcasts.find { it.id == info.path }
                             if (existing != null) {
-                                existing.player?.stop()
-                                existing.eventJob?.cancel()
                                 existing.info = info
                                 existing.offline = false
-                                startPlayer(existing)
+                                if (hasPlayableTracks(info)) {
+                                    stopEntry(existing)
+                                    existing.info = info
+                                    startPlayer(existing)
+                                }
                             } else {
                                 val entry = BroadcastEntry(info)
                                 broadcasts.add(entry)
-                                startPlayer(entry)
+                                if (hasPlayableTracks(info)) {
+                                    startPlayer(entry)
+                                }
                             }
                         }
 
-                        is MoQBroadcastEvent.Unavailable -> {
+                        is BroadcastEvent.Unavailable -> {
                             val entry = broadcasts.find { it.id == event.path } ?: return@collect
                             stopEntry(entry)
                             entry.offline = true
@@ -115,7 +119,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun switchVideoTrack(entry: BroadcastEntry, track: MoQVideoTrackInfo) {
+    fun switchVideoTrack(entry: BroadcastEntry, track: VideoTrackInfo) {
         entry.pendingVideoTrack = track
         entry.player?.switchVideoTrack(track) {
             viewModelScope.launch(Dispatchers.Main) {
@@ -138,16 +142,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         entry.pendingVideoTrack = null
     }
 
+    private fun hasPlayableTracks(info: BroadcastInfo): Boolean {
+        return info.videoTracks.isNotEmpty() || info.audioTracks.isNotEmpty()
+    }
+
     private fun startPlayer(entry: BroadcastEntry) {
         val initialVideo = entry.info.videoTracks.maxByOrNull { track ->
             (track.config.coded?.height ?: 0u) * (track.config.coded?.width ?: 0u)
         }
 
-        val tracks = buildList<MoQTrackInfo> {
+        val tracks = buildList<TrackInfo> {
             addAll(entry.info.audioTracks)
             if (initialVideo != null) add(initialVideo)
         }
-        val player = MoQPlayer(tracks, entry.targetLatencyMs, viewModelScope)
+        if (tracks.isEmpty()) {
+            return
+        }
+
+        val player = try {
+            Player(tracks, entry.targetLatencyMs, viewModelScope)
+        } catch (_: IllegalArgumentException) {
+            return
+        }
         entry.player = player
         entry.selectedVideoTrack = initialVideo
         player.play()
@@ -155,14 +171,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         entry.eventJob = viewModelScope.launch {
             player.events.collect { ev ->
                 when (ev) {
-                    is MoQPlayer.Event.TrackPlaying -> {
+                    is Player.Event.TrackPlaying -> {
                         entry.isPlaying = true
                         entry.isPaused = false
                     }
 
-                    is MoQPlayer.Event.TrackStopped -> entry.isPlaying = false
-                    is MoQPlayer.Event.Error -> entry.isPlaying = false
-                    is MoQPlayer.Event.AllTracksStopped -> entry.isPlaying = false
+                    is Player.Event.TrackStopped -> entry.isPlaying = false
+                    is Player.Event.Error -> entry.isPlaying = false
+                    is Player.Event.AllTracksStopped -> entry.isPlaying = false
                     else -> {}
                 }
             }
@@ -184,7 +200,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         broadcasts.clear()
         val s = session
         session = null
-        sessionState = MoQSession.State.Idle
+        sessionState = Session.State.Idle
         viewModelScope.launch { s?.close() }
     }
 

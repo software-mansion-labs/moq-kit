@@ -61,9 +61,9 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.swmansion.moqkit.MoQSession
-import com.swmansion.moqkit.MoQVideoTrackInfo
-import com.swmansion.moqkit.PlaybackStats
+import com.swmansion.moqkit.Session
+import com.swmansion.moqkit.subscribe.PlaybackStats
+import com.swmansion.moqkit.subscribe.VideoTrackInfo
 import kotlinx.coroutines.delay
 
 @Composable
@@ -110,15 +110,15 @@ fun MainScreen(vm: MainViewModel = viewModel()) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
                     onClick = { vm.connect() },
-                    enabled = vm.sessionState is MoQSession.State.Idle &&
+                    enabled = vm.sessionState is Session.State.Idle &&
                             vm.relayUrl.isNotEmpty(),
                 ) {
                     Text("Connect")
                 }
                 OutlinedButton(
                     onClick = { vm.stop() },
-                    enabled = vm.sessionState is MoQSession.State.Connecting ||
-                            vm.sessionState is MoQSession.State.Connected,
+                    enabled = vm.sessionState is Session.State.Connecting ||
+                            vm.sessionState is Session.State.Connected,
                 ) {
                     Text("Stop")
                 }
@@ -644,19 +644,19 @@ private fun RenditionPickerRow(entry: BroadcastEntry, vm: MainViewModel) {
     }
 }
 
-private fun stateLabel(state: MoQSession.State): String = when (state) {
-    MoQSession.State.Idle -> "idle"
-    MoQSession.State.Connecting -> "connecting..."
-    MoQSession.State.Connected -> "connected"
-    is MoQSession.State.Error -> "error: ${state.message}"
-    MoQSession.State.Closed -> "closed"
+private fun stateLabel(state: Session.State): String = when (state) {
+    Session.State.Idle -> "idle"
+    Session.State.Connecting -> "connecting..."
+    Session.State.Connected -> "connected"
+    is Session.State.Error -> "error: ${state.message}"
+    Session.State.Closed -> "closed"
 }
 
 @Composable
-private fun stateColor(state: MoQSession.State): Color = when (state) {
-    MoQSession.State.Idle -> Color.Gray
-    MoQSession.State.Connecting -> Color(0xFFFFA500)
-    MoQSession.State.Connected -> Color.Blue
-    is MoQSession.State.Error -> Color.Red
-    MoQSession.State.Closed -> Color.Gray
+private fun stateColor(state: Session.State): Color = when (state) {
+    Session.State.Idle -> Color.Gray
+    Session.State.Connecting -> Color(0xFFFFA500)
+    Session.State.Connected -> Color.Blue
+    is Session.State.Error -> Color.Red
+    Session.State.Closed -> Color.Gray
 }

@@ -11,16 +11,16 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
-import com.swmansion.moqkit.MoQSession
-import com.swmansion.moqkit.publish.MoQPublisher
-import com.swmansion.moqkit.publish.MoQPublishedTrack
-import com.swmansion.moqkit.publish.MoQPublishedTrackState
-import com.swmansion.moqkit.publish.MoQPublisherEvent
-import com.swmansion.moqkit.publish.MoQPublisherState
-import com.swmansion.moqkit.publish.encoder.MoQAudioCodec
-import com.swmansion.moqkit.publish.encoder.MoQAudioEncoderConfig
-import com.swmansion.moqkit.publish.encoder.MoQVideoCodec
-import com.swmansion.moqkit.publish.encoder.MoQVideoEncoderConfig
+import com.swmansion.moqkit.Session
+import com.swmansion.moqkit.publish.Publisher
+import com.swmansion.moqkit.publish.PublishedTrack
+import com.swmansion.moqkit.publish.PublishedTrackState
+import com.swmansion.moqkit.publish.PublisherEvent
+import com.swmansion.moqkit.publish.PublisherState
+import com.swmansion.moqkit.publish.encoder.AudioCodec
+import com.swmansion.moqkit.publish.encoder.AudioEncoderConfig
+import com.swmansion.moqkit.publish.encoder.VideoCodec
+import com.swmansion.moqkit.publish.encoder.VideoEncoderConfig
 import com.swmansion.moqkit.publish.source.CameraCapture
 import com.swmansion.moqkit.publish.source.CameraPosition
 import com.swmansion.moqkit.publish.source.MicrophoneCapture
@@ -55,44 +55,44 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     var cameraPosition by mutableStateOf(CameraPosition.Front)
 
     // Codec settings
-    var videoCodec by mutableStateOf(MoQVideoCodec.H264)
-    var audioCodec by mutableStateOf(MoQAudioCodec.AAC)
+    var videoCodec by mutableStateOf(VideoCodec.H264)
+    var audioCodec by mutableStateOf(AudioCodec.AAC)
     var videoResolution by mutableStateOf(VideoResolution.HD)
     var videoFrameRate by mutableStateOf(VideoFrameRate.FPS30)
     var audioSampleRate by mutableStateOf(48_000)
 
     // Observable state
-    var sessionState by mutableStateOf<MoQSession.State>(MoQSession.State.Idle)
-    var publisherState by mutableStateOf<MoQPublisherState>(MoQPublisherState.Idle)
-    val trackStates = mutableStateMapOf<String, MoQPublishedTrackState>()
-    var publishedTracks by mutableStateOf<List<MoQPublishedTrack>>(emptyList())
+    var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
+    var publisherState by mutableStateOf<PublisherState>(PublisherState.Idle)
+    val trackStates = mutableStateMapOf<String, PublishedTrackState>()
+    var publishedTracks by mutableStateOf<List<PublishedTrack>>(emptyList())
     var lastError by mutableStateOf<String?>(null)
 
-    val isPublishing get() = publisherState == MoQPublisherState.Publishing
-    val canPublish get() = sessionState == MoQSession.State.Idle
-            && publisherState == MoQPublisherState.Idle
+    val isPublishing get() = publisherState == PublisherState.Publishing
+    val canPublish get() = sessionState == Session.State.Idle
+            && publisherState == PublisherState.Idle
             && (cameraEnabled || micEnabled || screenEnabled)
-    val canStop get() = isPublishing || sessionState == MoQSession.State.Connecting
-            || sessionState == MoQSession.State.Connected
+    val canStop get() = isPublishing || sessionState == Session.State.Connecting
+            || sessionState == Session.State.Connected
 
     val stateLabel get() = when (val s = sessionState) {
-        MoQSession.State.Idle -> "idle"
-        MoQSession.State.Connecting -> "connecting…"
-        MoQSession.State.Connected -> "connected"
-        is MoQSession.State.Error -> "error: ${s.message}"
-        MoQSession.State.Closed -> "closed"
+        Session.State.Idle -> "idle"
+        Session.State.Connecting -> "connecting…"
+        Session.State.Connected -> "connected"
+        is Session.State.Error -> "error: ${s.message}"
+        Session.State.Closed -> "closed"
     }
 
     val publisherStateLabel get() = when (val s = publisherState) {
-        MoQPublisherState.Idle -> "idle"
-        MoQPublisherState.Publishing -> "publishing"
-        MoQPublisherState.Stopped -> "stopped"
-        is MoQPublisherState.Error -> "error: ${s.message}"
+        PublisherState.Idle -> "idle"
+        PublisherState.Publishing -> "publishing"
+        PublisherState.Stopped -> "stopped"
+        is PublisherState.Error -> "error: ${s.message}"
     }
 
     // Internal state
-    private var session: MoQSession? = null
-    private var publisher: MoQPublisher? = null
+    private var session: Session? = null
+    private var publisher: Publisher? = null
     private var camera: CameraCapture? = null
     private var microphone: MicrophoneCapture? = null
     private var screenCapture: ScreenCapture? = null
@@ -145,9 +145,9 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         screenProjectionData = null
     }
 
-    fun selectAudioCodec(codec: MoQAudioCodec) {
+    fun selectAudioCodec(codec: AudioCodec) {
         audioCodec = codec
-        if (codec == MoQAudioCodec.OPUS && audioSampleRate != 48_000) {
+        if (codec == AudioCodec.OPUS && audioSampleRate != 48_000) {
             audioSampleRate = 48_000
         }
     }
@@ -157,7 +157,7 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         trackStates.clear()
         publishedTracks = emptyList()
 
-        val s = MoQSession(url = relayUrl, parentScope = viewModelScope)
+        val s = Session(url = relayUrl, parentScope = viewModelScope)
         session = s
 
         sessionJob = s.state.onEach { sessionState = it }.launchIn(viewModelScope)
@@ -166,21 +166,21 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 s.connect()
 
-                val pub = MoQPublisher()
+                val pub = Publisher()
                 publisher = pub
 
-                val videoConfig = MoQVideoEncoderConfig(
+                val videoConfig = VideoEncoderConfig(
                     codec = videoCodec,
                     width = videoResolution.width,
                     height = videoResolution.height,
                     frameRate = videoFrameRate.fps,
                 )
-                val audioConfig = MoQAudioEncoderConfig(
+                val audioConfig = AudioEncoderConfig(
                     codec = audioCodec,
                     sampleRate = audioSampleRate,
                 )
 
-                val tracks = mutableListOf<MoQPublishedTrack>()
+                val tracks = mutableListOf<PublishedTrack>()
 
                 if (cameraEnabled) {
                     val cam = camera ?: CameraCapture(position = cameraPosition).also {
@@ -189,7 +189,7 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
                         camera = it
                     }
                     tracks += pub.addVideoTrack(name = "camera", source = cam, config = videoConfig)
-                    trackStates["camera"] = MoQPublishedTrackState.Idle
+                    trackStates["camera"] = PublishedTrackState.Idle
                 }
 
                 if (micEnabled) {
@@ -197,7 +197,7 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
                     microphone = mic
                     mic.start()
                     tracks += pub.addAudioTrack(name = "mic", source = mic, config = audioConfig)
-                    trackStates["mic"] = MoQPublishedTrackState.Idle
+                    trackStates["mic"] = PublishedTrackState.Idle
                 }
 
                 if (screenEnabled) {
@@ -220,7 +220,7 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
                     screenCapture = screen
                     screen.start(getApplication())
                     tracks += pub.addVideoTrack(name = "screen", source = screen, config = videoConfig)
-                    trackStates["screen"] = MoQPublishedTrackState.Idle
+                    trackStates["screen"] = PublishedTrackState.Idle
                 }
 
                 publishedTracks = tracks
@@ -248,8 +248,8 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         session = null
         publishedTracks = emptyList()
         trackStates.clear()
-        publisherState = MoQPublisherState.Idle
-        sessionState = MoQSession.State.Idle
+        publisherState = PublisherState.Idle
+        sessionState = Session.State.Idle
 
         viewModelScope.launch {
             pub?.stop()
@@ -277,8 +277,8 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         session = null
         publishedTracks = emptyList()
         trackStates.clear()
-        publisherState = MoQPublisherState.Idle
-        sessionState = MoQSession.State.Idle
+        publisherState = PublisherState.Idle
+        sessionState = Session.State.Idle
 
         viewModelScope.launch {
             try {
@@ -303,15 +303,15 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         // Camera is kept alive for preview — only stopped on demand
     }
 
-    private fun observePublisher(pub: MoQPublisher, tracks: List<MoQPublishedTrack>) {
+    private fun observePublisher(pub: Publisher, tracks: List<PublishedTrack>) {
         publisherJobs += pub.state.onEach { publisherState = it }.launchIn(viewModelScope)
 
         publisherJobs += pub.events.onEach { event ->
             when (event) {
-                is MoQPublisherEvent.TrackStarted -> trackStates[event.name] = MoQPublishedTrackState.Active
-                is MoQPublisherEvent.TrackStopped -> trackStates[event.name] = MoQPublishedTrackState.Stopped
-                is MoQPublisherEvent.TrackError -> {
-                    trackStates[event.name] = MoQPublishedTrackState.Stopped
+                is PublisherEvent.TrackStarted -> trackStates[event.name] = PublishedTrackState.Active
+                is PublisherEvent.TrackStopped -> trackStates[event.name] = PublishedTrackState.Stopped
+                is PublisherEvent.TrackError -> {
+                    trackStates[event.name] = PublishedTrackState.Stopped
                     lastError = "${event.name}: ${event.message}"
                 }
             }
