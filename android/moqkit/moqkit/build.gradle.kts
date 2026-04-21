@@ -82,6 +82,14 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.18.1@aar")
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
+
+    // CameraX
+    val cameraVersion = "1.4.2"
+    api("androidx.lifecycle:lifecycle-common:2.8.7")
+    implementation("androidx.camera:camera-lifecycle:$cameraVersion")
+    implementation("androidx.camera:camera-core:$cameraVersion")
+    implementation("androidx.camera:camera-camera2:$cameraVersion")
+
     testImplementation(libs.junit)
     testImplementation("net.java.dev.jna:jna:5.18.1@aar")
     androidTestImplementation(libs.androidx.junit)

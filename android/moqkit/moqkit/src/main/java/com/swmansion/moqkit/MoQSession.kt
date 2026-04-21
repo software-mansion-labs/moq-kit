@@ -18,6 +18,7 @@ import uniffi.moq.MoqClient
 import uniffi.moq.MoqOriginConsumer
 import uniffi.moq.MoqOriginProducer
 import android.util.Log
+import com.swmansion.moqkit.publish.MoQPublisher
 import uniffi.moq.MoqSession as UniMoqSession
 
 /**
@@ -81,6 +82,7 @@ class MoQSession(
     private var session: UniMoqSession? = null
     private var client: MoqClient? = null
     private var origin: MoqOriginProducer? = null
+    private var publishOrigin: MoqOriginProducer? = null
     private var consumer: MoqOriginConsumer? = null
     private var announced: MoqAnnounced? = null
     private var monitorJob: Job? = null
@@ -89,6 +91,7 @@ class MoQSession(
     // Per-path broadcast state: path -> catalogWatchJob
     private val activeBroadcasts = mutableMapOf<String, Job>()
     private val catalogConsumers = mutableMapOf<String, MoqCatalogConsumer>()
+    private val activePublishers = mutableMapOf<String, MoQPublisher>()
 
     /**
      * Opens the QUIC connection and begins watching for broadcast announcements.
@@ -108,10 +111,14 @@ class MoQSession(
             origin = newOrigin
             Log.d(TAG, "Origin created")
 
+            val newPublishOrigin = MoqOriginProducer()
+            publishOrigin = newPublishOrigin
+
             val newClient = MoqClient()
             newClient.setTlsDisableVerify(true)
             client = newClient
             newClient.setConsume(newOrigin)
+            newClient.setPublish(newPublishOrigin)
 
             val newSession = newClient.connect(url)
             session = newSession
@@ -217,6 +224,34 @@ class MoQSession(
     }
 
     /**
+     * Publish a broadcast to the relay at the given path.
+     *
+     * The publisher's broadcast is registered with the relay. Call [MoQPublisher.start] after
+     * this to begin encoding and sending frames.
+     *
+     * @param path Broadcast path on the relay (e.g. `"live/my-stream"`).
+     * @param publisher A configured [MoQPublisher] with at least one track added.
+     * @throws IllegalStateException if the session is not connected.
+     */
+    fun publish(path: String, publisher: MoQPublisher) {
+        check(_state.value == State.Connected) { "Session must be connected before publishing" }
+        check(!activePublishers.containsKey(path)) { "Already publishing at '$path'. Call unpublish() first." }
+        val po = publishOrigin ?: error("Publish origin not available")
+        Log.d(TAG, "Publishing broadcast at '$path'")
+        po.publish(path, publisher.broadcast)
+        activePublishers[path] = publisher
+    }
+
+    /**
+     * Stop publishing at the given path. Calls [MoQPublisher.stop] on the associated publisher.
+     */
+    fun unpublish(path: String) {
+        val publisher = activePublishers.remove(path) ?: return
+        Log.d(TAG, "Unpublishing broadcast at '$path'")
+        publisher.stop()
+    }
+
+    /**
      * Closes the session and releases all resources.
      *
      * Safe to call from any thread. No-op if the session is already [State.Closed].
@@ -250,6 +285,10 @@ class MoQSession(
         jobs.forEach { it.cancel() }
         catalogs.forEach { it.cancel(); it.close() }
 
+        // Stop active publishers
+        activePublishers.values.forEach { it.stop() }
+        activePublishers.clear()
+
         // Cancel background jobs
         monitorJob?.cancel()
         announcedJob?.cancel()
@@ -269,6 +308,9 @@ class MoQSession(
         client?.cancel()
         client?.close()
         client = null
+
+        publishOrigin?.close()
+        publishOrigin = null
 
         origin?.close()
         origin = null
