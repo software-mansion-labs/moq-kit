@@ -316,13 +316,13 @@ struct EncodedVideoFrame {
 }
 
 /// Codec for video encoding.
-public enum VideoCodec: Sendable, Hashable {
+public enum VideoCodec: String, Sendable, Hashable, Codable {
     case h264
     case h265
 }
 
 /// NAL unit framing format.
-public enum NaluFormat: Sendable {
+public enum NaluFormat: String, Sendable, Codable {
     /// Annex B start codes (`00 00 00 01`).
     case annexB
     /// 4-byte big-endian length prefix (AVCC/HVCC box style).
@@ -330,7 +330,7 @@ public enum NaluFormat: Sendable {
 }
 
 /// Configuration for the hardware video encoder.
-public struct VideoEncoderConfig: Sendable {
+public struct VideoEncoderConfig: Sendable, Codable {
     public var codec: VideoCodec
     public var width: Int32
     public var height: Int32

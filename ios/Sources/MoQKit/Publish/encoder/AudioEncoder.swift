@@ -59,13 +59,13 @@ struct EncodedAudioFrame {
 }
 
 /// Codec for audio encoding.
-public enum AudioCodec: Sendable, Hashable {
+public enum AudioCodec: String, Sendable, Hashable, Codable {
     case aac
     case opus
 }
 
 /// Configuration for the audio encoder.
-public struct AudioEncoderConfig: Sendable {
+public struct AudioEncoderConfig: Sendable, Codable {
     public var codec: AudioCodec
     public var sampleRate: Double
     public var channels: UInt32

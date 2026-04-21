@@ -16,7 +16,12 @@ public final class FrameRelay: FrameSource, @unchecked Sendable {
     }
 }
 
-/// Wraps `RPScreenRecorder` to capture the device screen and optionally app audio.
+/// Wraps `RPScreenRecorder` to capture in-app screen frames and optionally app audio.
+///
+/// Important: this capture mode runs inside the host app process. When the app is
+/// backgrounded (for example after switching to another app), delivery of frames can
+/// stop. For full-device capture across app switches, use ReplayKit Broadcast Upload
+/// Extension flow with ``ReplayKitBroadcastPipeline``.
 public final class ScreenCapture: @unchecked Sendable {
     /// Frame source for captured video frames.
     public let videoSource = FrameRelay()
