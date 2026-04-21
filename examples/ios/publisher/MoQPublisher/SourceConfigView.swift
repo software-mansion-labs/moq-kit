@@ -38,7 +38,7 @@ struct SourceConfigView: View {
                     .padding(.leading, 4)
                 }
 
-                Toggle("Screen Capture", isOn: $screenEnabled)
+                Toggle("Screen (ReplayKit)", isOn: $screenEnabled)
                     .disabled(isPublishing)
             }
 
@@ -53,7 +53,7 @@ struct SourceConfigView: View {
                 Toggle("Microphone", isOn: $micEnabled)
                     .disabled(isPublishing)
 
-                Toggle("Screen Audio", isOn: $screenAudioEnabled)
+                Toggle("Screen Audio (ReplayKit)", isOn: $screenAudioEnabled)
                     .disabled(isPublishing)
             }
         }

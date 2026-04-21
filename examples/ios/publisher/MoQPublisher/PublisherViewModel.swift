@@ -14,6 +14,9 @@ final class PublisherViewModel: ObservableObject {
     @Published var screenEnabled = false
     @Published var micEnabled = true
     @Published var screenAudioEnabled = false
+    @Published var replayKitAppGroupIdentifier = "group.com.swmansion.moqpublisher"
+    @Published var replayKitExtensionBundleIdentifier = "com.swmansion.moqpublisher.broadcastupload"
+    @Published var replayKitPrepared = false
     @Published var cameraPosition: CameraPosition = .front
     @Published var videoCodec: VideoCodec = .h265
     @Published var videoResolution: VideoResolution = .hd
@@ -35,7 +38,6 @@ final class PublisherViewModel: ObservableObject {
 
     private var camera: CameraCapture?
     private var microphone: MicrophoneCapture?
-    private var screenCapture: ScreenCapture?
 
     // MARK: - Computed Properties
 
@@ -50,9 +52,18 @@ final class PublisherViewModel: ObservableObject {
         return cameraEnabled || screenEnabled || micEnabled || screenAudioEnabled
     }
 
+    var hasReplayKitTracks: Bool {
+        screenEnabled || screenAudioEnabled
+    }
+
+    var hasLocalTracks: Bool {
+        cameraEnabled || micEnabled
+    }
+
     var canStop: Bool {
         if case .publishing = publisherState { return true }
         if sessionState == .connecting || sessionState == .connected { return true }
+        if replayKitPrepared { return true }
         return false
     }
 
@@ -144,9 +155,42 @@ final class PublisherViewModel: ObservableObject {
 
     // MARK: - Publish Lifecycle
 
+    func prepareReplayKitDescriptor(url: String, path: String) {
+        do {
+            guard !replayKitAppGroupIdentifier.isEmpty else {
+                throw ReplayKitBroadcastError.invalidAppGroup("App Group is empty")
+            }
+            let descriptor = ReplayKitBroadcastDescriptor(
+                relayURL: url,
+                broadcastPath: path + "/screenshare"
+            )
+            let store = ReplayKitBroadcastDescriptorStore(
+                appGroupIdentifier: replayKitAppGroupIdentifier
+            )
+            try store.save(descriptor)
+            lastError = nil
+            replayKitPrepared = true
+        } catch {
+            print(error)
+            lastError = "ReplayKit config failed: \(error.localizedDescription)"
+            replayKitPrepared = false
+        }
+    }
+
     func publish(url: String, path: String) {
         lastError = nil
+        publishedTracks = []
         trackStates = [:]
+
+        if hasReplayKitTracks {
+            prepareReplayKitDescriptor(url: url, path: path)
+            if lastError != nil { return }
+        }
+
+        guard hasLocalTracks else {
+            publisherState = .publishing
+            return
+        }
 
         let s = Session(url: url)
         session = s
@@ -193,16 +237,6 @@ final class PublisherViewModel: ObservableObject {
                     self.trackStates["camera"] = .idle
                 }
 
-                if self.screenEnabled {
-                    let sc = ScreenCapture()
-                    self.screenCapture = sc
-                    try await sc.start()
-
-                    let track = pub.addVideoTrack(name: "screen", source: sc.videoSource, config: videoEncoderConfig)
-                    self.publishedTracks.append(track)
-                    self.trackStates["screen"] = .idle
-                }
-
                 if self.micEnabled {
                     let mic = MicrophoneCapture()
                     self.microphone = mic
@@ -211,22 +245,6 @@ final class PublisherViewModel: ObservableObject {
                     let track = pub.addAudioTrack(name: "mic", source: mic, config: audioEncoderConfig)
                     self.publishedTracks.append(track)
                     self.trackStates["mic"] = .idle
-                }
-
-                if self.screenAudioEnabled {
-                    // Reuse existing screen capture or create a new one
-                    let sc: ScreenCapture
-                    if let existing = self.screenCapture {
-                        sc = existing
-                    } else {
-                        sc = ScreenCapture()
-                        self.screenCapture = sc
-                        try await sc.start()
-                    }
-
-                    let track = pub.addAudioTrack(name: "screen-audio", source: sc.audioSource, config: audioEncoderConfig)
-                    self.publishedTracks.append(track)
-                    self.trackStates["screen-audio"] = .idle
                 }
 
                 try s.publish(path: path, publisher: pub)
@@ -255,8 +273,6 @@ final class PublisherViewModel: ObservableObject {
 
         // Capture references before clearing — the detached task needs them.
         let pub = publisher
-        let sess = session
-
         publisher = nil
         session = nil
         publishedTracks = []
@@ -279,6 +295,16 @@ final class PublisherViewModel: ObservableObject {
         logger.info("cleaning up capture sources")
         cleanupCaptureSources()
         logger.info("capture sources cleaned up")
+
+        do {
+            let store = ReplayKitBroadcastDescriptorStore(
+                appGroupIdentifier: replayKitAppGroupIdentifier
+            )
+            try store.clear()
+            replayKitPrepared = false
+        } catch {
+            lastError = "ReplayKit cleanup failed: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Private
@@ -288,11 +314,6 @@ final class PublisherViewModel: ObservableObject {
         camera = nil
         microphone?.stop()
         microphone = nil
-        if let sc = screenCapture {
-            let capture = sc
-            screenCapture = nil
-            Task { await capture.stop() }
-        }
     }
 
     private func observePublisher(_ pub: Publisher) {

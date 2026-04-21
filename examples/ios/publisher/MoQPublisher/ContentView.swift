@@ -40,6 +40,59 @@ struct ContentView: View {
                     Spacer()
                 }
 
+                if viewModel.hasReplayKitTracks {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("ReplayKit Broadcast")
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.tertiary)
+                            .textCase(.uppercase)
+
+                        TextField("App Group ID", text: $viewModel.replayKitAppGroupIdentifier)
+                            .textFieldStyle(.roundedBorder)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .disabled(isPublishing)
+
+                        TextField(
+                            "Broadcast Extension Bundle ID (optional)",
+                            text: $viewModel.replayKitExtensionBundleIdentifier
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .disabled(isPublishing)
+
+                        Button("Prepare ReplayKit Config") {
+                            viewModel.prepareReplayKitDescriptor(
+                                url: relayURL,
+                                path: broadcastPath
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(isPublishing)
+
+                        HStack(spacing: 8) {
+                            Text("Start System Broadcast")
+                                .font(.subheadline)
+                            ReplayKitBroadcastPickerButton(
+                                preferredExtension: viewModel.replayKitExtensionBundleIdentifier
+                                    .isEmpty
+                                    ? nil : viewModel.replayKitExtensionBundleIdentifier
+                            )
+                            .frame(width: 44, height: 44)
+                        }
+
+                        Text(
+                            "Use the system broadcast UI to stream full screen across app switches."
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(12)
+                    .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
+                }
+
                 // Camera preview
                 if viewModel.cameraEnabled && viewModel.isPreviewRunning,
                     let previewSession = viewModel.previewSession
