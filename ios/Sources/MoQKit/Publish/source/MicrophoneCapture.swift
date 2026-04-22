@@ -1,8 +1,8 @@
 import AVFoundation
 
-/// Wraps `AVCaptureSession` to capture raw PCM audio from the microphone.
+/// Wraps `AVCaptureSession` to capture raw PCM audio from the current system microphone route.
 public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable {
-    private let session = AVCaptureSession()
+    public let captureSession = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.swmansion.MoQKit.MicrophoneCapture")
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
 
@@ -15,27 +15,29 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
             (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 do {
-                    session.beginConfiguration()
+                    captureSession.usesApplicationAudioSession = true
+                    captureSession.automaticallyConfiguresApplicationAudioSession = false
+                    captureSession.beginConfiguration()
 
                     guard let device = AVCaptureDevice.default(for: .audio) else {
                         throw SessionError.invalidConfiguration("No microphone available")
                     }
 
                     let input = try AVCaptureDeviceInput(device: device)
-                    guard session.canAddInput(input) else {
+                    guard captureSession.canAddInput(input) else {
                         throw SessionError.invalidConfiguration("Cannot add microphone input")
                     }
-                    session.addInput(input)
+                    captureSession.addInput(input)
 
                     let output = AVCaptureAudioDataOutput()
                     output.setSampleBufferDelegate(self, queue: queue)
-                    guard session.canAddOutput(output) else {
+                    guard captureSession.canAddOutput(output) else {
                         throw SessionError.invalidConfiguration("Cannot add audio output")
                     }
-                    session.addOutput(output)
+                    captureSession.addOutput(output)
 
-                    session.commitConfiguration()
-                    session.startRunning()
+                    captureSession.commitConfiguration()
+                    captureSession.startRunning()
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -46,7 +48,7 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
 
     public func stop() {
         queue.async { [self] in
-            self.session.stopRunning()
+            self.captureSession.stopRunning()
         }
         onFrame = nil
     }

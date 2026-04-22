@@ -5,8 +5,9 @@ import SwiftUI
 struct MoQPublisherApp: App {
     init() {
         try? AVAudioSession.sharedInstance().setCategory(
-            .playAndRecord, mode: .videoRecording,
-            options: [.defaultToSpeaker, .allowBluetooth]
+            .playAndRecord,
+            mode: .videoRecording,
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
         )
         try? AVAudioSession.sharedInstance().setActive(true)
     }

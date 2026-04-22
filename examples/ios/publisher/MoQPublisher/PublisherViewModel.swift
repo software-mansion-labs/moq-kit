@@ -119,7 +119,7 @@ final class PublisherViewModel: ObservableObject {
     func startPreview() {
         guard cameraCapture == nil, cameraEnabled else { return }
 
-        let cam = CameraCapture(position: cameraPosition)
+        let cam = CameraCapture(camera: Camera(position: cameraPosition))
         cameraCapture = cam
         isPreviewRunning = true
 
@@ -146,7 +146,7 @@ final class PublisherViewModel: ObservableObject {
 
         if let cameraCapture {
             do {
-                try cameraCapture.switchCamera(to: newPosition)
+                try cameraCapture.switch(to: Camera(position: newPosition))
             } catch {
                 lastError = "Camera switch failed: \(error.localizedDescription)"
             }
@@ -226,7 +226,7 @@ final class PublisherViewModel: ObservableObject {
                     if let existing = self.cameraCapture {
                         cam = existing
                     } else {
-                        cam = CameraCapture(position: self.cameraPosition)
+                        cam = CameraCapture(camera: Camera(position: self.cameraPosition))
                         self.cameraCapture = cam
                         try await cam.start()
                     }

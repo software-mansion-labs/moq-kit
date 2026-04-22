@@ -33,18 +33,12 @@ public enum VideoOrientation: Sendable {
     }
 }
 
-/// Wraps `AVCaptureSession` to capture video frames from a camera device.
-public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
-    public let captureSession = AVCaptureSession()
-    private let queue = DispatchQueue(label: "com.swmansion.MoQKit.CameraCapture")
-    public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
-
-    private(set) var position: AVCaptureDevice.Position
-    private let width: Int32
-    private let height: Int32
-    private var currentInput: AVCaptureDeviceInput?
-    private var currentOutput: AVCaptureVideoDataOutput?
-    private(set) var currentOrientation: AVCaptureVideoOrientation
+/// Camera device identity and capture configuration.
+public struct Camera: Sendable {
+    public let position: CameraPosition
+    public let width: Int32
+    public let height: Int32
+    public let orientation: VideoOrientation
 
     public init(
         position: CameraPosition = .back,
@@ -52,10 +46,25 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
         height: Int32 = 1280,
         orientation: VideoOrientation = .portrait
     ) {
-        self.position = position.position
+        self.position = position
         self.width = width
         self.height = height
-        self.currentOrientation = orientation.avOrientation
+        self.orientation = orientation
+    }
+}
+
+/// Wraps `AVCaptureSession` to capture video frames from a camera device.
+public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
+    public let captureSession = AVCaptureSession()
+    private let queue = DispatchQueue(label: "com.swmansion.MoQKit.CameraCapture")
+    public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
+
+    public private(set) var camera: Camera
+    private var currentInput: AVCaptureDeviceInput?
+    private var currentOutput: AVCaptureVideoDataOutput?
+
+    public init(camera: Camera = Camera()) {
+        self.camera = camera
         super.init()
     }
 
@@ -66,20 +75,18 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
                 do {
                     captureSession.beginConfiguration()
 
-                    // Pick a session preset based on requested dimensions
-                    let preset = sessionPreset(for: width, height: height)
+                    let preset = sessionPreset(for: camera.width, height: camera.height)
                     if captureSession.canSetSessionPreset(preset) {
                         captureSession.sessionPreset = preset
                     }
 
-                    // Camera input
                     guard
                         let device = AVCaptureDevice.default(
-                            .builtInWideAngleCamera, for: .video, position: position
+                            .builtInWideAngleCamera, for: .video, position: camera.position.position
                         )
                     else {
                         throw SessionError.invalidConfiguration(
-                            "No camera available for position \(position)")
+                            "No camera available for position \(camera.position.position)")
                     }
 
                     let input = try AVCaptureDeviceInput(device: device)
@@ -89,7 +96,6 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
                     captureSession.addInput(input)
                     currentInput = input
 
-                    // Video output
                     let output = AVCaptureVideoDataOutput()
                     output.videoSettings = [
                         kCVPixelBufferPixelFormatTypeKey as String:
@@ -104,10 +110,9 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
                     captureSession.addOutput(output)
                     currentOutput = output
 
-                    if let connection = output.connection(with: .video) {
-                        if connection.isVideoOrientationSupported {
-                            connection.videoOrientation = currentOrientation
-                        }
+                    if let connection = output.connection(with: .video),
+                       connection.isVideoOrientationSupported {
+                        connection.videoOrientation = camera.orientation.avOrientation
                     }
 
                     captureSession.commitConfiguration()
@@ -127,63 +132,46 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
         onFrame = nil
     }
 
-    /// Switch to a different camera while the session is running.
-    public func switchCamera(to newPosition: CameraPosition) throws {
-        let avPosition = newPosition.position
+    /// Switch camera device and/or configuration while the session is running.
+    public func `switch`(to newCamera: Camera) throws {
         try queue.sync {
             guard let oldInput = currentInput else {
                 throw SessionError.invalidConfiguration("No current camera input")
             }
             guard
                 let device = AVCaptureDevice.default(
-                    .builtInWideAngleCamera, for: .video, position: avPosition
+                    .builtInWideAngleCamera, for: .video, position: newCamera.position.position
                 )
             else {
                 throw SessionError.invalidConfiguration(
-                    "No camera available for position \(avPosition)")
+                    "No camera available for position \(newCamera.position.position)")
             }
 
             let newInput = try AVCaptureDeviceInput(device: device)
 
             captureSession.beginConfiguration()
-            
-            // Pick a session preset based on requested dimensions
-            let preset = sessionPreset(for: width, height: height)
+
+            let preset = sessionPreset(for: newCamera.width, height: newCamera.height)
             if captureSession.canSetSessionPreset(preset) {
                 captureSession.sessionPreset = preset
             }
-            
+
             captureSession.removeInput(oldInput)
             if captureSession.canAddInput(newInput) {
                 captureSession.addInput(newInput)
                 currentInput = newInput
-                position = avPosition
+                camera = newCamera
 
-                // Re-apply orientation to the new connection
                 if let connection = currentOutput?.connection(with: .video),
                    connection.isVideoOrientationSupported {
-                    connection.videoOrientation = currentOrientation
+                    connection.videoOrientation = newCamera.orientation.avOrientation
                 }
             } else {
-                // Rollback
                 captureSession.addInput(oldInput)
                 captureSession.commitConfiguration()
                 throw SessionError.invalidConfiguration("Cannot add new camera input")
             }
             captureSession.commitConfiguration()
-        }
-    }
-
-    /// Update the capture orientation.
-    public func setOrientation(_ orientation: VideoOrientation) {
-        let avOrientation = orientation.avOrientation
-        queue.async { [self] in
-            currentOrientation = avOrientation
-            if let connection = currentOutput?.connection(with: .video),
-                connection.isVideoOrientationSupported
-            {
-                connection.videoOrientation = avOrientation
-            }
         }
     }
 

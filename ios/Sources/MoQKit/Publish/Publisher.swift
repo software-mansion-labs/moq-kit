@@ -142,7 +142,7 @@ private final class DataTrack {
 /// publishing.
 ///
 /// ```swift
-/// let camera = CameraCapture(position: .back, width: 1920, height: 1080)
+/// let camera = CameraCapture(camera: Camera(position: .back, width: 1920, height: 1080))
 /// try await camera.start()
 ///
 /// let publisher = try Publisher()
