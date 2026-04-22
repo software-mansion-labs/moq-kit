@@ -19,9 +19,11 @@ final class BoyDemoViewModel: ObservableObject {
     @Published var lastError: String?
 
     private var session: Session?
-    private var announcedGames: [String: BroadcastInfo] = [:]
+    private var subscription: BroadcastSubscription?
+    private var announcedGames: [String: Catalog] = [:]
     private var stateObserverTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
+    private var catalogObserverTasks: [String: Task<Void, Never>] = [:]
     private var commandPublisher: Publisher?
     private var commandEmitter: DataTrackEmitter?
     private var viewerPath: String?
@@ -109,22 +111,19 @@ final class BoyDemoViewModel: ObservableObject {
             }
         }
 
-        broadcastObserverTask = Task { [weak self] in
-            guard let self else { return }
-            for await event in session.broadcasts {
-                switch event {
-                case .available(let info):
-                    await self.handleAvailableBroadcast(info)
-                case .unavailable(let path):
-                    await self.handleUnavailableBroadcast(path)
-                }
-            }
-        }
-
         Task { [weak self] in
             do {
                 try await session.connect()
-                try session.subscribe(prefix: Self.subscribePrefix)
+                let subscription = try await session.subscribe(prefix: Self.subscribePrefix)
+                await MainActor.run {
+                    self?.subscription = subscription
+                    self?.broadcastObserverTask = Task { [weak self] in
+                        guard let self else { return }
+                        for await broadcast in subscription.broadcasts {
+                            self.observeCatalogs(for: broadcast)
+                        }
+                    }
+                }
             } catch {
                 await MainActor.run {
                     self?.lastError = error.localizedDescription
@@ -139,6 +138,10 @@ final class BoyDemoViewModel: ObservableObject {
         stateObserverTask = nil
         broadcastObserverTask?.cancel()
         broadcastObserverTask = nil
+        for (_, task) in catalogObserverTasks {
+            task.cancel()
+        }
+        catalogObserverTasks.removeAll()
         repeatTask?.cancel()
         repeatTask = nil
         lastError = nil
@@ -149,10 +152,12 @@ final class BoyDemoViewModel: ObservableObject {
         currentEntry = nil
 
         let session = session
+        let subscription = subscription
         let viewerPath = viewerPath
         let publisher = commandPublisher
 
         self.session = nil
+        self.subscription = nil
         self.viewerPath = nil
         self.commandPublisher = nil
         self.commandEmitter = nil
@@ -163,11 +168,12 @@ final class BoyDemoViewModel: ObservableObject {
 
         Task {
             if let viewerPath, let session {
-                session.unpublish(path: viewerPath)
+                await session.unpublish(path: viewerPath)
             } else {
                 publisher?.stop()
             }
             await entry?.stop()
+            subscription?.cancel()
             await session?.close()
         }
     }
@@ -221,10 +227,25 @@ final class BoyDemoViewModel: ObservableObject {
         currentEntry?.updateTargetLatency(ms: UInt64(steppedLatency))
     }
 
-    private func handleAvailableBroadcast(_ info: BroadcastInfo) async {
-        guard let game = Self.makeGame(from: info) else { return }
+    private func observeCatalogs(for broadcast: Broadcast) {
+        catalogObserverTasks[broadcast.path]?.cancel()
+        catalogObserverTasks[broadcast.path] = Task { [weak self] in
+            guard let self else { return }
 
-        announcedGames[game.broadcastPath] = info
+            for await catalog in broadcast.catalogs() {
+                await self.handleAvailableBroadcast(catalog)
+            }
+
+            guard !Task.isCancelled else { return }
+            await self.handleUnavailableBroadcast(broadcast.path)
+            self.catalogObserverTasks.removeValue(forKey: broadcast.path)
+        }
+    }
+
+    private func handleAvailableBroadcast(_ catalog: Catalog) async {
+        guard let game = Self.makeGame(from: catalog) else { return }
+
+        announcedGames[game.broadcastPath] = catalog
         rebuildGameList()
 
         if selectedGamePath == game.broadcastPath, sessionState == .connected {
@@ -256,32 +277,36 @@ final class BoyDemoViewModel: ObservableObject {
     private func startSelectedGame() async {
         await stopCurrentPlayback()
 
-        guard let selectedGamePath, let info = announcedGames[selectedGamePath] else { return }
+        guard let selectedGamePath, let catalog = announcedGames[selectedGamePath] else { return }
 
-        await replaceCurrentBroadcast(with: info)
-        if let game = Self.makeGame(from: info) {
+        await replaceCurrentBroadcast(with: catalog)
+        if let game = Self.makeGame(from: catalog) {
             await startCommandPublishing(for: game)
         }
     }
 
-    private func replaceCurrentBroadcast(with info: BroadcastInfo) async {
+    private func replaceCurrentBroadcast(with catalog: Catalog) async {
         let previousEntry = currentEntry
         currentEntry = nil
         await previousEntry?.stop()
 
-        let selectedTracks = preferredTracks(for: info)
-        guard !selectedTracks.tracks.isEmpty else { return }
+        let selectedTracks = preferredTracks(for: catalog)
+        guard selectedTracks.videoTrackName != nil || selectedTracks.audioTrackName != nil else {
+            return
+        }
 
         let entry = BroadcastEntry(
-            info: info,
-            initialVideoTrack: selectedTracks.videoTrack,
+            catalog: catalog,
+            initialVideoTrackName: selectedTracks.videoTrackName,
             initialLatencyMs: UInt64(targetLatencyMs)
         )
         currentEntry = entry
 
         do {
             let player = try Player(
-                tracks: selectedTracks.tracks,
+                catalog: catalog,
+                videoTrackName: selectedTracks.videoTrackName,
+                audioTrackName: selectedTracks.audioTrackName,
                 targetBufferingMs: UInt64(targetLatencyMs)
             )
             entry.attach(player: player)
@@ -289,7 +314,7 @@ final class BoyDemoViewModel: ObservableObject {
         } catch {
             entry.offline = true
             lastError =
-                "Unable to play \(Self.displayName(for: info.path)): \(error.localizedDescription)"
+                "Unable to play \(Self.displayName(for: catalog.path)): \(error.localizedDescription)"
         }
     }
 
@@ -300,7 +325,7 @@ final class BoyDemoViewModel: ObservableObject {
         repeatTask = nil
 
         if let viewerPath, let session {
-            session.unpublish(path: viewerPath)
+            await session.unpublish(path: viewerPath)
         } else {
             commandPublisher?.stop()
         }
@@ -325,7 +350,7 @@ final class BoyDemoViewModel: ObservableObject {
             let viewerId = Self.makeViewerId()
             let viewerPath = "\(Self.viewerPrefix)/\(game.viewerPathComponent)/\(viewerId)"
 
-            try session.publish(path: viewerPath, publisher: publisher)
+            try await session.publish(path: viewerPath, publisher: publisher)
             try await publisher.start()
 
             self.commandEmitter = emitter
@@ -394,20 +419,11 @@ final class BoyDemoViewModel: ObservableObject {
     }
 
     private func preferredTracks(
-        for info: BroadcastInfo
-    ) -> (videoTrack: VideoTrackInfo?, tracks: [any TrackInfo]) {
-        let audioTrack = info.audioTracks.first
-        let highestVideoTrack = info.videoTracks.max(by: isLowerQualityVideoTrack)
-
-        var tracks: [any TrackInfo] = []
-        if let highestVideoTrack {
-            tracks.append(highestVideoTrack)
-        }
-        if let audioTrack {
-            tracks.append(audioTrack)
-        }
-
-        return (highestVideoTrack, tracks)
+        for catalog: Catalog
+    ) -> (videoTrackName: String?, audioTrackName: String?) {
+        let audioTrackName = catalog.audioTracks.first?.name
+        let highestVideoTrackName = catalog.videoTracks.max(by: isLowerQualityVideoTrack)?.name
+        return (highestVideoTrackName, audioTrackName)
     }
 
     private func isLowerQualityVideoTrack(
@@ -422,11 +438,11 @@ final class BoyDemoViewModel: ObservableObject {
         return UInt64(coded.width) * UInt64(coded.height)
     }
 
-    private static func makeGame(from info: BroadcastInfo) -> BoyGame? {
-        let component = pathComponent(from: info.path)
+    private static func makeGame(from catalog: Catalog) -> BoyGame? {
+        let component = pathComponent(from: catalog.path)
         return BoyGame(
             name: component,
-            broadcastPath: info.path,
+            broadcastPath: catalog.path,
             viewerPathComponent: component
         )
     }

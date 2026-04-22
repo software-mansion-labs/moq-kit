@@ -17,11 +17,13 @@ public enum SessionError: Error, Sendable {
     case alreadyConnected
     /// ``Session/connect()`` was called after ``Session/close()`` — create a new session instead.
     case alreadyClosed
+    /// ``Session/subscribe(prefix:)`` was called for a prefix that is already active.
+    case alreadySubscribed
     /// No tracks were found in the broadcast catalog.
     case noTracksAvailable
     /// No broadcast was found at the given path.
     case noBroadcastAvailable
-    /// ``Player`` was initialised with an empty track list.
+    /// ``Player`` was initialised with both video and audio disabled.
     case noTracksSelected
     /// A configuration invariant was violated (details in the associated string).
     case invalidConfiguration(String)
@@ -40,8 +42,7 @@ public enum SessionState: Sendable, Equatable {
     case idle
     /// QUIC handshake is in progress.
     case connecting
-    /// Transport is ready. The session is watching for broadcast announcements and
-    /// will emit events on ``Session/broadcasts``.
+    /// Transport is ready. The session may now publish and create broadcast subscriptions.
     case connected
     /// An irrecoverable error occurred. The associated string contains a human-readable
     /// description. The session cannot be reused — create a new one.
@@ -56,16 +57,20 @@ public enum SessionState: Sendable, Equatable {
 ///
 /// `Session` is the primary entry point for the MoQKit SDK. Create one with a relay
 /// URL and call ``connect()``. To discover live streams, call ``subscribe(prefix:)``
-/// after connecting and observe ``broadcasts``:
+/// after connecting and observe the returned subscription:
 ///
 /// ```swift
 /// let session = Session(url: "https://relay.example.com/moq")
 /// try await session.connect()
-/// try session.subscribe()
+/// let subscription = try await session.subscribe()
 ///
-/// for await event in session.broadcasts {
-///     if case .available(let info) = event {
-///         let player = try Player(tracks: info.videoTracks + info.audioTracks)
+/// for await broadcast in subscription.broadcasts {
+///     for await catalog in broadcast.catalogs() {
+///         let player = try Player(
+///             catalog: catalog,
+///             videoTrackName: catalog.videoTracks.first?.name,
+///             audioTrackName: catalog.audioTracks.first?.name
+///         )
 ///         try await player.play()
 ///     }
 /// }
@@ -76,29 +81,18 @@ public enum SessionState: Sendable, Equatable {
 /// ```swift
 /// let session = Session(url: "https://relay.example.com/moq")
 /// try await session.connect()
-/// try session.publish(path: "live/my-stream", publisher: publisher)
+/// try await session.publish(path: "live/my-stream", publisher: publisher)
 /// ```
-///
-/// The class is `@MainActor` — all calls must be made from the main actor.
-@MainActor
-public final class Session {
+public actor Session {
     /// Emits the current ``SessionState`` and every subsequent state change.
     ///
     /// The stream always yields `.idle` as its first element. It completes when the
     /// session reaches `.closed`.
-    public let state: AsyncStream<SessionState>
-
-    /// Emits ``BroadcastEvent`` values as broadcasts appear and disappear on the relay.
-    ///
-    /// Each `.available` event carries a ``BroadcastInfo`` describing the catalog of
-    /// tracks for that broadcast. A subsequent `.unavailable` event with the same path
-    /// signals that the broadcast has ended.
-    public let broadcasts: AsyncStream<BroadcastEvent>
+    public nonisolated let state: AsyncStream<SessionState>
 
     private let url: String
 
     private let stateContinuation: AsyncStream<SessionState>.Continuation
-    private let broadcastsContinuation: AsyncStream<BroadcastEvent>.Continuation
     private var currentState: SessionState = .idle
 
     // Pipeline objects
@@ -106,19 +100,13 @@ public final class Session {
     private var consumeOrigin: MoqOriginProducer?
     private var publishOrigin: MoqOriginProducer?
     private var session: MoqSession?
-    private var consumer: MoqOriginConsumer?
-    private var announced: MoqAnnounced?
-
-    // Per-path broadcast state (consuming)
-    private var activeBroadcasts: [String: Task<Void, Never>] = [:]
-    private var catalogConsumers: [String: MoqCatalogConsumer] = [:]
 
     // Per-path publish state
     private var activePublishers: [String: Publisher] = [:]
+    private var activeSubscriptions: [String: BroadcastSubscription] = [:]
 
     // Background tasks
     private var sessionMonitorTask: Task<Void, Never>?
-    private var announcedTask: Task<Void, Never>?
 
     /// Creates a new session.
     ///
@@ -132,10 +120,6 @@ public final class Session {
         var stateCont: AsyncStream<SessionState>.Continuation!
         self.state = AsyncStream { stateCont = $0 }
         self.stateContinuation = stateCont
-
-        var broadcastsCont: AsyncStream<BroadcastEvent>.Continuation!
-        self.broadcasts = AsyncStream { broadcastsCont = $0 }
-        self.broadcastsContinuation = broadcastsCont
 
         stateContinuation.yield(.idle)
     }
@@ -184,46 +168,41 @@ public final class Session {
                     try await session.closed()
                 } catch {
                     guard let self else { return }
-                    KitLogger.session.warning("Session ended with error: \(error)")
-                    self.transition(to: .error("Session ended: \(error)"))
-                    await self.close()
+                    await self.handleSessionEnded(error: error)
                     return
                 }
                 guard let self else { return }
-                if self.currentState == .connected {
-                    KitLogger.session.warning("Session ended unexpectedly")
-                    self.transition(to: .error("Session ended unexpectedly"))
-                    await self.close()
-                }
+                await self.handleSessionEnded(error: nil)
             }
 
         } catch let error as MoqError {
             KitLogger.session.error("Connection failed: \(error)")
             transition(to: .error(error.localizedDescription))
-            await tearDown()
+            tearDown()
             throw SessionError.connectionFailed(error.localizedDescription)
         } catch let error as SessionError {
             KitLogger.session.error("Connection failed: \(error)")
             transition(to: .error("\(error)"))
-            await tearDown()
+            tearDown()
             throw error
         } catch {
             KitLogger.session.error("Connection failed: \(error)")
             transition(to: .error(error.localizedDescription))
-            await tearDown()
+            tearDown()
             throw error
         }
     }
 
     /// Starts watching for broadcast announcements on the relay.
     ///
-    /// Call this after ``connect()`` to begin receiving ``BroadcastEvent`` values on
-    /// ``broadcasts``. This is not needed when the session is used only for publishing.
+    /// Call this after ``connect()`` to begin receiving announced broadcasts under the
+    /// supplied prefix. This is not needed when the session is used only for publishing.
     ///
     /// - Parameter prefix: Only broadcasts whose path starts with this string will be surfaced.
     ///   Pass `""` (the default) to receive all broadcasts.
     /// - Throws: ``SessionError/invalidConfiguration(_:)`` if the session is not connected.
-    public func subscribe(prefix: String = "") throws {
+    /// - Throws: ``SessionError/alreadySubscribed`` if the exact prefix is already active.
+    public func subscribe(prefix: String = "") throws -> BroadcastSubscription {
         guard currentState == .connected else {
             throw SessionError.invalidConfiguration(
                 "Session must be connected before subscribing")
@@ -231,45 +210,25 @@ public final class Session {
         guard let consumeOrigin else {
             throw SessionError.invalidConfiguration("Consume origin not available")
         }
+        if let existingSubscription = activeSubscriptions[prefix] {
+            if existingSubscription.isFinished {
+                activeSubscriptions.removeValue(forKey: prefix)
+            } else {
+                throw SessionError.alreadySubscribed
+            }
+        }
 
         KitLogger.session.debug("Subscribing to announcements with prefix: \(prefix)")
 
         let consumer = consumeOrigin.consume()
-        self.consumer = consumer
         let announced = try consumer.announced(prefix: prefix)
-        self.announced = announced
-
-        announcedTask = Task { [weak self] in
-            while let self, !Task.isCancelled {
-                do {
-                    guard let announcement = try await announced.next() else {
-                        break
-                    }
-                    let path = announcement.path()
-                    let broadcast = announcement.broadcast()
-
-                    // Cancel existing broadcast task for this path
-                    self.activeBroadcasts[path]?.cancel()
-                    self.activeBroadcasts.removeValue(forKey: path)
-                    self.catalogConsumers[path]?.cancel()
-                    self.catalogConsumers.removeValue(forKey: path)
-
-                    KitLogger.session.debug("Broadcast active: \(path)")
-                    do {
-                        try self.handleActiveBroadcast(
-                            path: path, broadcast: broadcast)
-                    } catch {
-                        KitLogger.session.error(
-                            "handleActiveBroadcast failed for \(path): \(error)")
-                    }
-                } catch MoqError.Cancelled {
-                    break
-                } catch {
-                    KitLogger.session.error("announced() failed: \(error)")
-                    break
-                }
-            }
-        }
+        let subscription = BroadcastSubscription(
+            prefix: prefix,
+            session: self,
+            announced: announced
+        )
+        activeSubscriptions[prefix] = subscription
+        return subscription
     }
 
     /// Publish a broadcast to the relay at the given path.
@@ -305,63 +264,36 @@ public final class Session {
 
     /// Closes the relay connection and releases all resources.
     ///
-    /// Transitions the session to `.closed` and completes both ``state`` and ``broadcasts``
-    /// streams. Safe to call multiple times — subsequent calls are no-ops.
+    /// Transitions the session to `.closed` and completes ``state``.
+    /// Safe to call multiple times — subsequent calls are no-ops.
     public func close() async {
         guard currentState != .closed else { return }
         KitLogger.session.debug("Closing session")
-        await tearDown()
+        tearDown()
         transition(to: .closed)
         stateContinuation.finish()
-        broadcastsContinuation.finish()
     }
 
     deinit {
         sessionMonitorTask?.cancel()
-        announcedTask?.cancel()
-        for (_, task) in activeBroadcasts { task.cancel() }
-        for (_, consumer) in catalogConsumers { consumer.cancel() }
-        for (_, publisher) in activePublishers { Task { @MainActor in publisher.stop() } }
-        announced?.cancel()
+
+        let subscriptions = Array(activeSubscriptions.values)
+        activeSubscriptions.removeAll()
+        for subscription in subscriptions {
+            subscription.cancel()
+        }
+
+        for (_, publisher) in activePublishers {
+            publisher.stop()
+        }
+        activePublishers.removeAll()
+
+        session?.cancel(code: 0)
         client?.cancel()
         stateContinuation.finish()
-        broadcastsContinuation.finish()
     }
 
     // MARK: - Private
-
-    private func handleActiveBroadcast(path: String, broadcast: MoqBroadcastConsumer) throws {
-        KitLogger.session.debug("Subscribing to catalog for \(path)")
-        let catalogConsumer = try broadcast.subscribeCatalog()
-        self.catalogConsumers[path] = catalogConsumer
-
-        let task = Task { [weak self] in
-            guard let self else { return }
-            while !Task.isCancelled {
-                do {
-                    guard let catalog = try await catalogConsumer.next() else {
-                        KitLogger.session.debug("Catalog stream ended for \(path)")
-                        self.broadcastsContinuation.yield(.unavailable(path: path))
-                        self.catalogConsumers.removeValue(forKey: path)
-                        break
-                    }
-                    guard !Task.isCancelled else { break }
-                    KitLogger.session.debug("Catalog updated for \(path)")
-                    let info = self.buildBroadcastInfo(
-                        from: catalog, broadcast: broadcast, path: path)
-                    self.broadcastsContinuation.yield(.available(info))
-                } catch MoqError.Cancelled {
-                    self.catalogConsumers.removeValue(forKey: path)
-                    break
-                } catch {
-                    KitLogger.session.error("subscribeCatalog() failed (\(path)): \(error)")
-                    self.catalogConsumers.removeValue(forKey: path)
-                    break
-                }
-            }
-        }
-        self.activeBroadcasts[path] = task
-    }
 
     private func transition(to newState: SessionState) {
         KitLogger.session.debug(
@@ -370,39 +302,40 @@ public final class Session {
         stateContinuation.yield(newState)
     }
 
-    /// Build a `BroadcastInfo` by enumerating all video and audio renditions in the catalog.
-    private func buildBroadcastInfo(
-        from catalog: MoqCatalog, broadcast: MoqBroadcastConsumer, path: String
-    ) -> BroadcastInfo {
-        let videoTracks = catalog.video.map { (name, rendition) in
-            VideoTrackInfo(name: name, config: rendition, broadcast: broadcast)
-        }
-        let audioTracks = catalog.audio.map { (name, rendition) in
-            AudioTrackInfo(name: name, config: rendition, broadcast: broadcast)
-        }
-
-        return BroadcastInfo(path: path, videoTracks: videoTracks, audioTracks: audioTracks)
+    func removeSubscription(prefix: String, matching subscription: BroadcastSubscription) {
+        guard activeSubscriptions[prefix] === subscription else { return }
+        activeSubscriptions.removeValue(forKey: prefix)
     }
 
-    private func tearDown() async {
+    private func handleSessionEnded(error: Error?) async {
+        if let error {
+            KitLogger.session.warning("Session ended with error: \(error)")
+            transition(to: .error("Session ended: \(error)"))
+            await close()
+            return
+        }
+
+        if currentState == .connected {
+            KitLogger.session.warning("Session ended unexpectedly")
+            transition(to: .error("Session ended unexpectedly"))
+            await close()
+        }
+    }
+
+    private func tearDown() {
         KitLogger.session.debug("Tearing down session")
 
         sessionMonitorTask?.cancel()
         sessionMonitorTask = nil
-        announcedTask?.cancel()
-        announcedTask = nil
 
-        for (_, task) in activeBroadcasts { task.cancel() }
-        activeBroadcasts.removeAll()
-
-        for (_, consumer) in catalogConsumers { consumer.cancel() }
-        catalogConsumers.removeAll()
+        let subscriptions = Array(activeSubscriptions.values)
+        activeSubscriptions.removeAll()
+        for subscription in subscriptions {
+            subscription.cancel()
+        }
 
         for (_, publisher) in activePublishers { publisher.stop() }
         activePublishers.removeAll()
-
-        announced?.cancel()
-        announced = nil
 
         session?.cancel(code: 0)
         session = nil
@@ -410,7 +343,6 @@ public final class Session {
         client?.cancel()
         client = nil
 
-        consumer = nil
         consumeOrigin = nil
         publishOrigin = nil
     }

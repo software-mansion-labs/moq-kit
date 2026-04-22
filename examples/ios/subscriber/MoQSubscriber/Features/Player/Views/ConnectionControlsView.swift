@@ -15,7 +15,7 @@ struct ConnectionControlsView: View {
                 .autocapitalization(.none)
                 .disableAutocorrection(true)
 
-            TextField("Broadcast Path", text: $broadcastPath)
+            TextField("Broadcast Path (Optional)", text: $broadcastPath)
                 .textFieldStyle(.roundedBorder)
                 .autocapitalization(.none)
                 .disableAutocorrection(true)

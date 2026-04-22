@@ -9,7 +9,7 @@ struct PlayerDemoView: View {
     @StateObject private var player = PlayerDemoViewModel()
 
     private var canConnect: Bool {
-        !relayURL.isEmpty && !broadcastPath.isEmpty && player.canConnect
+        !relayURL.isEmpty && player.canConnect
     }
 
     var body: some View {

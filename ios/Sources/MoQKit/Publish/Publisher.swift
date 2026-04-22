@@ -147,7 +147,7 @@ private final class DataTrack {
 ///
 /// let publisher = try Publisher()
 /// let video = publisher.addVideoTrack(name: "video", source: camera)
-/// try session.publish(path: "live/stream", publisher: publisher)
+/// try await session.publish(path: "live/stream", publisher: publisher)
 /// try await publisher.start()
 /// ```
 public final class Publisher {

@@ -247,7 +247,7 @@ final class PublisherViewModel: ObservableObject {
                     self.trackStates["mic"] = .idle
                 }
 
-                try s.publish(path: path, publisher: pub)
+                try await s.publish(path: path, publisher: pub)
                 try await pub.start()
 
                 self.observePublisher(pub)

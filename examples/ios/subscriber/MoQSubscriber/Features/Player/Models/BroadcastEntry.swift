@@ -6,8 +6,8 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     let id: String
     let broadcastPath: String
 
-    @Published var selectedVideoTrack: VideoTrackInfo?
-    @Published var info: BroadcastInfo
+    @Published var selectedVideoTrackName: String?
+    @Published var catalog: Catalog
     @Published var player: Player?
     @Published var offline = false
     @Published var isPlaying = false
@@ -21,13 +21,18 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     private var eventTask: Task<Void, Never>?
     private var statsTimer: Timer?
-    private var pendingVideoTrack: VideoTrackInfo?
+    private var pendingVideoTrackName: String?
 
-    init(info: BroadcastInfo, initialVideoTrack: VideoTrackInfo?, initialLatencyMs: UInt64) {
-        self.id = info.path
-        self.broadcastPath = info.path
-        self.selectedVideoTrack = initialVideoTrack
-        self.info = info
+    var selectedVideoTrack: VideoTrackInfo? {
+        guard let selectedVideoTrackName else { return nil }
+        return catalog.videoTracks.first(where: { $0.name == selectedVideoTrackName })
+    }
+
+    init(catalog: Catalog, initialVideoTrackName: String?, initialLatencyMs: UInt64) {
+        self.id = catalog.path
+        self.broadcastPath = catalog.path
+        self.selectedVideoTrackName = initialVideoTrackName
+        self.catalog = catalog
         self.targetLatencyMs = Double(initialLatencyMs)
     }
 
@@ -36,9 +41,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         observeEvents(of: player.events)
     }
 
-    func switchVideoTrack(to track: VideoTrackInfo) {
-        pendingVideoTrack = track
-        Task { try? await player?.switchTrack(to: track) }
+    func switchVideoTrack(to trackName: String) {
+        pendingVideoTrackName = trackName
+        Task { try? await player?.switchTrack(to: trackName) }
     }
 
     func updateTargetLatency(ms: UInt64) {
@@ -64,9 +69,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
                     isPlaying = true
                     startStatsPolling()
                 case .trackSwitched(.video):
-                    if let pendingVideoTrack {
-                        selectedVideoTrack = pendingVideoTrack
-                        self.pendingVideoTrack = nil
+                    if let pendingVideoTrackName {
+                        selectedVideoTrackName = pendingVideoTrackName
+                        self.pendingVideoTrackName = nil
                     }
                 case .allTracksStopped:
                     isPlaying = false

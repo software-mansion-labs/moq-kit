@@ -7,9 +7,11 @@ final class PlayerDemoViewModel: ObservableObject {
     @Published var broadcasts: [BroadcastEntry] = []
 
     private var session: Session?
+    private var subscription: BroadcastSubscription?
     private var targetLatencyMs: UInt64 = 200
     private var stateObserverTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
+    private var catalogObserverTasks: [String: Task<Void, Never>] = [:]
 
     var canConnect: Bool {
         switch sessionState {
@@ -56,22 +58,17 @@ final class PlayerDemoViewModel: ObservableObject {
             }
         }
 
-        broadcastObserverTask = Task {
-            for await event in s.broadcasts {
-                switch event {
-                case .available(let info):
-                    await replaceBroadcast(with: info)
-
-                case .unavailable(let path):
-                    await markBroadcastUnavailable(path: path)
-                }
-            }
-        }
-
         Task {
             do {
                 try await s.connect()
-                try s.subscribe(prefix: prefix)
+                let subscription = try await s.subscribe(prefix: prefix)
+                self.subscription = subscription
+                broadcastObserverTask = Task { [weak self] in
+                    guard let self else { return }
+                    for await broadcast in subscription.broadcasts {
+                        self.observeCatalogs(for: broadcast)
+                    }
+                }
             } catch {
                 sessionState = .error(error.localizedDescription)
             }
@@ -83,38 +80,64 @@ final class PlayerDemoViewModel: ObservableObject {
         stateObserverTask = nil
         broadcastObserverTask?.cancel()
         broadcastObserverTask = nil
+        for (_, task) in catalogObserverTasks {
+            task.cancel()
+        }
+        catalogObserverTasks.removeAll()
         let entries = broadcasts
         broadcasts = []
         sessionState = .idle
         let s = session
         session = nil
+        let subscription = subscription
+        self.subscription = nil
         Task {
             for entry in entries {
                 await entry.stop()
             }
+            subscription?.cancel()
             await s?.close()
         }
     }
 
-    private func replaceBroadcast(with info: BroadcastInfo) async {
-        let existingEntries = broadcasts.filter { $0.broadcastPath == info.path }
+    private func observeCatalogs(for broadcast: Broadcast) {
+        catalogObserverTasks[broadcast.path]?.cancel()
+        catalogObserverTasks[broadcast.path] = Task { [weak self] in
+            guard let self else { return }
+
+            for await catalog in broadcast.catalogs() {
+                await self.replaceBroadcast(with: catalog)
+            }
+
+            guard !Task.isCancelled else { return }
+            await self.markBroadcastUnavailable(path: broadcast.path)
+            self.catalogObserverTasks.removeValue(forKey: broadcast.path)
+        }
+    }
+
+    private func replaceBroadcast(with catalog: Catalog) async {
+        let existingEntries = broadcasts.filter { $0.broadcastPath == catalog.path }
         for entry in existingEntries {
             await entry.stop()
         }
-        broadcasts.removeAll { $0.broadcastPath == info.path }
+        broadcasts.removeAll { $0.broadcastPath == catalog.path }
 
-        let selectedTracks = preferredTracks(for: info)
-        guard !selectedTracks.tracks.isEmpty else { return }
+        let selectedTracks = preferredTracks(for: catalog)
+        guard selectedTracks.videoTrackName != nil || selectedTracks.audioTrackName != nil else {
+            return
+        }
 
         let entry = BroadcastEntry(
-            info: info,
-            initialVideoTrack: selectedTracks.videoTrack,
+            catalog: catalog,
+            initialVideoTrackName: selectedTracks.videoTrackName,
             initialLatencyMs: targetLatencyMs
         )
         broadcasts.append(entry)
 
         guard let player = try? Player(
-            tracks: selectedTracks.tracks,
+            catalog: catalog,
+            videoTrackName: selectedTracks.videoTrackName,
+            audioTrackName: selectedTracks.audioTrackName,
             targetBufferingMs: targetLatencyMs
         ) else {
             entry.offline = true
@@ -134,20 +157,11 @@ final class PlayerDemoViewModel: ObservableObject {
     }
 
     private func preferredTracks(
-        for info: BroadcastInfo
-    ) -> (videoTrack: VideoTrackInfo?, tracks: [any TrackInfo]) {
-        let audioTrack = info.audioTracks.first
-        let highestVideoTrack = info.videoTracks.max(by: isLowerQualityVideoTrack)
-
-        var tracks: [any TrackInfo] = []
-        if let highestVideoTrack {
-            tracks.append(highestVideoTrack)
-        }
-        if let audioTrack {
-            tracks.append(audioTrack)
-        }
-
-        return (highestVideoTrack, tracks)
+        for catalog: Catalog
+    ) -> (videoTrackName: String?, audioTrackName: String?) {
+        let audioTrackName = catalog.audioTracks.first?.name
+        let highestVideoTrackName = catalog.videoTracks.max(by: isLowerQualityVideoTrack)?.name
+        return (highestVideoTrackName, audioTrackName)
     }
 
     private func isLowerQualityVideoTrack(

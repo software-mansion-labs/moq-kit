@@ -187,9 +187,7 @@ public actor ReplayKitBroadcastPipeline {
         }
 
         do {
-            let session = await MainActor.run {
-                Session(url: configuration.descriptor.relayURL)
-            }
+            let session = Session(url: configuration.descriptor.relayURL)
             try await session.connect()
 
             let videoEncoderConfig = await resolvedScreenVideoEncoderConfig()

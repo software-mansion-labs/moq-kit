@@ -86,7 +86,7 @@ public enum PlayerEvent: Sendable {
 
 /// Adaptive real-time player for MoQ media streams.
 ///
-/// `Player` subscribes to one or two tracks from a ``BroadcastInfo`` (one video and/or
+/// `Player` subscribes to one or two tracks from a ``Catalog`` (one video and/or
 /// one audio track), decodes the incoming frames, and renders them in sync:
 ///
 /// - Video frames are rendered into ``videoLayer`` — an `AVSampleBufferDisplayLayer` you can
@@ -95,7 +95,11 @@ public enum PlayerEvent: Sendable {
 ///   default audio output. No additional audio session configuration is required.
 ///
 /// ```swift
-/// let player = try Player(tracks: broadcastInfo.videoTracks + broadcastInfo.audioTracks)
+/// let player = try Player(
+///     catalog: catalog,
+///     videoTrackName: catalog.videoTracks.first?.name,
+///     audioTrackName: catalog.audioTracks.first?.name
+/// )
 /// view.layer.addSublayer(player.videoLayer)
 /// try await player.play()
 /// ```
@@ -112,7 +116,9 @@ public final class Player {
     /// The stream completes after ``allTracksStopped`` is emitted or after ``stopAll()`` is called.
     public let events: AsyncStream<PlayerEvent>
 
-    private let tracks: [any TrackInfo]
+    private let catalog: Catalog
+    private var selectedVideoTrack: VideoTrackInfo?
+    private var selectedAudioTrack: AudioTrackInfo?
     private var targetBufferingMs: UInt64
     private let eventsContinuation: AsyncStream<PlayerEvent>.Continuation
 
@@ -131,9 +137,10 @@ public final class Player {
     nonisolated(unsafe) private var videoTracer: PacketTimingTracer?
     nonisolated(unsafe) private var audioRendererForStats: AudioRenderer?
     nonisolated(unsafe) private var videoRendererForStats: VideoRenderer?
+    nonisolated(unsafe) private var hasVideoSelection = false
+    nonisolated(unsafe) private var hasAudioSelection = false
 
     private let accumulator = PlaybackMetricsAccumulator()
-    private let mode: Mode
 
     private enum Mode {
         case audioVideo
@@ -142,43 +149,53 @@ public final class Player {
     }
 
     private nonisolated var hasVideoTrack: Bool {
-        tracks.contains(where: { $0 is VideoTrackInfo })
+        hasVideoSelection
     }
     private nonisolated var hasAudioTrack: Bool {
-        tracks.contains(where: { $0 is AudioTrackInfo })
+        hasAudioSelection
     }
 
-    /// Creates a player for the given tracks.
+    private var mode: Mode {
+        if hasVideoTrack && hasAudioTrack {
+            return .audioVideo
+        }
+        if hasAudioTrack {
+            return .audioOnly
+        }
+        return .videoOnly
+    }
+
+    /// Creates a player for the given catalog and selected track names.
     ///
     /// - Parameters:
-    ///   - tracks: One or two ``TrackInfo`` values from ``BroadcastInfo``. Pass at most one
-    ///     video track and one audio track. Mixing two video or two audio tracks is not supported.
+    ///   - catalog: The catalog to play.
+    ///   - videoTrackName: The selected video track name, or `nil` to disable video.
+    ///   - audioTrackName: The selected audio track name, or `nil` to disable audio.
     ///   - targetBufferingMs: Target playout delay in milliseconds. Higher values improve
     ///     resilience to network jitter at the cost of increased end-to-end latency. Defaults
     ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(ms:)``.
-    /// - Throws: ``SessionError/invalidConfiguration(_:)`` if `tracks` is empty or contains
-    ///   more than two entries.
+    /// - Throws: ``SessionError/noTracksSelected`` if both media types are disabled.
+    /// - Throws: ``SessionError/invalidConfiguration(_:)`` if a requested track name does
+    ///   not exist in the catalog.
     public init(
-        tracks: [any TrackInfo],
+        catalog: Catalog,
+        videoTrackName: String? = nil,
+        audioTrackName: String? = nil,
         targetBufferingMs: UInt64 = 100
     ) throws {
-        if tracks.isEmpty || tracks.count > 2 {
-            throw SessionError.invalidConfiguration("expected one or two tracks")
-        }
+        let selection = try Self.resolveSelection(
+            in: catalog,
+            videoTrackName: videoTrackName,
+            audioTrackName: audioTrackName
+        )
 
-        self.tracks = tracks
+        self.catalog = catalog
+        self.selectedVideoTrack = selection.videoTrack
+        self.selectedAudioTrack = selection.audioTrack
+        self.hasVideoSelection = selection.videoTrack != nil
+        self.hasAudioSelection = selection.audioTrack != nil
         self.targetBufferingMs = targetBufferingMs
         self.videoLayer = AVSampleBufferDisplayLayer()
-
-        let hasVideo = tracks.contains(where: { $0 is VideoTrackInfo })
-        let hasAudio = tracks.contains(where: { $0 is AudioTrackInfo })
-        if hasVideo && hasAudio {
-            mode = .audioVideo
-        } else if hasAudio {
-            mode = .audioOnly
-        } else {
-            mode = .videoOnly
-        }
 
         var cont: AsyncStream<PlayerEvent>.Continuation!
         self.events = AsyncStream { cont = $0 }
@@ -209,8 +226,8 @@ public final class Player {
         accumulator.snapshot(
             audioLatencyMs: hasAudioTrack ? audioTracer?.latencyMs : nil,
             videoLatencyMs: hasVideoTrack ? videoTracer?.latencyMs : nil,
-            audioRingBufferMs: audioRendererForStats?.bufferFillMs,
-            videoJitterBufferMs: videoRendererForStats?.bufferFillMs
+            audioRingBufferMs: hasAudioTrack ? audioRendererForStats?.bufferFillMs : nil,
+            videoJitterBufferMs: hasVideoTrack ? videoRendererForStats?.bufferFillMs : nil
         )
     }
 
@@ -280,55 +297,37 @@ public final class Player {
     /// changes natively.
     ///
     /// Emits ``PlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
-    /// is rendered.
+    /// is rendered. Enabling video from `nil` or disabling the current video selection
+    /// falls back to a playback restart and may cause a brief gap.
     ///
-    /// - Parameter track: A ``VideoTrackInfo`` from the same broadcast.
+    /// - Parameter trackName: A video track name from the current catalog, or `nil`
+    ///   to disable video playback.
     /// - Throws: ``SessionError`` if subscribing to the new track fails.
-    public func switchTrack(to track: VideoTrackInfo) async throws {
-        guard videoTask != nil, let renderer = videoRenderer, !renderer.hasPendingTrack else { return }
-
-        KitLogger.player.debug("Switching video track to \(track.name)")
-
-        let newSub = try MediaTrack(
-            broadcast: track.broadcast,
-            name: track.name,
-            container: track.rawConfig.container,
-            maxLatencyMs: targetBufferingMs)
-        
-        KitLogger.player.debug(
-            "[Switch] Video track: \(track.name), codec=\(track.config.codec), config=\(track.config.debugDescription), container=\(track.rawConfig.container)"
-        )
-
-        let newTrack = try VideoRendererTrack(
-            config: track.rawConfig,
-            targetBufferingMs: targetBufferingMs)
-
-        let oldTask = videoTask
-        let oldSub = videoSubscription
-        let continuation = eventsContinuation
-
-        let newTracer = PacketTimingTracer(kind: .video, timebase: renderer.timebase) { report in
-            KitLogger.player.debug("\(report)")
+    public func switchTrack(to trackName: String?) async throws {
+        let newTrack = try Self.resolveVideoTrack(named: trackName, in: catalog)
+        guard newTrack?.name != selectedVideoTrack?.name else { return }
+        guard newTrack != nil || selectedAudioTrack != nil else {
+            throw SessionError.noTracksSelected
         }
 
-        renderer.setPendingTrack(newTrack) {
-            // Called on enqueueQueue when the renderer promotes the pending track.
-            oldTask?.cancel()
-            oldSub?.close()
-            continuation.yield(.trackSwitched(.video))
+        let wasVideoEnabled = selectedVideoTrack != nil
+
+        guard videoTask != nil else {
+            selectedVideoTrack = newTrack
+            hasVideoSelection = newTrack != nil
+            return
         }
 
-        // Update videoTracer on the main actor — the new ingest task already captures
-        // newTracer directly, so stats will reflect the new rendition from this point on.
-        videoTracer = newTracer
+        if wasVideoEnabled, let newTrack, let renderer = videoRenderer, !renderer.hasPendingTrack {
+            try switchActiveVideoTrack(to: newTrack, renderer: renderer)
+            selectedVideoTrack = newTrack
+            hasVideoSelection = true
+            return
+        }
 
-        videoSubscription = newSub
-        videoRendererTrack = newTrack
-        videoTask = startVideoIngestTask(
-            subscription: newSub, track: newTrack,
-            tracer: newTracer, isSwitch: true)
-
-        restartCoordinator()
+        selectedVideoTrack = newTrack
+        hasVideoSelection = newTrack != nil
+        try await restartPlaybackForSelectionChange()
     }
 
     /// Switches to a different audio rendition seamlessly.
@@ -339,33 +338,37 @@ public final class Player {
     /// ring buffer reset is needed.
     ///
     /// Emits ``PlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
-    /// is rendered.
+    /// is rendered. Enabling audio from `nil` or disabling the current audio selection
+    /// falls back to a playback restart and may cause a brief gap.
     ///
-    /// - Parameter track: A ``AudioTrackInfo`` from the same broadcast.
+    /// - Parameter trackName: An audio track name from the current catalog, or `nil`
+    ///   to disable audio playback.
     /// - Throws: ``SessionError`` if subscribing to the new track fails.
-    public func switchTrack(to track: AudioTrackInfo) async throws {
-        guard audioTask != nil else { return }
+    public func switchAudioTrack(to trackName: String?) async throws {
+        let newTrack = try Self.resolveAudioTrack(named: trackName, in: catalog)
+        guard newTrack?.name != selectedAudioTrack?.name else { return }
+        guard selectedVideoTrack != nil || newTrack != nil else {
+            throw SessionError.noTracksSelected
+        }
 
-        KitLogger.player.debug("Switching audio track to \(track.name)")
+        let wasAudioEnabled = selectedAudioTrack != nil
 
-        let newSub = try MediaTrack(
-            broadcast: track.broadcast,
-            name: track.name,
-            container: track.rawConfig.container,
-            maxLatencyMs: targetBufferingMs)
+        guard audioTask != nil else {
+            selectedAudioTrack = newTrack
+            hasAudioSelection = newTrack != nil
+            return
+        }
 
-        let oldTask = audioTask
-        let oldSub = audioSubscription
+        if wasAudioEnabled, let newTrack {
+            try switchActiveAudioTrack(to: newTrack)
+            selectedAudioTrack = newTrack
+            hasAudioSelection = true
+            return
+        }
 
-        audioSubscription = newSub
-        audioTask = startAudioIngestTask(subscription: newSub, config: track.rawConfig, isSwitch: true)
-
-        // Cancel old task immediately — the ring buffer provides continuity via
-        // timestamp-based positioning (same timestamps → same ring buffer slots).
-        oldTask?.cancel()
-        oldSub?.close()
-
-        restartCoordinator()
+        selectedAudioTrack = newTrack
+        hasAudioSelection = newTrack != nil
+        try await restartPlaybackForSelectionChange()
     }
 
     deinit {
@@ -397,6 +400,18 @@ public final class Player {
         videoSubscription = nil
         audioSubscription = nil
 
+        if !hasVideoSelection {
+            videoRenderer = nil
+            videoRendererTrack = nil
+            videoTracer = nil
+            videoRendererForStats = nil
+        }
+        if !hasAudioSelection {
+            audioRenderer = nil
+            audioTracer = nil
+            audioRendererForStats = nil
+        }
+
         if permanent {
             audioRenderer = nil
             videoRenderer = nil
@@ -409,6 +424,86 @@ public final class Player {
 
             eventsContinuation.finish()
         }
+    }
+
+    private func restartPlaybackForSelectionChange() async throws {
+        teardown(permanent: false)
+        try await play()
+    }
+
+    private func switchActiveVideoTrack(
+        to track: VideoTrackInfo,
+        renderer: VideoRenderer
+    ) throws {
+        KitLogger.player.debug("Switching video track to \(track.name)")
+
+        let newSub = try MediaTrack(
+            broadcast: catalog.broadcast,
+            name: track.name,
+            container: track.rawConfig.container,
+            maxLatencyMs: targetBufferingMs
+        )
+
+        KitLogger.player.debug(
+            "[Switch] Video track: \(track.name), codec=\(track.config.codec), config=\(track.config.debugDescription), container=\(track.rawConfig.container)"
+        )
+
+        let newRendererTrack = try VideoRendererTrack(
+            config: track.rawConfig,
+            targetBufferingMs: targetBufferingMs
+        )
+
+        let oldTask = videoTask
+        let oldSub = videoSubscription
+        let continuation = eventsContinuation
+
+        let newTracer = PacketTimingTracer(kind: .video, timebase: renderer.timebase) { report in
+            KitLogger.player.debug("\(report)")
+        }
+
+        renderer.setPendingTrack(newRendererTrack) {
+            oldTask?.cancel()
+            oldSub?.close()
+            continuation.yield(.trackSwitched(.video))
+        }
+
+        videoTracer = newTracer
+        videoSubscription = newSub
+        videoRendererTrack = newRendererTrack
+        videoTask = startVideoIngestTask(
+            subscription: newSub,
+            track: newRendererTrack,
+            tracer: newTracer,
+            isSwitch: true
+        )
+
+        restartCoordinator()
+    }
+
+    private func switchActiveAudioTrack(to track: AudioTrackInfo) throws {
+        KitLogger.player.debug("Switching audio track to \(track.name)")
+
+        let newSub = try MediaTrack(
+            broadcast: catalog.broadcast,
+            name: track.name,
+            container: track.rawConfig.container,
+            maxLatencyMs: targetBufferingMs
+        )
+
+        let oldTask = audioTask
+        let oldSub = audioSubscription
+
+        audioSubscription = newSub
+        audioTask = startAudioIngestTask(
+            subscription: newSub,
+            config: track.rawConfig,
+            isSwitch: true
+        )
+
+        oldTask?.cancel()
+        oldSub?.close()
+
+        restartCoordinator()
     }
 
     // MARK: - Private: play() helpers
@@ -429,9 +524,7 @@ public final class Player {
     }
 
     private func setupAudioRenderer(timebase: CMTimebase) throws {
-        guard let aInfo = tracks.compactMap({ $0 as? AudioTrackInfo }).first else {
-            return
-        }
+        guard let aInfo = selectedAudioTrack else { return }
 
         let renderer = try AudioRenderer(
             config: aInfo.rawConfig,
@@ -445,7 +538,7 @@ public final class Player {
     }
 
     private func setupVideoRenderer(timebase: CMTimebase) {
-        guard let vInfo = tracks.compactMap({ $0 as? VideoTrackInfo }).first else { return }
+        guard let vInfo = selectedVideoTrack else { return }
 
         let track: VideoRendererTrack
         do {
@@ -470,7 +563,7 @@ public final class Player {
     }
 
     private func startIngestTasks() {
-        if let aTrack = audioSubscription, let aConfig = tracks.compactMap({ $0 as? AudioTrackInfo }).first?.rawConfig {
+        if let aTrack = audioSubscription, let aConfig = selectedAudioTrack?.rawConfig {
             audioTask = startAudioIngestTask(subscription: aTrack, config: aConfig, isSwitch: false)
         }
 
@@ -625,36 +718,95 @@ public final class Player {
         return diff > 500_000
     }
 
-    private func subscribe() throws {
-        for track in tracks {
-            if let vInfo = track as? VideoTrackInfo {
-                KitLogger.player.debug(
-                    "Video track: \(vInfo.name), codec=\(vInfo.config.codec), config=\(vInfo.config.debugDescription), container=\(vInfo.rawConfig.container)"
-                )
-                do {
-                    videoSubscription = try MediaTrack(
-                        broadcast: vInfo.broadcast, name: vInfo.name,
-                        container: vInfo.rawConfig.container,
-                        maxLatencyMs: targetBufferingMs)
-                } catch {
-                    KitLogger.player.error(
-                        "Failed to subscribe to video track \(vInfo.name): \(error)")
-                }
-            } else if let aInfo = track as? AudioTrackInfo {
-                KitLogger.player.debug(
-                    "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription), container=\(aInfo.rawConfig.container)"
-                )
-                do {
-                    audioSubscription = try MediaTrack(
-                        broadcast: aInfo.broadcast, name: aInfo.name,
-                        container: aInfo.rawConfig.container,
-                        maxLatencyMs: targetBufferingMs)
-                } catch {
-                    KitLogger.player.error(
-                        "Failed to subscribe to audio track \(aInfo.name): \(error)")
-                }
-            }
+    private static func resolveSelection(
+        in catalog: Catalog,
+        videoTrackName: String?,
+        audioTrackName: String?
+    ) throws -> (videoTrack: VideoTrackInfo?, audioTrack: AudioTrackInfo?) {
+        let videoTrack = try resolveVideoTrack(named: videoTrackName, in: catalog)
+        let audioTrack = try resolveAudioTrack(named: audioTrackName, in: catalog)
+
+        guard videoTrack != nil || audioTrack != nil else {
+            throw SessionError.noTracksSelected
         }
+
+        return (videoTrack, audioTrack)
     }
 
+    private static func resolveVideoTrack(
+        named trackName: String?,
+        in catalog: Catalog
+    ) throws -> VideoTrackInfo? {
+        guard let trackName else { return nil }
+        guard let track = catalog.videoTracks.first(where: { $0.name == trackName }) else {
+            throw SessionError.invalidConfiguration(
+                "Unknown video track '\(trackName)' for catalog \(catalog.path)"
+            )
+        }
+        return track
+    }
+
+    private static func resolveAudioTrack(
+        named trackName: String?,
+        in catalog: Catalog
+    ) throws -> AudioTrackInfo? {
+        guard let trackName else { return nil }
+        guard let track = catalog.audioTracks.first(where: { $0.name == trackName }) else {
+            throw SessionError.invalidConfiguration(
+                "Unknown audio track '\(trackName)' for catalog \(catalog.path)"
+            )
+        }
+        return track
+    }
+
+    private func subscribe() throws {
+        videoSubscription = nil
+        audioSubscription = nil
+
+        var firstError: Error?
+
+        if let vInfo = selectedVideoTrack {
+            KitLogger.player.debug(
+                "Video track: \(vInfo.name), codec=\(vInfo.config.codec), config=\(vInfo.config.debugDescription), container=\(vInfo.rawConfig.container)"
+            )
+            do {
+                videoSubscription = try MediaTrack(
+                    broadcast: catalog.broadcast,
+                    name: vInfo.name,
+                    container: vInfo.rawConfig.container,
+                    maxLatencyMs: targetBufferingMs
+                )
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+                KitLogger.player.error("Failed to subscribe to video track \(vInfo.name): \(error)")
+                eventsContinuation.yield(.error(.video, error.localizedDescription))
+            }
+        }
+
+        if let aInfo = selectedAudioTrack {
+            KitLogger.player.debug(
+                "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription), container=\(aInfo.rawConfig.container)"
+            )
+            do {
+                audioSubscription = try MediaTrack(
+                    broadcast: catalog.broadcast,
+                    name: aInfo.name,
+                    container: aInfo.rawConfig.container,
+                    maxLatencyMs: targetBufferingMs
+                )
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+                KitLogger.player.error("Failed to subscribe to audio track \(aInfo.name): \(error)")
+                eventsContinuation.yield(.error(.audio, error.localizedDescription))
+            }
+        }
+
+        if videoSubscription == nil && audioSubscription == nil, let firstError {
+            throw firstError
+        }
+    }
 }
