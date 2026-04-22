@@ -1,29 +1,76 @@
 #!/usr/bin/env bash
-#MISE description="Build and run the iOS subscriber demo on a connected device"
-#MISE depends=["build-xcframework"]
+#MISE description="Build and run the iOS publisher or subscriber demo on a connected device"
+#USAGE flag "--app <app>" default="subscriber" help="App to run: subscriber or publisher"
+#USAGE flag "--simulator" help="Run on the iPhone simulator instead of a physical device"
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
-PROJECT="$ROOT_DIR/examples/ios/subscriber/MoQSubscriber.xcodeproj"
-SCHEME="MoQSubscriber"
-BUNDLE_ID="com.example.MoQSubscriber"
+APP="${usage_app:-subscriber}"
 
-USE_SIMULATOR=0
-for arg in "$@"; do
-  case "$arg" in
-  --simulator) USE_SIMULATOR=1 ;;
-  *)
-    echo "Unknown argument: $arg" >&2
+case "$APP" in
+publisher | subscriber) ;;
+*)
+  echo "Unknown app: $APP. Expected publisher or subscriber." >&2
+  exit 1
+  ;;
+esac
+
+case "$APP" in
+subscriber)
+  PROJECT="$ROOT_DIR/examples/ios/subscriber/MoQSubscriber.xcodeproj"
+  SCHEME="MoQSubscriber"
+  TARGET="MoQSubscriber"
+  ;;
+publisher)
+  PROJECT="$ROOT_DIR/examples/ios/publisher/MoQPublisher.xcodeproj"
+  SCHEME="MoQPublisher"
+  TARGET="MoQPublisher"
+  ;;
+esac
+
+DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData/$APP"
+
+resolve_build_product() {
+  local sdk="$1"
+  local settings_json
+
+  settings_json=$(
+    xcodebuild -project "$PROJECT" \
+      -scheme "$SCHEME" \
+      -configuration Debug \
+      -sdk "$sdk" \
+      -derivedDataPath "$DERIVED_DATA_PATH" \
+      -showBuildSettings -json
+  )
+
+  local build_info=()
+  while IFS= read -r line; do
+    build_info+=("$line")
+  done < <(
+    printf '%s' "$settings_json" | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+settings = data[0]["buildSettings"]
+print(settings["PRODUCT_BUNDLE_IDENTIFIER"])
+print(settings["TARGET_BUILD_DIR"] + "/" + settings["FULL_PRODUCT_NAME"])
+'
+  )
+
+  if [[ ${#build_info[@]} -ne 2 ]]; then
+    echo "Failed to resolve build product for $TARGET." >&2
     exit 1
-    ;;
-  esac
-done
+  fi
 
-if [[ $USE_SIMULATOR -eq 1 ]]; then
-  echo "==> Using simulator..."
+  BUNDLE_ID="${build_info[0]}"
+  APP_PATH="${build_info[1]}"
+}
+
+if [[ "${usage_simulator:-false}" = "true" ]]; then
+  echo "==> Using simulator for $APP..."
   SIM_NAME="iPhone 16"
 
-  # Boot simulator if needed
   SIM_UDID=$(xcrun simctl list devices available -j | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
@@ -37,21 +84,24 @@ sys.exit(1)
   echo "Simulator: $SIM_NAME ($SIM_UDID)"
   xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
 
-  echo "==> Building for simulator..."
+  echo "==> Resolving build product..."
+  resolve_build_product "iphonesimulator"
+
+  echo "==> Building $SCHEME for simulator..."
   xcodebuild -project "$PROJECT" \
     -scheme "$SCHEME" \
+    -configuration Debug \
     -sdk iphonesimulator \
     -destination "id=$SIM_UDID" \
-    -derivedDataPath "$ROOT_DIR/.build/DerivedData" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
     build
 
-  APP_PATH="$ROOT_DIR/.build/DerivedData/Build/Products/Debug-iphonesimulator/$SCHEME.app"
   echo "==> Installing on simulator..."
   xcrun simctl install "$SIM_UDID" "$APP_PATH"
-  echo "==> Launching..."
+  echo "==> Launching $BUNDLE_ID..."
   xcrun simctl launch "$SIM_UDID" "$BUNDLE_ID"
 else
-  echo "==> Detecting connected device..."
+  echo "==> Detecting connected device for $APP..."
   DEVICE_UDID=$(xcrun xctrace list devices 2>/dev/null | grep "iPhone" | grep -v "Simulator" | grep -E "^\S.+\([0-9A-F-]+\)$" | head -1 | sed 's/.*(\([0-9A-F-]*\))$/\1/')
 
   if [[ -z "$DEVICE_UDID" ]]; then
@@ -60,18 +110,21 @@ else
   fi
   echo "Device: $DEVICE_UDID"
 
-  echo "==> Building for device..."
+  echo "==> Resolving build product..."
+  resolve_build_product "iphoneos"
+
+  echo "==> Building $SCHEME for device..."
   xcodebuild -project "$PROJECT" \
     -scheme "$SCHEME" \
+    -configuration Debug \
     -sdk iphoneos \
     -destination "id=$DEVICE_UDID" \
-    -derivedDataPath "$ROOT_DIR/.build/DerivedData" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
     build
 
-  APP_PATH="$ROOT_DIR/.build/DerivedData/Build/Products/Debug-iphoneos/$SCHEME.app"
   echo "==> Installing on device..."
   xcrun devicectl device install app --device "$DEVICE_UDID" "$APP_PATH"
-  echo "==> Launching..."
+  echo "==> Launching $BUNDLE_ID..."
   xcrun devicectl device process launch --device "$DEVICE_UDID" "$BUNDLE_ID"
 fi
 
