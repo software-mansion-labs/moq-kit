@@ -26,6 +26,7 @@ internal class VideoDecoder(
     private val onOutputBufferAvailable: (bufferIndex: Int, timestampUs: Long) -> Unit,
 ) {
     private val codec: MediaCodec
+    private var isConfigured: Boolean = false
 
     init {
         val mime = format.getString(MediaFormat.KEY_MIME)!!
@@ -53,13 +54,29 @@ internal class VideoDecoder(
             }
         }, handler)
 
-        codec.configure(format, surface, null, 0)
-        Log.d(TAG, "VideoDecoder configured: $format, hardware accelerated = ${codec.codecInfo.isHardwareAccelerated}")
+        try {
+            codec.configure(format, surface, null, 0)
+            isConfigured = true
+            Log.d(TAG, "VideoDecoder configured: $format, hardware accelerated = ${codec.codecInfo.isHardwareAccelerated}")
+        } catch (_: IllegalArgumentException) {
+            Log.e(
+                TAG,
+                "MediaCodec.configure failed — " +
+                        "mime=${format.getString(MediaFormat.KEY_MIME)}, " +
+                        "size=${runCatching { format.getInteger(MediaFormat.KEY_WIDTH) }.getOrDefault(-1)}" +
+                        "x${runCatching { format.getInteger(MediaFormat.KEY_HEIGHT) }.getOrDefault(-1)}, " +
+                        "surface.isValid=${surface.isValid}, "
+            )
+        }
     }
 
     fun start() {
-        codec.start()
-        Log.d(TAG, "VideoDecoder started")
+        if (isConfigured) {
+            codec.start()
+            Log.d(TAG, "VideoDecoder started")
+        } else {
+            Log.e(TAG, "VideoDecoder not started. MediaCodec is not configured")
+        }
     }
 
     /** Retarget decoded video output to a different surface without recreating the codec. */
