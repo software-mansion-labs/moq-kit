@@ -3,8 +3,12 @@ package com.swmansion.moqkit.subscribe.internal.playback
 import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.util.Log
 import android.view.Surface
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "VideoRenderer"
 
@@ -29,9 +33,10 @@ private const val TAG = "VideoRenderer"
  */
 internal class VideoRenderer(
     @Volatile private var activeTrack: VideoRendererTrack,
-    private val surface: Surface,
+    @Volatile private var outputSurface: Surface,
     private val timebase: MediaTimebase? = null,
     private val metrics: PlaybackMetricsAccumulator? = null,
+    private val onError: (Throwable) -> Unit = {},
 ) {
     // Pending-track swap state machine
 
@@ -50,6 +55,9 @@ internal class VideoRenderer(
     @Volatile
     var hasPendingTrack: Boolean = false
         private set
+
+    @Volatile
+    private var failed = false
 
     // HandlerThread (persistent across decoder swaps)
 
@@ -82,6 +90,7 @@ internal class VideoRenderer(
         private const val CUT_IN_WINDOW_US = 500_000L
         private const val FLUSH_THRESHOLD_US = 2_000_000L
         private const val AWAITING_KEYFRAME_TIMEOUT_MS = 5_000L
+        private const val HANDLER_SYNC_TIMEOUT_MS = 2_000L
     }
 
     val bufferFillMs: Double get() = activeTrack.depthMs
@@ -95,7 +104,7 @@ internal class VideoRenderer(
         Log.d(TAG, "Starting")
 
         activeTrack.setOnDataAvailable {
-            handler.post {
+            postDecoderWork {
                 if (activeTrack.isProcessorReady) {
                     maybeInitDecoder()
                 }
@@ -103,7 +112,7 @@ internal class VideoRenderer(
             }
         }
         if (activeTrack.isProcessorReady) {
-            handler.post { maybeInitDecoder() }
+            postDecoderWork { maybeInitDecoder() }
         } else {
             Log.d(TAG, "Deferring decoder init until CSD is available")
         }
@@ -116,8 +125,19 @@ internal class VideoRenderer(
 
         val format = activeTrack.getFormat()
             ?: throw IllegalStateException("Cannot init decoder: format not ready")
-        decoder = buildDecoder(format)
-        decoder!!.start()
+
+        var newDecoder: VideoDecoder? = null
+        try {
+            val decoder = buildDecoder(format)
+            newDecoder = decoder
+            decoder.start()
+        } catch (t: Throwable) {
+            try {
+                newDecoder?.release()
+            } catch (_: Throwable) {}
+            throw t
+        }
+        decoder = requireNotNull(newDecoder)
 
         Log.d(TAG, "Decoder initialized: $format")
     }
@@ -125,7 +145,7 @@ internal class VideoRenderer(
     private fun buildDecoder(format: android.media.MediaFormat): VideoDecoder =
         VideoDecoder(
             format = format,
-            surface = surface,
+            surface = outputSurface,
             handler = handler,
             onInputBufferAvailable = { index ->
                 parkedInputBuffers.addLast(index)
@@ -167,6 +187,21 @@ internal class VideoRenderer(
     }
 
     /**
+     * Retarget decoder output to [surface]. If the decoder is not initialized yet, only updates
+     * the stored surface so the next decoder creation binds to the new target.
+     */
+    fun setSurface(surface: Surface) {
+        if (outputSurface == surface) {
+            return
+        }
+
+        runOnHandlerSync {
+            decoder?.setOutputSurface(surface)
+            outputSurface = surface
+        }
+    }
+
+    /**
      * Install a pending track. The [SwapPhase] state machine in [tryFeedDecoder] will
      * decide between cut-in and flush-and-swap, then call [performSwap].
      * [onActivated] is called on the HandlerThread at the moment of the swap.
@@ -191,7 +226,7 @@ internal class VideoRenderer(
                         "AwaitingKeyframe timed out after ${AWAITING_KEYFRAME_TIMEOUT_MS}ms, forcing FlushAndSwap"
                     )
                     trackSwapPhase = TrackSwapPhase.FlushAndSwap
-                    tryFeedDecoder()
+                    runDecoderWorkSafely { tryFeedDecoder() }
                 }
             }
             awaitingKeyframeTimeout = timeout
@@ -357,7 +392,7 @@ internal class VideoRenderer(
         maybeCancelScheduledDraining()
 
         newTrack.setOnDataAvailable {
-            handler.post {
+            postDecoderWork {
                 if (activeTrack.isProcessorReady) {
                     maybeInitDecoder()
                 }
@@ -447,5 +482,62 @@ internal class VideoRenderer(
         val renderNs = baseRenderNs.coerceIn(nowNs, nowNs + MAX_RENDER_SCHEDULE_NS)
         dec.releaseOutputBuffer(bufferIndex, renderNs)
         metrics?.recordVideoFrameDisplayed()
+    }
+
+    private fun runOnHandlerSync(block: () -> Unit) {
+        if (Looper.myLooper() == handler.looper) {
+            block()
+            return
+        }
+
+        val failure = AtomicReference<Throwable?>()
+        val latch = CountDownLatch(1)
+        val posted = handler.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                failure.set(t)
+            } finally {
+                latch.countDown()
+            }
+        }
+        if (!posted) {
+            error("VideoRenderer handler is not accepting work")
+        }
+        if (!latch.await(HANDLER_SYNC_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            Log.e(TAG, "Timed out waiting ${HANDLER_SYNC_TIMEOUT_MS}ms for VideoRenderer thread")
+            error("Timed out waiting for VideoRenderer thread")
+        }
+
+        failure.get()?.let { throw it }
+    }
+
+    private fun postDecoderWork(block: () -> Unit) {
+        handler.post { runDecoderWorkSafely(block) }
+    }
+
+    private fun runDecoderWorkSafely(block: () -> Unit) {
+        if (failed) {
+            return
+        }
+
+        try {
+            block()
+        } catch (t: Throwable) {
+            handleFatalError(t)
+        }
+    }
+
+    private fun handleFatalError(error: Throwable) {
+        if (failed) {
+            return
+        }
+
+        failed = true
+        Log.e(TAG, "VideoRenderer fatal error", error)
+        activeTrack.setOnDataAvailable(null)
+        pendingTrack?.setOnDataAvailable(null)
+        hasPendingTrack = false
+        onError(error)
     }
 }

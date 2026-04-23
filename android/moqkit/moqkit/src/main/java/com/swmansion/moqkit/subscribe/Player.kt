@@ -7,9 +7,11 @@ import com.swmansion.moqkit.subscribe.internal.playback.AudioRenderer
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackMetricsAccumulator
 import com.swmansion.moqkit.subscribe.internal.playback.VideoRenderer
 import com.swmansion.moqkit.subscribe.internal.playback.VideoRendererTrack
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
@@ -24,39 +26,35 @@ private const val TAG = "Player"
  *
  * ### Typical usage
  * ```kotlin
- * val player = Player(broadcastInfo.videoTracks + broadcastInfo.audioTracks,
- *                        targetLatencyMs = 150, parentScope = lifecycleScope)
+ * val player = Player(
+ *     catalog = catalog,
+ *     videoTrackName = catalog.videoTracks.firstOrNull()?.name,
+ *     audioTrackName = catalog.audioTracks.firstOrNull()?.name,
+ *     targetLatencyMs = 150,
+ *     parentScope = lifecycleScope,
+ * )
  * player.setSurface(surfaceView.holder.surface)
  * player.play()
  * // … later …
- * player.stop()
+ * player.close()
  * ```
  *
- * @param tracks List of tracks to play. Both [AudioTrackInfo] and [VideoTrackInfo] are
- *   optional — any combination works, including video-only or audio-only.
+ * @param catalog The catalog that describes the tracks available in the broadcast.
+ * @param videoTrackName The selected video track name from [Catalog.videoTracks], or `null`
+ *   to disable video playback. Unknown names throw [IllegalArgumentException].
+ * @param audioTrackName The selected audio track name from [Catalog.audioTracks], or `null`
+ *   to disable audio playback. Unknown names throw [IllegalArgumentException].
  * @param targetLatencyMs Target end-to-end playback latency in milliseconds. Lower values
  *   reduce delay at the cost of increased risk of stalls. Defaults to 100 ms.
  * @param parentScope Coroutine scope whose lifetime bounds the player's internal coroutines.
  */
 class Player(
-    private val tracks: List<TrackInfo>,
-    private val targetLatencyMs: Int = 100,
+    private val catalog: Catalog,
+    videoTrackName: String? = null,
+    audioTrackName: String? = null,
+    targetLatencyMs: Int = 100,
     parentScope: CoroutineScope,
-) {
-    init {
-        val audioTracksCount = tracks.count { track ->  track is AudioTrackInfo }
-        if (audioTracksCount > 1) {
-            throw IllegalArgumentException("at most one audio track is allowed")
-        }
-        val videoTracksCount = tracks.count { track -> track is VideoTrackInfo }
-        if (videoTracksCount > 1) {
-            throw IllegalArgumentException("at most one video track is allowed")
-        }
-        if (audioTracksCount + videoTracksCount == 0) {
-            throw IllegalArgumentException("at least one audio or video track is expected")
-        }
-    }
-
+) : AutoCloseable {
     /**
      * Playback lifecycle events emitted by the player.
      */
@@ -74,9 +72,15 @@ class Player(
     }
 
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
+    private val accumulator = PlaybackMetricsAccumulator()
 
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
     val events: SharedFlow<Event> = _events
+
+    private val broadcastOwner: BroadcastOwner
+    private var selectedVideoTrack: VideoTrackInfo?
+    private var selectedAudioTrack: AudioTrackInfo?
+    private var targetLatencyMs = targetLatencyMs
 
     private var audioRenderer: AudioRenderer? = null
     private var videoRenderer: VideoRenderer? = null
@@ -84,73 +88,240 @@ class Player(
     private var videoIngestJob: Job? = null
     private var surface: Surface? = null
     private var playing = false
-    private val accumulator = PlaybackMetricsAccumulator()
+    private var closed = false
 
-    /** Current playback time in microseconds. */
-    val currentTimeUs: Long get() = audioRenderer?.currentTimeUs ?: 0L
-
-    /** Snapshot of current playback metrics. */
-    val stats: PlaybackStats get() {
-        val timeUs = audioRenderer?.currentTimeUs ?: 0L
-        val audioLatency = audioRenderer?.let {
-            if (it.lastIngestPtsUs > 0 && timeUs > 0) (it.lastIngestPtsUs - timeUs).toDouble() / 1000.0 else null
+    init {
+        val resolvedVideoTrack = resolveVideoTrack(videoTrackName)
+        val resolvedAudioTrack = resolveAudioTrack(audioTrackName)
+        check(resolvedVideoTrack != null || resolvedAudioTrack != null) {
+            "at least one audio or video track is expected"
         }
-        val videoLatency = videoRenderer?.let {
-            if (it.lastIngestPtsUs > 0 && timeUs > 0) (it.lastIngestPtsUs - timeUs).toDouble() / 1000.0 else null
-        }
-        return accumulator.snapshot(
-            audioLatencyMs = audioLatency,
-            videoLatencyMs = videoLatency,
-            audioRingBufferMs = audioRenderer?.bufferFillMs,
-            videoJitterBufferMs = videoRenderer?.bufferFillMs,
-        )
+        selectedVideoTrack = resolvedVideoTrack
+        selectedAudioTrack = resolvedAudioTrack
+        broadcastOwner = catalog.retainBroadcastOwner()
     }
 
+    /** Current playback time in microseconds. */
+    val currentTimeUs: Long
+        get() = audioRenderer?.currentTimeUs ?: 0L
+
+    /** Snapshot of current playback metrics. */
+    val stats: PlaybackStats
+        get() {
+            val timeUs = audioRenderer?.currentTimeUs ?: 0L
+            val audioLatency = audioRenderer?.let {
+                if (it.lastIngestPtsUs > 0 && timeUs > 0) {
+                    (it.lastIngestPtsUs - timeUs).toDouble() / 1000.0
+                } else {
+                    null
+                }
+            }
+            val videoLatency = videoRenderer?.let {
+                if (it.lastIngestPtsUs > 0 && timeUs > 0) {
+                    (it.lastIngestPtsUs - timeUs).toDouble() / 1000.0
+                } else {
+                    null
+                }
+            }
+            return accumulator.snapshot(
+                audioLatencyMs = if (selectedAudioTrack != null) audioLatency else null,
+                videoLatencyMs = if (selectedVideoTrack != null) videoLatency else null,
+                audioRingBufferMs = if (selectedAudioTrack != null) audioRenderer?.bufferFillMs else null,
+                videoJitterBufferMs = if (selectedVideoTrack != null) videoRenderer?.bufferFillMs else null,
+            )
+        }
+
     /**
-     * Set or clear the video output surface.
-     * If play() was already called and a surface becomes available, starts the video pipeline.
-     * If surface becomes null, stops the video renderer.
+     * Set, swap, or clear the video output surface.
+     * If [play] was already called and a surface becomes available, starts the video pipeline.
+     * If a different surface is provided while video is running, attempts an in-place swap and
+     * falls back to restarting video on the new surface if the codec rejects the change.
+     * If surface becomes null, stops the active video renderer.
      */
     fun setSurface(surface: Surface?) {
+        val previousSurface = this.surface
         this.surface = surface
-        if (surface != null && playing && videoRenderer == null) {
-            startVideo(surface)
-        } else if (surface == null && videoRenderer != null) {
-            stopVideo()
+
+        when {
+            surface == null -> {
+                if (videoRenderer != null) {
+                    stopVideo()
+                }
+            }
+
+            videoRenderer == null -> {
+                if (playing && selectedVideoTrack != null) {
+                    startVideo(surface)
+                }
+            }
+
+            previousSurface !== surface -> swapVideoSurface(surface)
         }
     }
 
     /**
      * Starts audio (and video, if a surface is set) playback.
      *
-     * Opens subscriptions for all tracks in the list provided at construction time and begins
-     * decoding. The first decoded audio frame triggers an [Event.TrackPlaying] event.
      * Safe to call if a surface has not yet been provided — video will start automatically
-     * once [setSurface] is called. Audio is optional — if no audio track is present only
-     * video is played.
+     * once [setSurface] is called. The first decoded audio or video frame triggers an
+     * [Event.TrackPlaying] event for that media kind.
      */
     fun play() {
-        playing = true
-        accumulator.markPlayStart()
-
-        startAudio()
-
-        surface?.let {
-            startVideo(it)
-        }
-    }
-
-    private fun startAudio() {
-        val audioInfo = tracks.filterIsInstance<AudioTrackInfo>().firstOrNull() ?: run {
-            Log.d(TAG, "No audio track, skipping audio pipeline")
+        check(!closed) { "Player is already closed" }
+        if (playing) {
             return
         }
 
-        Log.d(TAG, "startAudio: '${audioInfo.name}' ${audioInfo.config.sampleRate}Hz " +
-            "${audioInfo.config.channelCount}ch, targetLatency=${targetLatencyMs}ms")
+        playing = true
+        accumulator.markPlayStart()
+        startAudio()
+        surface?.let { startVideo(it) }
+    }
+
+    /**
+     * Switches to a different video rendition.
+     *
+     * Passing `null` disables video playback. If that would leave both media kinds disabled,
+     * this call throws.
+     */
+    fun switchTrack(trackName: String?) {
+        check(!closed) { "Player is already closed" }
+        val newTrack = resolveVideoTrack(trackName)
+        if (newTrack?.name == selectedVideoTrack?.name) {
+            return
+        }
+        check(newTrack != null || selectedAudioTrack != null) {
+            "at least one audio or video track is expected"
+        }
+
+        val currentTrack = selectedVideoTrack
+        selectedVideoTrack = newTrack
+
+        if (!playing) {
+            return
+        }
+
+        val renderer = videoRenderer
+        if (currentTrack != null && newTrack != null && renderer != null && !renderer.hasPendingTrack) {
+            switchActiveVideoTrack(newTrack, renderer)
+            return
+        }
+
+        restartPlaybackForSelectionChange()
+    }
+
+    /**
+     * Switches to a different audio rendition.
+     *
+     * Passing `null` disables audio playback. If that would leave both media kinds disabled,
+     * this call throws.
+     */
+    fun switchAudioTrack(trackName: String?) {
+        check(!closed) { "Player is already closed" }
+        val newTrack = resolveAudioTrack(trackName)
+        if (newTrack?.name == selectedAudioTrack?.name) {
+            return
+        }
+        check(selectedVideoTrack != null || newTrack != null) {
+            "at least one audio or video track is expected"
+        }
+
+        val currentTrack = selectedAudioTrack
+        selectedAudioTrack = newTrack
+
+        if (!playing) {
+            return
+        }
+
+        if (currentTrack != null && newTrack != null && audioRenderer != null) {
+            switchActiveAudioTrack(newTrack)
+            return
+        }
+
+        restartPlaybackForSelectionChange()
+    }
+
+    /**
+     * Pauses playback by stopping all decoders and cancelling ingest coroutines.
+     *
+     * Unlike [close], the player can be resumed by calling [play] again.
+     */
+    fun pause() {
+        check(!closed) { "Player is already closed" }
+        if (!playing) {
+            return
+        }
+
+        Log.d(TAG, "pause")
+        playing = false
+        teardownPlayback(resetAccumulator = false)
+
+        if (selectedAudioTrack != null) {
+            _events.tryEmit(Event.TrackPaused("audio"))
+        }
+        if (selectedVideoTrack != null) {
+            _events.tryEmit(Event.TrackPaused("video"))
+        }
+    }
+
+    /**
+     * Stops playback and resets all accumulated metrics.
+     *
+     * Call [play] again to restart from the current selected tracks.
+     */
+    fun stop() {
+        check(!closed) { "Player is already closed" }
+        if (!playing && audioRenderer == null && videoRenderer == null) {
+            accumulator.reset()
+            return
+        }
+
+        Log.d(TAG, "stop")
+        playing = false
+        teardownPlayback(resetAccumulator = true)
+    }
+
+    /**
+     * Adjusts the target playback latency while the player is running.
+     */
+    fun updateTargetLatency(ms: Int) {
+        check(!closed) { "Player is already closed" }
+        targetLatencyMs = ms
+        audioRenderer?.updateTargetLatency(ms)
+        videoRenderer?.updateTargetBuffering(ms)
+    }
+
+    /**
+     * Releases the retained broadcast handle and all playback resources.
+     *
+     * After [close] returns the player cannot be used again.
+     */
+    override fun close() {
+        if (closed) {
+            return
+        }
+
+        closed = true
+        playing = false
+        teardownPlayback(resetAccumulator = true)
+        scope.cancel()
+        broadcastOwner.release()
+    }
+
+    private fun startAudio() {
+        val audioInfo = selectedAudioTrack ?: run {
+            Log.d(TAG, "No audio track selected, skipping audio pipeline")
+            return
+        }
+
+        Log.d(
+            TAG,
+            "startAudio: '${audioInfo.name}' ${audioInfo.config.sampleRate}Hz " +
+                "${audioInfo.config.channelCount}ch, targetLatency=${targetLatencyMs}ms",
+        )
 
         val renderer = AudioRenderer(
-            config = audioInfo.config,
+            config = audioInfo.rawConfig,
             targetLatencyMs = targetLatencyMs,
             metrics = accumulator,
         )
@@ -158,9 +329,9 @@ class Player(
         renderer.start()
 
         val audioFlow = subscribeTrack(
-            audioInfo.broadcast,
+            broadcastOwner.consumer(),
             audioInfo.name,
-            audioInfo.config.container,
+            audioInfo.rawConfig.container,
             targetLatencyMs.toULong(),
         )
 
@@ -168,7 +339,6 @@ class Player(
             var firstFrame = true
             try {
                 audioFlow.collect { frame ->
-                    // TODO: add discontinuation detection
                     renderer.submitFrame(frame.payload, frame.timestampUs.toLong())
                     accumulator.recordAudioBytes(frame.payload.size)
 
@@ -190,17 +360,20 @@ class Player(
     }
 
     private fun startVideo(surface: Surface) {
-        val videoInfo = tracks.filterIsInstance<VideoTrackInfo>().firstOrNull() ?: return
+        val videoInfo = selectedVideoTrack ?: run {
+            Log.d(TAG, "No video track selected, skipping video pipeline")
+            return
+        }
 
         Log.d(TAG, "Starting video: '${videoInfo.name}' codec=${videoInfo.config.codec}")
 
-        val track = VideoRendererTrack(videoInfo.config, targetLatencyMs.toLong() * 1000)
-
+        val track = VideoRendererTrack(videoInfo.rawConfig, targetLatencyMs.toLong() * 1000)
         val renderer = VideoRenderer(
             activeTrack = track,
-            surface = surface,
+            outputSurface = surface,
             timebase = audioRenderer?.timebase,
             metrics = accumulator,
+            onError = ::handleVideoRendererError,
         )
         videoRenderer = renderer
         renderer.start()
@@ -209,11 +382,11 @@ class Player(
     }
 
     private fun launchVideoIngestJob(videoInfo: VideoTrackInfo, track: VideoRendererTrack): Job {
-        Log.d(TAG, "Subscribing to video track")
+        Log.d(TAG, "Subscribing to video track '${videoInfo.name}'")
         val videoFlow = subscribeTrack(
-            videoInfo.broadcast,
+            broadcastOwner.consumer(),
             videoInfo.name,
-            videoInfo.config.container,
+            videoInfo.rawConfig.container,
             targetLatencyMs.toULong(),
         )
 
@@ -222,8 +395,6 @@ class Player(
             try {
                 Log.d(TAG, "Waiting for video frames")
                 videoFlow.collect { frame ->
-                    // TODO: add discontinuation detection
-
                     track.insert(frame.payload, frame.timestampUs.toLong(), frame.keyframe)
                     accumulator.recordVideoBytes(frame.payload.size)
 
@@ -236,6 +407,8 @@ class Player(
                 }
 
                 _events.tryEmit(Event.TrackStopped("video"))
+            } catch (_: CancellationException) {
+                Log.d(TAG, "Video ingest cancelled")
             } catch (e: Exception) {
                 Log.e(TAG, "Video ingest error: $e")
                 _events.tryEmit(Event.Error("video", e.message ?: "Unknown error"))
@@ -244,34 +417,62 @@ class Player(
         }
     }
 
-    /**
-     * Switches to a different video rendition seamlessly.
-     *
-     * Creates a pending track that accumulates frames in the background. The swap state
-     * machine in [VideoRenderer] decides between a seamless cut-in and a flush-and-swap,
-     * then calls [onActivated] on the renderer's HandlerThread.
-     *
-     * No-ops if a switch is already in progress.
-     *
-     * @param videoInfo The new video rendition to switch to.
-     * @param onActivated Called on the renderer's HandlerThread when the swap completes.
-     */
-    fun switchVideoTrack(videoInfo: VideoTrackInfo, onActivated: (() -> Unit)? = null) {
-        val renderer = videoRenderer ?: return
-        if (renderer.hasPendingTrack) return
-
+    private fun switchActiveVideoTrack(videoInfo: VideoTrackInfo, renderer: VideoRenderer) {
         Log.d(TAG, "Switching video track to '${videoInfo.name}' codec=${videoInfo.config.codec}")
 
-        val newTrack = VideoRendererTrack(videoInfo.config, targetLatencyMs.toLong() * 1000)
+        val newTrack = VideoRendererTrack(videoInfo.rawConfig, targetLatencyMs.toLong() * 1000)
         val oldJob = videoIngestJob
-
+        // TODO: If the pending track never activates, this old job lives until a broader
+        // playback teardown cancels it.
         renderer.setPendingTrack(newTrack) {
-            // TODO: we may encounter situation where the track will never be switched so we will leak the job
             oldJob?.cancel()
-            onActivated?.invoke()
         }
 
         videoIngestJob = launchVideoIngestJob(videoInfo, newTrack)
+    }
+
+    private fun switchActiveAudioTrack(audioInfo: AudioTrackInfo) {
+        Log.d(TAG, "Switching audio track to '${audioInfo.name}' codec=${audioInfo.config.codec}")
+
+        audioIngestJob?.cancel()
+        audioRenderer?.stop()
+        audioRenderer = null
+        startAudio()
+    }
+
+    private fun restartPlaybackForSelectionChange() {
+        Log.d(TAG, "Restarting playback for selection change")
+        teardownPlayback(resetAccumulator = false)
+        if (playing) {
+            startAudio()
+            surface?.let { startVideo(it) }
+        }
+    }
+
+    private fun swapVideoSurface(surface: Surface) {
+        val renderer = videoRenderer ?: return
+
+        try {
+            renderer.setSurface(surface)
+            Log.d(TAG, "Updated video output surface")
+        } catch (t: Throwable) {
+            Log.w(TAG, "Surface swap failed, restarting video renderer", t)
+            restartVideoForSurfaceChange(surface)
+        }
+    }
+
+    private fun restartVideoForSurfaceChange(surface: Surface) {
+        stopVideo()
+        if (playing && selectedVideoTrack != null) {
+            startVideo(surface)
+        }
+    }
+
+    private fun handleVideoRendererError(error: Throwable) {
+        Log.e(TAG, "Video renderer error", error)
+        stopVideo()
+        _events.tryEmit(Event.Error("video", error.message ?: "Unknown error"))
+        checkAllStopped()
     }
 
     private fun stopVideo() {
@@ -279,6 +480,20 @@ class Player(
         videoIngestJob = null
         videoRenderer?.stop()
         videoRenderer = null
+    }
+
+    private fun teardownPlayback(resetAccumulator: Boolean) {
+        audioIngestJob?.cancel()
+        audioIngestJob = null
+        videoIngestJob?.cancel()
+        videoIngestJob = null
+        audioRenderer?.stop()
+        audioRenderer = null
+        videoRenderer?.stop()
+        videoRenderer = null
+        if (resetAccumulator) {
+            accumulator.reset()
+        }
     }
 
     private fun checkAllStopped() {
@@ -289,60 +504,23 @@ class Player(
         }
     }
 
-    /**
-     * Pauses playback by stopping all decoders and cancelling ingest coroutines.
-     *
-     * Unlike [stop], the player can be resumed by calling [play] again. Emits
-     * [Event.TrackPaused] for each active track.
-     */
-    fun pause() {
-        Log.d(TAG, "pause")
-        playing = false
-        audioIngestJob?.cancel()
-        audioIngestJob = null
-        videoIngestJob?.cancel()
-        videoIngestJob = null
-        audioRenderer?.stop()
-        audioRenderer = null
-        videoRenderer?.stop()
-        videoRenderer = null
-
-        val hasAudio = tracks.any { it is AudioTrackInfo }
-        val hasVideo = tracks.any { it is VideoTrackInfo }
-        if (hasAudio) _events.tryEmit(Event.TrackPaused("audio"))
-        if (hasVideo) _events.tryEmit(Event.TrackPaused("video"))
+    private fun resolveVideoTrack(trackName: String?): VideoTrackInfo? {
+        if (trackName == null) {
+            return null
+        }
+        return catalog.videoTracks.firstOrNull { it.name == trackName }
+            ?: throw IllegalArgumentException(
+                "Unknown video track '$trackName' for catalog ${catalog.path}",
+            )
     }
 
-    /**
-     * Stops playback and resets all accumulated metrics.
-     *
-     * Releases decoders and cancels ingest coroutines. Call [play] to start again from scratch.
-     */
-    fun stop() {
-        Log.d(TAG, "stop")
-        playing = false
-        audioIngestJob?.cancel()
-        audioIngestJob = null
-        videoIngestJob?.cancel()
-        videoIngestJob = null
-        audioRenderer?.stop()
-        audioRenderer = null
-        videoRenderer?.stop()
-        videoRenderer = null
-        accumulator.reset()
-    }
-
-    /**
-     * Adjusts the target playback latency while the player is running.
-     *
-     * Propagates the new value to the audio ring buffer and video jitter buffer immediately.
-     * Lower values cause more aggressive frame dropping to catch up to live; higher values
-     * trade latency for smoother playback.
-     *
-     * @param ms New target latency in milliseconds.
-     */
-    fun updateTargetLatency(ms: Int) {
-        audioRenderer?.updateTargetLatency(ms)
-        videoRenderer?.updateTargetBuffering(ms)
+    private fun resolveAudioTrack(trackName: String?): AudioTrackInfo? {
+        if (trackName == null) {
+            return null
+        }
+        return catalog.audioTracks.firstOrNull { it.name == trackName }
+            ?: throw IllegalArgumentException(
+                "Unknown audio track '$trackName' for catalog ${catalog.path}",
+            )
     }
 }

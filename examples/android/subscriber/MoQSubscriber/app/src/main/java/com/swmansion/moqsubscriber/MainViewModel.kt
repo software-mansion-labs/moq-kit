@@ -2,27 +2,25 @@ package com.swmansion.moqsubscriber
 
 import android.app.Application
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.swmansion.moqkit.Session
-import com.swmansion.moqkit.subscribe.BroadcastEvent
-import com.swmansion.moqkit.subscribe.BroadcastInfo
+import com.swmansion.moqkit.subscribe.Broadcast
+import com.swmansion.moqkit.subscribe.BroadcastSubscription
+import com.swmansion.moqkit.subscribe.Catalog
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.Player
-import com.swmansion.moqkit.subscribe.TrackInfo
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-
-class BroadcastEntry(info: BroadcastInfo) {
-    val id: String = info.path
-    var info by mutableStateOf(info)
+class BroadcastEntry(catalog: Catalog) {
+    val id: String = catalog.path
+    var catalog by mutableStateOf(catalog)
     var player by mutableStateOf<Player?>(null)
     var offline by mutableStateOf(false)
     var isPlaying by mutableStateOf(false)
@@ -39,13 +37,15 @@ class BroadcastEntry(info: BroadcastInfo) {
 }
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
-    var relayUrl by mutableStateOf("http://192.168.92.173:4443")
+    var relayUrl by mutableStateOf("http://192.168.92.140:4443")
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
 
     private var session: Session? = null
     private var sessionJobs: List<Job> = emptyList()
+    private val catalogJobs = mutableMapOf<String, Job>()
+    private var subscription: BroadcastSubscription? = null
 
     fun connect() {
         val s = Session(
@@ -59,39 +59,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 s.state.collect { sessionState = it }
             },
             viewModelScope.launch {
-                s.broadcasts.collect { event ->
-                    when (event) {
-                        is BroadcastEvent.Available -> {
-                            val info = event.info
-                            val existing = broadcasts.find { it.id == info.path }
-                            if (existing != null) {
-                                existing.info = info
-                                existing.offline = false
-                                if (hasPlayableTracks(info)) {
-                                    stopEntry(existing)
-                                    existing.info = info
-                                    startPlayer(existing)
-                                }
-                            } else {
-                                val entry = BroadcastEntry(info)
-                                broadcasts.add(entry)
-                                if (hasPlayableTracks(info)) {
-                                    startPlayer(entry)
-                                }
-                            }
-                        }
-
-                        is BroadcastEvent.Unavailable -> {
-                            val entry = broadcasts.find { it.id == event.path } ?: return@collect
-                            stopEntry(entry)
-                            entry.offline = true
-                        }
-                    }
-                }
-            },
-            viewModelScope.launch {
                 try {
                     s.connect()
+                    val newSubscription = s.subscribe()
+                    subscription = newSubscription
+                    newSubscription.broadcasts.collect { broadcast ->
+                        observeCatalogs(broadcast)
+                    }
                 } catch (_: Exception) {
                 }
             },
@@ -121,19 +95,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun switchVideoTrack(entry: BroadcastEntry, track: VideoTrackInfo) {
         entry.pendingVideoTrack = track
-        entry.player?.switchVideoTrack(track) {
-            viewModelScope.launch(Dispatchers.Main) {
-                entry.selectedVideoTrack = track
-                entry.pendingVideoTrack = null
+        try {
+            entry.player?.switchTrack(track.name)
+            entry.selectedVideoTrack = track
+        } finally {
+            entry.pendingVideoTrack = null
+        }
+    }
+
+    private fun observeCatalogs(broadcast: Broadcast) {
+        catalogJobs.remove(broadcast.path)?.cancel()
+        catalogJobs[broadcast.path] = viewModelScope.launch {
+            try {
+                broadcast.catalogs().collect { catalog ->
+                    replaceBroadcast(catalog)
+                }
+                markBroadcastUnavailable(broadcast.path)
+            } catch (_: Exception) {
+                markBroadcastUnavailable(broadcast.path)
+            } finally {
+                catalogJobs.remove(broadcast.path)
+                broadcast.close()
             }
         }
     }
 
+    private fun replaceBroadcast(catalog: Catalog) {
+        val existing = broadcasts.find { it.id == catalog.path }
+        val preferredVideoName = existing?.selectedVideoTrack?.name
+
+        if (existing == null) {
+            val entry = BroadcastEntry(catalog)
+            broadcasts.add(entry)
+            if (hasPlayableTracks(catalog)) {
+                startPlayer(entry, preferredVideoName = null)
+            }
+            return
+        }
+
+        stopEntry(existing)
+        existing.catalog = catalog
+        existing.offline = false
+        if (hasPlayableTracks(catalog)) {
+            startPlayer(existing, preferredVideoName = preferredVideoName)
+        }
+    }
+
+    private fun markBroadcastUnavailable(path: String) {
+        val entry = broadcasts.find { it.id == path } ?: return
+        stopEntry(entry)
+        entry.offline = true
+    }
+
     private fun stopEntry(entry: BroadcastEntry) {
         entry.eventJob?.cancel()
+        entry.eventJob = null
         entry.statsJob?.cancel()
+        entry.statsJob = null
         entry.latencyUpdateJob?.cancel()
-        entry.player?.stop()
+        entry.latencyUpdateJob = null
+        entry.player?.close()
         entry.player = null
         entry.playbackStats = null
         entry.isPlaying = false
@@ -142,25 +163,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         entry.pendingVideoTrack = null
     }
 
-    private fun hasPlayableTracks(info: BroadcastInfo): Boolean {
-        return info.videoTracks.isNotEmpty() || info.audioTracks.isNotEmpty()
+    private fun hasPlayableTracks(catalog: Catalog): Boolean {
+        return catalog.videoTracks.isNotEmpty() || catalog.audioTracks.isNotEmpty()
     }
 
-    private fun startPlayer(entry: BroadcastEntry) {
-        val initialVideo = entry.info.videoTracks.maxByOrNull { track ->
-            (track.config.coded?.height ?: 0u) * (track.config.coded?.width ?: 0u)
-        }
-
-        val tracks = buildList<TrackInfo> {
-            addAll(entry.info.audioTracks)
-            if (initialVideo != null) add(initialVideo)
-        }
-        if (tracks.isEmpty()) {
+    private fun startPlayer(entry: BroadcastEntry, preferredVideoName: String?) {
+        val catalog = entry.catalog
+        val initialVideo = preferredVideoTrack(catalog, preferredVideoName)
+        val initialAudioName = catalog.audioTracks.firstOrNull()?.name
+        if (initialVideo == null && initialAudioName == null) {
             return
         }
 
         val player = try {
-            Player(tracks, entry.targetLatencyMs, viewModelScope)
+            Player(
+                catalog = catalog,
+                videoTrackName = initialVideo?.name,
+                audioTrackName = initialAudioName,
+                targetLatencyMs = entry.targetLatencyMs,
+                parentScope = viewModelScope,
+            )
         } catch (_: IllegalArgumentException) {
             return
         }
@@ -176,10 +198,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         entry.isPaused = false
                     }
 
-                    is Player.Event.TrackStopped -> entry.isPlaying = false
-                    is Player.Event.Error -> entry.isPlaying = false
-                    is Player.Event.AllTracksStopped -> entry.isPlaying = false
-                    else -> {}
+                    is Player.Event.TrackPaused -> entry.isPaused = true
+                    is Player.Event.TrackStopped -> {}
+                    is Player.Event.Error -> {}
+                    is Player.Event.AllTracksStopped -> {
+                        entry.isPlaying = false
+                        entry.isPaused = false
+                    }
                 }
             }
         }
@@ -194,6 +219,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stop() {
         sessionJobs.forEach { it.cancel() }
         sessionJobs = emptyList()
+        catalogJobs.values.forEach { it.cancel() }
+        catalogJobs.clear()
+        subscription?.close()
+        subscription = null
         for (entry in broadcasts) {
             stopEntry(entry)
         }
@@ -206,6 +235,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        catalogJobs.values.forEach { it.cancel() }
+        catalogJobs.clear()
+        subscription?.close()
         viewModelScope.launch { session?.close() }
+    }
+
+    private fun preferredVideoTrack(catalog: Catalog, preferredName: String?): VideoTrackInfo? {
+        if (preferredName != null) {
+            catalog.videoTracks.firstOrNull { it.name == preferredName }?.let { return it }
+        }
+        return catalog.videoTracks.maxByOrNull { track ->
+            (track.config.coded?.height ?: 0u) * (track.config.coded?.width ?: 0u)
+        }
     }
 }

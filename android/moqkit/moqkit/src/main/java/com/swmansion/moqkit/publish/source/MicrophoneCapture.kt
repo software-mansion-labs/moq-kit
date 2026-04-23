@@ -1,13 +1,21 @@
 package com.swmansion.moqkit.publish.source
 
+import android.Manifest
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.RequiresPermission
 
 private const val TAG = "MicrophoneCapture"
 
+/**
+ * Pulls PCM frames from the device microphone.
+ *
+ * Calling apps must both request and declare `RECORD_AUDIO` in their own manifest. The moqkit
+ * library does not add that permission transitively.
+ */
 class MicrophoneCapture(
     private val sampleRate: Int = 48_000,
     private val channels: Int = 1,
@@ -19,6 +27,7 @@ class MicrophoneCapture(
     private var recordThread: Thread? = null
     @Volatile private var running = false
 
+    @RequiresPermission(Manifest.permission.RECORD_AUDIO)
     fun start() {
         val channelConfig = if (channels == 1) AudioFormat.CHANNEL_IN_MONO else AudioFormat.CHANNEL_IN_STEREO
         val minBufSize = AudioRecord.getMinBufferSize(

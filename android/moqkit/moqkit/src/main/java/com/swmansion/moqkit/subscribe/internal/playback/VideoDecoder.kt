@@ -62,6 +62,12 @@ internal class VideoDecoder(
         Log.d(TAG, "VideoDecoder started")
     }
 
+    /** Retarget decoded video output to a different surface without recreating the codec. */
+    fun setOutputSurface(surface: Surface) {
+        codec.setOutputSurface(surface)
+        Log.d(TAG, "VideoDecoder output surface updated")
+    }
+
     /** Queue a codec-specific-data buffer to prepare for an adaptive resolution change. */
     fun queueCodecConfig(index: Int, csd: ByteArray) {
         try {

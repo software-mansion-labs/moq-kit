@@ -214,16 +214,16 @@ private fun BroadcastCard(
                 )
             }
 
-            val info = entry.info
+            val catalog = entry.catalog
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                info.videoTracks.firstOrNull()?.let { track ->
+                catalog.videoTracks.firstOrNull()?.let { track ->
                     Text(
                         text = "Video: ${track.config.codec}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                info.audioTracks.firstOrNull()?.let { track ->
+                catalog.audioTracks.firstOrNull()?.let { track ->
                     Text(
                         text = "Audio: ${track.config.codec} ${track.config.sampleRate} Hz",
                         style = MaterialTheme.typography.bodySmall,
@@ -601,8 +601,8 @@ private fun formatBitrate(kbps: Double): String {
 
 @Composable
 private fun RenditionPickerRow(entry: BroadcastEntry, vm: MainViewModel) {
-    val tracks = remember(entry.info.videoTracks) {
-        entry.info.videoTracks.sortedByDescending {
+    val tracks = remember(entry.catalog.videoTracks) {
+        entry.catalog.videoTracks.sortedByDescending {
             it.config.coded?.let { d -> d.width.toLong() * d.height.toLong() } ?: 0L
         }
     }
