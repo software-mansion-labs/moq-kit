@@ -14,6 +14,7 @@ import com.swmansion.moqkit.subscribe.Catalog
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.Player
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -111,13 +112,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     replaceBroadcast(catalog)
                 }
                 markBroadcastUnavailable(broadcast.path)
+            } catch (_: CancellationException) {
             } catch (_: Exception) {
                 markBroadcastUnavailable(broadcast.path)
             } finally {
-                catalogJobs.remove(broadcast.path)
+                if (catalogJobs[broadcast.path] === coroutineContext[Job]) {
+                    catalogJobs.remove(broadcast.path)
+                }
                 broadcast.close()
             }
         }
+    }
+
+    private fun cancelCatalogJobs() {
+        val jobs = catalogJobs.values.toList()
+        catalogJobs.clear()
+        jobs.forEach { it.cancel() }
     }
 
     private fun replaceBroadcast(catalog: Catalog) {
@@ -219,8 +229,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun stop() {
         sessionJobs.forEach { it.cancel() }
         sessionJobs = emptyList()
-        catalogJobs.values.forEach { it.cancel() }
-        catalogJobs.clear()
+        cancelCatalogJobs()
         subscription?.close()
         subscription = null
         for (entry in broadcasts) {
@@ -235,8 +244,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        catalogJobs.values.forEach { it.cancel() }
-        catalogJobs.clear()
+        cancelCatalogJobs()
         subscription?.close()
         viewModelScope.launch { session?.close() }
     }
