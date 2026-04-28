@@ -27,7 +27,7 @@ private const val TAG = "VideoRenderer"
  * A single [HandlerThread] is owned by this class and shared across decoder swaps.
  * - **IO thread**: [VideoRendererTrack.insert] — thread-safe inside the track.
  * - **HandlerThread**: all decoder interaction — [tryFeedDecoder], [onDecodedFrame],
- *   [parkedInputBuffers], [playabilityMap], swap state machine. No locks needed for these.
+ *   [parkedInputBuffers], [queuedFramesByPts], swap state machine. No locks needed for these.
  * - **Any thread**: [setPendingTrack] — posts to HandlerThread.
  * - **Caller thread**: lifecycle only — [start], [stop].
  */
@@ -46,7 +46,11 @@ internal class VideoRenderer(
         object FlushAndSwap : TrackSwapPhase()
     }
 
-    private data class FramePlayability(val playable: Boolean)
+    private data class QueuedFrameMetadata(
+        val trackName: String,
+        val queuedAtNs: Long,
+        val playable: Boolean,
+    )
 
     private var pendingTrack: VideoRendererTrack? = null
     private var trackSwapPhase: TrackSwapPhase? = null
@@ -68,7 +72,7 @@ internal class VideoRenderer(
 
     private var decoder: VideoDecoder? = null
     private val parkedInputBuffers = ArrayDeque<Int>()
-    private val playabilityMap = HashMap<Long, FramePlayability>()
+    private val queuedFramesByPts = HashMap<Long, QueuedFrameMetadata>()
     private var delayedDrainToken: Any? = null
 
     /** PTS of the most recently fed frame to MediaCodec (used by swap state machine). */
@@ -134,7 +138,8 @@ internal class VideoRenderer(
         } catch (t: Throwable) {
             try {
                 newDecoder?.release()
-            } catch (_: Throwable) {}
+            } catch (_: Throwable) {
+            }
             throw t
         }
         decoder = requireNotNull(newDecoder)
@@ -173,7 +178,7 @@ internal class VideoRenderer(
             pendingTrack = null
             trackSwapPhase = null
             parkedInputBuffers.clear()
-            playabilityMap.clear()
+            queuedFramesByPts.clear()
             decoder?.release()
             decoder = null
             handlerThread.quitSafely()
@@ -266,7 +271,11 @@ internal class VideoRenderer(
 
             val index = parkedInputBuffers.removeFirst()
             lastFedPtsUs = entry.item.timestampUs
-            playabilityMap[entry.item.timestampUs] = FramePlayability(playable)
+            queuedFramesByPts[entry.item.timestampUs] = QueuedFrameMetadata(
+                trackName = activeTrack.trackName,
+                queuedAtNs = System.nanoTime(),
+                playable = playable,
+            )
             decoder?.fillInputBuffer(index, entry.item.payload, entry.item.timestampUs)
 
             if (!playable) metrics?.recordVideoFrameDropped()
@@ -381,10 +390,11 @@ internal class VideoRenderer(
             }
         }
 
-        playabilityMap.clear()
+        queuedFramesByPts.clear()
 
         activeTrack.setOnDataAvailable(null)
         activeTrack = newTrack
+        metrics?.resetVideoDecodeStats(newTrack.trackName)
         pendingCsd = extractCsd(newTrack)
         pendingTrack = null
         hasPendingTrack = false
@@ -438,7 +448,15 @@ internal class VideoRenderer(
     // Decoded frame handling (HandlerThread only)
 
     private fun onDecodedFrame(bufferIndex: Int, timestampUs: Long) {
-        val playability = playabilityMap.remove(timestampUs) ?: FramePlayability(true)
+        val outputAtNs = System.nanoTime()
+        val metadata = queuedFramesByPts.remove(timestampUs)
+        if (metadata != null) {
+            metrics?.recordVideoDecodeTime(
+                trackName = metadata.trackName,
+                durationNs = outputAtNs - metadata.queuedAtNs,
+            )
+        }
+        val playable = metadata?.playable ?: true
         val dec = decoder ?: return
 
         // After a CuttingIn swap, suppress display of frames that overlap with the
@@ -450,7 +468,7 @@ internal class VideoRenderer(
             return
         }
 
-        if (!playability.playable) {
+        if (!playable) {
             dec.releaseOutputBuffer(bufferIndex, false)
             metrics?.recordVideoFrameDropped()
             return
@@ -471,7 +489,7 @@ internal class VideoRenderer(
             timestampUs - activeTrack.estimatedPlaybackTimeUs()
         }
 
-        val nowNs = System.nanoTime()
+        val nowNs = outputAtNs
         val baseRenderNs = (nowNs + delayUs * 1000L)
         if (baseRenderNs > nowNs + MAX_RENDER_SCHEDULE_NS) {
             Log.w(TAG, "render timestamp is too far in the future")

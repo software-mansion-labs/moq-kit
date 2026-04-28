@@ -23,7 +23,11 @@ internal data class ProcessedFrame(
  *
  * [onDataAvailable] is fired **outside** the lock to avoid deadlocks.
  */
-internal class VideoRendererTrack(config: MoqVideo, targetBufferingUs: Long) {
+internal class VideoRendererTrack(
+    val trackName: String,
+    config: MoqVideo,
+    targetBufferingUs: Long,
+) {
     val processor = VideoFrameProcessor(config)
 
     private val buffer = JitterBuffer<ProcessedFrame>(targetBufferingUs)

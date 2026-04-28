@@ -2,6 +2,7 @@ package com.swmansion.moqkit.subscribe.internal.playback
 
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.StallStats
+import com.swmansion.moqkit.subscribe.VideoDecodeStats
 
 /**
  * Thread-safe accumulator for playback quality metrics.
@@ -49,6 +50,14 @@ internal class PlaybackMetricsAccumulator {
     // Dropped frames
     private var audioFramesDroppedCount: Long = 0
     private var videoFramesDroppedCount: Long = 0
+
+    // Video decode timing
+    private var videoDecodeTrackName: String? = null
+    private var videoDecodeSampleCount: Long = 0
+    private var videoDecodeMinNs: Long = Long.MAX_VALUE
+    private var videoDecodeMaxNs: Long = 0
+    private var videoDecodeTotalNs: Long = 0
+    private var videoDecodeLastNs: Long = 0
 
     companion object {
         private const val WINDOW_NS = 1_000_000_000L // 1 second
@@ -188,6 +197,36 @@ internal class PlaybackMetricsAccumulator {
         }
     }
 
+    // -- Video decode timing --
+
+    fun resetVideoDecodeStats(trackName: String?) {
+        synchronized(lock) {
+            videoDecodeTrackName = trackName
+            videoDecodeSampleCount = 0
+            videoDecodeMinNs = Long.MAX_VALUE
+            videoDecodeMaxNs = 0
+            videoDecodeTotalNs = 0
+            videoDecodeLastNs = 0
+        }
+    }
+
+    fun recordVideoDecodeTime(trackName: String, durationNs: Long) {
+        if (durationNs < 0) return
+        synchronized(lock) {
+            if (videoDecodeTrackName == null) {
+                videoDecodeTrackName = trackName
+            } else if (videoDecodeTrackName != trackName) {
+                return
+            }
+
+            videoDecodeSampleCount++
+            videoDecodeMinNs = minOf(videoDecodeMinNs, durationNs)
+            videoDecodeMaxNs = maxOf(videoDecodeMaxNs, durationNs)
+            videoDecodeTotalNs += durationNs
+            videoDecodeLastNs = durationNs
+        }
+    }
+
     // -- Snapshot --
 
     fun snapshot(
@@ -195,6 +234,7 @@ internal class PlaybackMetricsAccumulator {
         videoLatencyMs: Double?,
         audioRingBufferMs: Double? = null,
         videoJitterBufferMs: Double? = null,
+        videoDecodeStatsEnabled: Boolean = true,
     ): PlaybackStats {
         val now = System.nanoTime()
         synchronized(lock) {
@@ -236,6 +276,7 @@ internal class PlaybackMetricsAccumulator {
             // Dropped
             val aDrop = if (audioFramesDroppedCount > 0) audioFramesDroppedCount else null
             val vDrop = if (videoFramesDroppedCount > 0) videoFramesDroppedCount else null
+            val decodeStats = if (videoDecodeStatsEnabled) makeVideoDecodeStats() else null
 
             return PlaybackStats(
                 audioLatencyMs = audioLatencyMs,
@@ -251,6 +292,7 @@ internal class PlaybackMetricsAccumulator {
                 videoFramesDropped = vDrop,
                 audioRingBufferMs = audioRingBufferMs,
                 videoJitterBufferMs = videoJitterBufferMs,
+                videoDecodeStats = decodeStats,
             )
         }
     }
@@ -287,10 +329,31 @@ internal class PlaybackMetricsAccumulator {
 
             audioFramesDroppedCount = 0
             videoFramesDroppedCount = 0
+
+            videoDecodeTrackName = null
+            videoDecodeSampleCount = 0
+            videoDecodeMinNs = Long.MAX_VALUE
+            videoDecodeMaxNs = 0
+            videoDecodeTotalNs = 0
+            videoDecodeLastNs = 0
         }
     }
 
     // -- Private helpers (called under lock) --
+
+    private fun makeVideoDecodeStats(): VideoDecodeStats? {
+        val trackName = videoDecodeTrackName ?: return null
+        if (videoDecodeSampleCount == 0L) return null
+
+        return VideoDecodeStats(
+            trackName = trackName,
+            sampleCount = videoDecodeSampleCount,
+            minMs = videoDecodeMinNs.toDouble() / 1_000_000.0,
+            maxMs = videoDecodeMaxNs.toDouble() / 1_000_000.0,
+            averageMs = videoDecodeTotalNs.toDouble() / videoDecodeSampleCount.toDouble() / 1_000_000.0,
+            lastMs = videoDecodeLastNs.toDouble() / 1_000_000.0,
+        )
+    }
 
     private inline fun pruneWindow(
         entries: MutableList<Pair<Long, Int>>,

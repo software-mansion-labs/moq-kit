@@ -22,6 +22,7 @@ package com.swmansion.moqkit.subscribe
  * @property videoFramesDropped Total video frames dropped due to buffer overflow or stale PTS.
  * @property audioRingBufferMs Current fill level of the audio ring buffer in milliseconds.
  * @property videoJitterBufferMs Current fill level of the video jitter buffer in milliseconds.
+ * @property videoDecodeStats Decode timing statistics for the currently active video track.
  */
 data class PlaybackStats(
     val audioLatencyMs: Double?,
@@ -37,6 +38,22 @@ data class PlaybackStats(
     val videoFramesDropped: Long?,
     val audioRingBufferMs: Double?,
     val videoJitterBufferMs: Double?,
+    val videoDecodeStats: VideoDecodeStats? = null,
+)
+
+/**
+ * MediaCodec decode timing statistics for the currently active video track.
+ *
+ * Timing starts when a compressed frame is queued to MediaCodec and ends when the matching decoded
+ * output buffer is delivered.
+ */
+data class VideoDecodeStats(
+    val trackName: String,
+    val sampleCount: Long,
+    val minMs: Double,
+    val maxMs: Double,
+    val averageMs: Double,
+    val lastMs: Double,
 )
 
 /**

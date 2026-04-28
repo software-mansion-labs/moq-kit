@@ -506,6 +506,18 @@ private fun StatsCard(stats: PlaybackStats) {
                         }
                     }
 
+                    stats.videoDecodeStats?.let { decode ->
+                        StatsSection("Decode") {
+                            StatRow("Track", decode.trackName)
+                            StatRow(
+                                "Min / avg / max",
+                                "${formatMs(decode.minMs)} / ${formatMs(decode.averageMs)} / ${formatMs(decode.maxMs)}",
+                            )
+                            StatRow("Last", formatMs(decode.lastMs))
+                            StatRow("Samples", decode.sampleCount.toString())
+                        }
+                    }
+
                     // Startup section
                     if (stats.timeToFirstVideoFrameMs != null || stats.timeToFirstAudioFrameMs != null) {
                         StatsSection("Startup") {
@@ -598,6 +610,8 @@ private fun formatBitrate(kbps: Double): String {
     if (kbps >= 1000) return String.format("%.1f Mbps", kbps / 1000)
     return "${kbps.toInt()} kbps"
 }
+
+private fun formatMs(ms: Double): String = String.format("%.1f ms", ms)
 
 @Composable
 private fun RenditionPickerRow(entry: BroadcastEntry, vm: MainViewModel) {

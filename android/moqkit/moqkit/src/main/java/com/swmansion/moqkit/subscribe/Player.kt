@@ -128,6 +128,7 @@ class Player(
                 videoLatencyMs = if (selectedVideoTrack != null) videoLatency else null,
                 audioRingBufferMs = if (selectedAudioTrack != null) audioRenderer?.bufferFillMs else null,
                 videoJitterBufferMs = if (selectedVideoTrack != null) videoRenderer?.bufferFillMs else null,
+                videoDecodeStatsEnabled = selectedVideoTrack != null && videoRenderer != null,
             )
         }
 
@@ -367,7 +368,13 @@ class Player(
 
         Log.d(TAG, "Starting video: '${videoInfo.name}' codec=${videoInfo.config.codec}")
 
-        val track = VideoRendererTrack(videoInfo.rawConfig, targetLatencyMs.toLong() * 1000)
+        accumulator.resetVideoDecodeStats(videoInfo.name)
+
+        val track = VideoRendererTrack(
+            trackName = videoInfo.name,
+            config = videoInfo.rawConfig,
+            targetBufferingUs = targetLatencyMs.toLong() * 1000,
+        )
         val renderer = VideoRenderer(
             activeTrack = track,
             outputSurface = surface,
@@ -420,7 +427,11 @@ class Player(
     private fun switchActiveVideoTrack(videoInfo: VideoTrackInfo, renderer: VideoRenderer) {
         Log.d(TAG, "Switching video track to '${videoInfo.name}' codec=${videoInfo.config.codec}")
 
-        val newTrack = VideoRendererTrack(videoInfo.rawConfig, targetLatencyMs.toLong() * 1000)
+        val newTrack = VideoRendererTrack(
+            trackName = videoInfo.name,
+            config = videoInfo.rawConfig,
+            targetBufferingUs = targetLatencyMs.toLong() * 1000,
+        )
         val oldJob = videoIngestJob
         // TODO: If the pending track never activates, this old job lives until a broader
         // playback teardown cancels it.
