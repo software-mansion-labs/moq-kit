@@ -24,6 +24,9 @@ internal class AudioDecoder(
     private val handlerThread = HandlerThread("AudioDecoder").apply { start() }
     private val handler = Handler(handlerThread.looper)
 
+    @Volatile
+    private var released = false
+
     // Input management: synchronized on `inputLock`
     private val inputLock = Object()
     private val pendingInput = ArrayDeque<Pair<ByteArray, Long>>()
@@ -37,7 +40,9 @@ internal class AudioDecoder(
 
         codec.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                if (released) return
                 synchronized(inputLock) {
+                    if (released) return
                     val pending = pendingInput.removeFirstOrNull()
                     if (pending != null) {
                         fillInputBuffer(index, pending.first, pending.second)
@@ -52,6 +57,7 @@ internal class AudioDecoder(
                 index: Int,
                 info: MediaCodec.BufferInfo,
             ) {
+                if (released) return
                 try {
                     val outBuf = codec.getOutputBuffer(index) ?: return
                     outBuf.order(ByteOrder.nativeOrder())
@@ -62,17 +68,21 @@ internal class AudioDecoder(
                     val frameCount = sampleCount / channels
                     onDecoded(pcm, frameCount, info.presentationTimeUs)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error processing output buffer: $e")
+                    if (!released) {
+                        Log.e(TAG, "Error processing output buffer: $e")
+                    }
                 } finally {
-                    codec.releaseOutputBuffer(index, false)
+                    releaseOutputBuffer(codec, index)
                 }
             }
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+                if (released) return
                 Log.e(TAG, "MediaCodec error: $e")
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+                if (released) return
                 Log.d(TAG, "Output format changed: $format")
             }
         }, handler)
@@ -82,13 +92,16 @@ internal class AudioDecoder(
     }
 
     fun start() {
+        if (released) return
         codec.start()
         Log.d(TAG, "AudioDecoder started")
     }
 
     /** Submit a compressed audio frame for decoding. */
     fun submitFrame(payload: ByteArray, timestampUs: Long) {
+        if (released) return
         synchronized(inputLock) {
+            if (released) return
             val bufferIndex = availableInputBuffers.removeFirstOrNull()
             if (bufferIndex != null) {
                 fillInputBuffer(bufferIndex, payload, timestampUs)
@@ -100,16 +113,32 @@ internal class AudioDecoder(
 
     /** Flush the codec and clear pending input. */
     fun flush() {
+        if (released) return
         synchronized(inputLock) {
             pendingInput.clear()
             availableInputBuffers.clear()
         }
-        codec.flush()
-        codec.start()
-        Log.d(TAG, "AudioDecoder flushed")
+        try {
+            codec.flush()
+            if (!released) {
+                codec.start()
+            }
+            Log.d(TAG, "AudioDecoder flushed")
+        } catch (e: Exception) {
+            if (!released) {
+                Log.e(TAG, "Error flushing codec: $e")
+            }
+        }
     }
 
     fun release() {
+        synchronized(inputLock) {
+            if (released) return
+            released = true
+            pendingInput.clear()
+            availableInputBuffers.clear()
+        }
+        handler.removeCallbacksAndMessages(null)
         try {
             codec.stop()
         } catch (_: Exception) {}
@@ -121,13 +150,27 @@ internal class AudioDecoder(
     }
 
     private fun fillInputBuffer(index: Int, payload: ByteArray, timestampUs: Long) {
+        if (released) return
         try {
             val inputBuffer = codec.getInputBuffer(index) ?: return
             inputBuffer.clear()
             inputBuffer.put(payload)
             codec.queueInputBuffer(index, 0, payload.size, timestampUs, 0)
         } catch (e: Exception) {
-            Log.e(TAG, "Error filling input buffer: $e")
+            if (!released) {
+                Log.e(TAG, "Error filling input buffer: $e")
+            }
+        }
+    }
+
+    private fun releaseOutputBuffer(codec: MediaCodec, index: Int) {
+        if (released) return
+        try {
+            codec.releaseOutputBuffer(index, false)
+        } catch (e: Exception) {
+            if (!released) {
+                Log.e(TAG, "Error releasing output buffer: $e")
+            }
         }
     }
 }

@@ -52,6 +52,7 @@ interface TrackInfo {
 /**
  * A video track discovered from a broadcast catalog.
  */
+@ConsistentCopyVisibility
 data class VideoTrackInfo internal constructor(
     override val name: String,
     val config: VideoTrackConfig,
@@ -61,6 +62,7 @@ data class VideoTrackInfo internal constructor(
 /**
  * An audio track discovered from a broadcast catalog.
  */
+@ConsistentCopyVisibility
 data class AudioTrackInfo internal constructor(
     override val name: String,
     val config: AudioTrackConfig,
