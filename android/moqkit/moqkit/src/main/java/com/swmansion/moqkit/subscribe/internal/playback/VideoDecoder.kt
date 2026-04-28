@@ -1,6 +1,7 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaCodec
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Handler
 import android.util.Log
@@ -29,6 +30,7 @@ internal class VideoDecoder(
 
     init {
         val mime = format.getString(MediaFormat.KEY_MIME)!!
+
         codec = MediaCodec.createDecoderByType(mime)
 
         codec.setCallback(object : MediaCodec.Callback() {
@@ -54,7 +56,11 @@ internal class VideoDecoder(
         }, handler)
 
         codec.configure(format, surface, null, 0)
-        Log.d(TAG, "VideoDecoder configured: $format, hardware accelerated = ${codec.codecInfo.isHardwareAccelerated}")
+        // codec.configure(format, null, null, 0)
+        Log.d(
+            TAG,
+            "VideoDecoder configured: $format, hardware accelerated = ${codec.codecInfo.isHardwareAccelerated}, decoder name = ${codec.codecInfo.name}"
+        )
     }
 
     fun start() {
@@ -128,10 +134,12 @@ internal class VideoDecoder(
     fun release() {
         try {
             codec.stop()
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
         try {
             codec.release()
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
         Log.d(TAG, "VideoDecoder released")
     }
 }
