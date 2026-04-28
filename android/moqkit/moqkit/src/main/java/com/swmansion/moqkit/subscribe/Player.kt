@@ -352,6 +352,8 @@ class Player(
                 }
 
                 _events.tryEmit(Event.TrackStopped("audio"))
+            } catch (_: CancellationException) {
+                Log.d(TAG, "Audio ingest cancelled")
             } catch (e: Exception) {
                 Log.e(TAG, "Audio ingest error: $e")
                 _events.tryEmit(Event.Error("audio", e.message ?: "Unknown error"))

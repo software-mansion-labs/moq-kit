@@ -1,6 +1,7 @@
 package com.swmansion.moqkit.subscribe.internal
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -28,6 +29,9 @@ internal fun subscribeTrack(
             emit(frame)
         }
         Log.d(TAG, "Track '$name' stream ended")
+    } catch (e: CancellationException) {
+        Log.d(TAG, "Track '$name' cancelled")
+        throw e
     } catch (e: Exception) {
         Log.e(TAG, "Track '$name' error: $e")
         throw e
