@@ -58,6 +58,12 @@ internal class PlaybackMetricsAccumulator {
     private var videoDecodeMaxNs: Long = 0
     private var videoDecodeTotalNs: Long = 0
     private var videoDecodeLastNs: Long = 0
+    private var videoDecodeInFlightBufferCount: Int = 0
+    private var videoDecodeLastOutputNs: Long = 0
+    private var videoDecodeOutputIntervalCount: Long = 0
+    private var videoDecodeMinOutputIntervalNs: Long = Long.MAX_VALUE
+    private var videoDecodeMaxOutputIntervalNs: Long = 0
+    private var videoDecodeTotalOutputIntervalNs: Long = 0
 
     companion object {
         private const val WINDOW_NS = 1_000_000_000L // 1 second
@@ -207,10 +213,32 @@ internal class PlaybackMetricsAccumulator {
             videoDecodeMaxNs = 0
             videoDecodeTotalNs = 0
             videoDecodeLastNs = 0
+            videoDecodeInFlightBufferCount = 0
+            videoDecodeLastOutputNs = 0
+            videoDecodeOutputIntervalCount = 0
+            videoDecodeMinOutputIntervalNs = Long.MAX_VALUE
+            videoDecodeMaxOutputIntervalNs = 0
+            videoDecodeTotalOutputIntervalNs = 0
         }
     }
 
-    fun recordVideoDecodeTime(trackName: String, durationNs: Long) {
+    fun recordVideoDecodeBufferSubmitted(trackName: String) {
+        synchronized(lock) {
+            if (videoDecodeTrackName == null) {
+                videoDecodeTrackName = trackName
+            } else if (videoDecodeTrackName != trackName) {
+                return
+            }
+
+            videoDecodeInFlightBufferCount++
+        }
+    }
+
+    fun recordVideoDecodeTime(
+        trackName: String,
+        durationNs: Long,
+        outputAtNs: Long = System.nanoTime(),
+    ) {
         if (durationNs < 0) return
         synchronized(lock) {
             if (videoDecodeTrackName == null) {
@@ -218,6 +246,23 @@ internal class PlaybackMetricsAccumulator {
             } else if (videoDecodeTrackName != trackName) {
                 return
             }
+
+            if (videoDecodeInFlightBufferCount > 0) {
+                videoDecodeInFlightBufferCount--
+            }
+
+            if (videoDecodeLastOutputNs > 0L) {
+                val intervalNs = outputAtNs - videoDecodeLastOutputNs
+                if (intervalNs >= 0L) {
+                    videoDecodeOutputIntervalCount++
+                    videoDecodeMinOutputIntervalNs =
+                        minOf(videoDecodeMinOutputIntervalNs, intervalNs)
+                    videoDecodeMaxOutputIntervalNs =
+                        maxOf(videoDecodeMaxOutputIntervalNs, intervalNs)
+                    videoDecodeTotalOutputIntervalNs += intervalNs
+                }
+            }
+            videoDecodeLastOutputNs = outputAtNs
 
             videoDecodeSampleCount++
             videoDecodeMinNs = minOf(videoDecodeMinNs, durationNs)
@@ -336,6 +381,12 @@ internal class PlaybackMetricsAccumulator {
             videoDecodeMaxNs = 0
             videoDecodeTotalNs = 0
             videoDecodeLastNs = 0
+            videoDecodeInFlightBufferCount = 0
+            videoDecodeLastOutputNs = 0
+            videoDecodeOutputIntervalCount = 0
+            videoDecodeMinOutputIntervalNs = Long.MAX_VALUE
+            videoDecodeMaxOutputIntervalNs = 0
+            videoDecodeTotalOutputIntervalNs = 0
         }
     }
 
@@ -343,15 +394,32 @@ internal class PlaybackMetricsAccumulator {
 
     private fun makeVideoDecodeStats(): VideoDecodeStats? {
         val trackName = videoDecodeTrackName ?: return null
-        if (videoDecodeSampleCount == 0L) return null
+        if (videoDecodeSampleCount == 0L && videoDecodeInFlightBufferCount == 0) return null
+        val minOutputIntervalMs = if (videoDecodeOutputIntervalCount > 0L) {
+            videoDecodeMinOutputIntervalNs.toDouble() / 1_000_000.0
+        } else null
+        val averageOutputIntervalMs = if (videoDecodeOutputIntervalCount > 0L) {
+            videoDecodeTotalOutputIntervalNs.toDouble() /
+                videoDecodeOutputIntervalCount.toDouble() /
+                1_000_000.0
+        } else null
+        val maxOutputIntervalMs = if (videoDecodeOutputIntervalCount > 0L) {
+            videoDecodeMaxOutputIntervalNs.toDouble() / 1_000_000.0
+        } else null
 
         return VideoDecodeStats(
             trackName = trackName,
             sampleCount = videoDecodeSampleCount,
-            minMs = videoDecodeMinNs.toDouble() / 1_000_000.0,
-            maxMs = videoDecodeMaxNs.toDouble() / 1_000_000.0,
-            averageMs = videoDecodeTotalNs.toDouble() / videoDecodeSampleCount.toDouble() / 1_000_000.0,
-            lastMs = videoDecodeLastNs.toDouble() / 1_000_000.0,
+            minMs = if (videoDecodeSampleCount > 0L) videoDecodeMinNs.toDouble() / 1_000_000.0 else 0.0,
+            maxMs = if (videoDecodeSampleCount > 0L) videoDecodeMaxNs.toDouble() / 1_000_000.0 else 0.0,
+            averageMs = if (videoDecodeSampleCount > 0L) {
+                videoDecodeTotalNs.toDouble() / videoDecodeSampleCount.toDouble() / 1_000_000.0
+            } else 0.0,
+            lastMs = if (videoDecodeSampleCount > 0L) videoDecodeLastNs.toDouble() / 1_000_000.0 else 0.0,
+            inFlightBufferCount = videoDecodeInFlightBufferCount,
+            minOutputIntervalMs = minOutputIntervalMs,
+            averageOutputIntervalMs = averageOutputIntervalMs,
+            maxOutputIntervalMs = maxOutputIntervalMs,
         )
     }
 

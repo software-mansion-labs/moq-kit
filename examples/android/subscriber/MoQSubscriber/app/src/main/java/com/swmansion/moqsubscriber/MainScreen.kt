@@ -513,6 +513,22 @@ private fun StatsCard(stats: PlaybackStats) {
                                 "Min / avg / max",
                                 "${formatMs(decode.minMs)} / ${formatMs(decode.averageMs)} / ${formatMs(decode.maxMs)}",
                             )
+                            val minOutputIntervalMs = decode.minOutputIntervalMs
+                            val averageOutputIntervalMs = decode.averageOutputIntervalMs
+                            val maxOutputIntervalMs = decode.maxOutputIntervalMs
+                            if (
+                                minOutputIntervalMs != null &&
+                                averageOutputIntervalMs != null &&
+                                maxOutputIntervalMs != null
+                            ) {
+                                StatRow(
+                                    "Output interval",
+                                    "${formatMs(minOutputIntervalMs)} / " +
+                                        "${formatMs(averageOutputIntervalMs)} / " +
+                                        formatMs(maxOutputIntervalMs),
+                                )
+                            }
+                            StatRow("In flight", decode.inFlightBufferCount.toString())
                             StatRow("Last", formatMs(decode.lastMs))
                             StatRow("Samples", decode.sampleCount.toString())
                         }

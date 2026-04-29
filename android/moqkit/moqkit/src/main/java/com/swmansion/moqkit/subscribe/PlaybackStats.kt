@@ -46,6 +46,12 @@ data class PlaybackStats(
  *
  * Timing starts when a compressed frame is queued to MediaCodec and ends when the matching decoded
  * output buffer is delivered.
+ *
+ * @property inFlightBufferCount Number of compressed frame buffers queued to the decoder that have
+ *   not emitted a matching output buffer yet.
+ * @property minOutputIntervalMs Minimum wall-clock time between matching output buffer callbacks.
+ * @property averageOutputIntervalMs Average wall-clock time between matching output buffer callbacks.
+ * @property maxOutputIntervalMs Maximum wall-clock time between matching output buffer callbacks.
  */
 data class VideoDecodeStats(
     val trackName: String,
@@ -54,6 +60,10 @@ data class VideoDecodeStats(
     val maxMs: Double,
     val averageMs: Double,
     val lastMs: Double,
+    val inFlightBufferCount: Int = 0,
+    val minOutputIntervalMs: Double? = null,
+    val averageOutputIntervalMs: Double? = null,
+    val maxOutputIntervalMs: Double? = null,
 )
 
 /**

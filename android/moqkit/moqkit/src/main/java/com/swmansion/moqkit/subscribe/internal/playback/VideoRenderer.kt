@@ -271,12 +271,15 @@ internal class VideoRenderer(
 
             val index = parkedInputBuffers.removeFirst()
             lastFedPtsUs = entry.item.timestampUs
-            queuedFramesByPts[entry.item.timestampUs] = QueuedFrameMetadata(
-                trackName = activeTrack.trackName,
-                queuedAtNs = System.nanoTime(),
-                playable = playable,
-            )
-            decoder?.fillInputBuffer(index, entry.item.payload, entry.item.timestampUs)
+            val queuedAtNs = System.nanoTime()
+            if (decoder?.fillInputBuffer(index, entry.item.payload, entry.item.timestampUs) == true) {
+                queuedFramesByPts[entry.item.timestampUs] = QueuedFrameMetadata(
+                    trackName = activeTrack.trackName,
+                    queuedAtNs = queuedAtNs,
+                    playable = playable,
+                )
+                metrics?.recordVideoDecodeBufferSubmitted(activeTrack.trackName)
+            }
 
             if (!playable) metrics?.recordVideoFrameDropped()
         }
@@ -454,6 +457,7 @@ internal class VideoRenderer(
             metrics?.recordVideoDecodeTime(
                 trackName = metadata.trackName,
                 durationNs = outputAtNs - metadata.queuedAtNs,
+                outputAtNs = outputAtNs,
             )
         }
         val playable = metadata?.playable ?: true
@@ -494,7 +498,7 @@ internal class VideoRenderer(
         if (baseRenderNs > nowNs + MAX_RENDER_SCHEDULE_NS) {
             Log.w(TAG, "render timestamp is too far in the future")
         } else if (baseRenderNs < nowNs) {
-            Log.w(TAG, "render timestamp is in the past")
+            Log.w(TAG, "render timestamp is in the past by ${nowNs - baseRenderNs}Ns")
         }
 
         val renderNs = baseRenderNs.coerceIn(nowNs, nowNs + MAX_RENDER_SCHEDULE_NS)
