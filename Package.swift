@@ -24,8 +24,8 @@ let package = Package(
         ),
         .binaryTarget(
             name: "moqFFI",
-            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.0.1-alpha4/moqffi.xcframework.zip",
-            checksum: "8366cf3d4367e834a8bede10173b8d7968759c45046eaf7de977bd0ede8f58e5"
+            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.0.1-alpha5/moqffi.xcframework.zip",
+            checksum: "d74f5ec3fc740f3be804611a51cfeac1de3746637bc8783699dc8d94270b17d8"
         ),
     ]
 )
