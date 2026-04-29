@@ -1,30 +1,22 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
-import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Log
-import com.swmansion.moqkit.subscribe.internal.codec.AV1Utils
-import com.swmansion.moqkit.subscribe.internal.codec.AnnexBUtils
-import com.swmansion.moqkit.subscribe.internal.codec.prefixLengthToAnnexB
 import uniffi.moq.MoqVideo
-import java.nio.ByteBuffer
 
 private const val TAG = "VideoFrameProcessor"
 
 /**
  * Selects the right payload transform and CSD extraction strategy based on the video config.
  *
- * - **Has description** (avc1/hev1/hvc1): payloads are AVCC/HVCC length-prefixed → convert to
- *   Annex B via [avccToAnnexB]; CSD parsed from the config record by [MediaFactory].
- * - **No description** (avc3/hev3): payloads are already Annex B → passthrough; CSD extracted
- *   in-band from the first keyframe containing parameter sets.
+ * Payload conversion is delegated to [VideoPayloadTransformBuilder]. CSD is either parsed from the
+ * codec description up front or extracted in-band from the first keyframe containing parameter sets.
  *
  * Consumers call [processPayload] and get back ready-to-decode Annex B bytes.
  */
 internal class VideoFrameProcessor(private val config: MoqVideo) {
 
-    private val isAv1 = config.codec.startsWith("av0")
-    private val transform: (ByteArray) -> ByteArray
+    private val transform = VideoPayloadTransformBuilder.from(config)
 
     @Volatile
     private var format: MediaFormat? = null
@@ -33,19 +25,12 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
     val isReady: Boolean get() = format != null
 
     init {
-        // AV1 temporal units are never length-prefixed — always pass through unchanged.
-        // H.264/H.265 with an out-of-band description arrive length-prefixed (AVCC/HVCC)
-        // and must be converted to Annex B for MediaCodec.
-        transform = if (!isAv1 && config.description != null) { payload -> payload.prefixLengthToAnnexB() }
-        else { payload -> payload }
-
         if (config.description != null) {
-            format = MediaFactory.makeVideoFormat(config)
+            format = VideoMediaFormatFactory.from(config)
             if (format != null) {
                 Log.d(TAG, "Format ready immediately: $format")
             } else {
-
-                Log.w(TAG, "makeVideoFormat returned null for codec=${config.codec}")
+                Log.w(TAG, "VideoMediaFormatFactory.from returned null for codec=${config.codec}")
             }
 
             format?.setInteger(MediaFormat.KEY_PRIORITY, 0)
@@ -72,71 +57,24 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
                 return null
             }
 
-            val mime = MediaFactory.videoMime(config.codec)
-            if (mime == null) {
-                Log.w(TAG, "Unsupported codec for in-band CSD: ${config.codec}")
+            val fmt = VideoMediaFormatFactory.from(config, payload)
+            if (fmt == null) {
+                Log.d(TAG, "Keyframe lacks codec configuration for codec=${config.codec}")
                 return null
-            }
-
-            val width = config.coded?.width?.toInt() ?: 1920
-            val height = config.coded?.height?.toInt() ?: 1080
-            Log.d(TAG, "Creating video format for mime = $mime, width = $width, height = $height")
-            val fmt = MediaFormat.createVideoFormat(mime, width, height)
-
-            when (mime) {
-                MediaFormat.MIMETYPE_VIDEO_AVC -> {
-                    val params = AnnexBUtils.extractH264ParameterSets(payload)
-                    if (params == null) {
-                        Log.d(TAG, "Keyframe lacks H.264 SPS/PPS, dropping")
-                        return null
-                    }
-                    Log.d(TAG, "Extracted in-band SPS (${params.sps.size}B) + PPS (${params.pps.size}B)")
-                    val sps = ByteBuffer.wrap(params.sps)
-                    val pps = ByteBuffer.wrap(params.pps)
-
-                    fmt.setByteBuffer("csd-0", sps)
-                    fmt.setByteBuffer("csd-1", pps)
-                    // fmt.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-                }
-
-                MediaFormat.MIMETYPE_VIDEO_HEVC -> {
-                    val csd = AnnexBUtils.extractH265ParameterSets(payload)
-                    if (csd == null) {
-                        Log.d(TAG, "Keyframe lacks H.265 VPS/SPS/PPS, dropping")
-                        return null
-                    }
-                    Log.d(TAG, "Extracted in-band HEVC parameter sets (${csd.size}B)")
-                    fmt.setByteBuffer("csd-0", ByteBuffer.wrap(csd))
-                }
-
-                MediaFormat.MIMETYPE_VIDEO_AV1 -> {
-                    val seqHeader = AV1Utils.extractSequenceHeader(payload)
-                    if (seqHeader == null) {
-                        Log.d(TAG, "Keyframe lacks AV1 sequence header, dropping")
-                        return null
-                    }
-                    Log.d(TAG, "Extracted in-band AV1 sequence header (${seqHeader.size}B)")
-                    fmt.setByteBuffer("csd-0", ByteBuffer.wrap(AV1Utils.buildMinimalAv1c(seqHeader)))
-                }
-
-                else -> {
-                    Log.e(TAG, "Unknown mime type $mime")
-                    return null
-                }
             }
 
             format = fmt
             // format?.setInteger(MediaFormat.KEY_PRIORITY, 0)
             // format?.setInteger(MediaFormat.KEY_LATENCY, 1)
-            format?.setInteger(MediaFormat.KEY_FRAME_RATE, 60)
-            format?.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
-            format?.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1)
-            format?.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
-            format?.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-            format?.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+            // format?.setInteger(MediaFormat.KEY_FRAME_RATE, 60)
+            // format?.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            // format?.setInteger(MediaFormat.KEY_ALLOW_FRAME_DROP, 1)
+            // format?.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
+            // format?.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            // format?.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
             Log.d(TAG, "Format now ready: $fmt")
         }
 
-        return transform(payload)
+        return transform.apply(payload)
     }
 }

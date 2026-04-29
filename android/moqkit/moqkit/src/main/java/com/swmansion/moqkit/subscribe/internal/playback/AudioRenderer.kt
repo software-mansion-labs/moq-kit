@@ -3,7 +3,6 @@ package com.swmansion.moqkit.subscribe.internal.playback
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.media.MediaFormat
 import android.os.Process
 import android.util.Log
 import uniffi.moq.MoqAudio
@@ -88,7 +87,7 @@ internal class AudioRenderer(
         audioTrack = track
 
         // Build MediaFormat for the decoder
-        val format = MediaFactory.makeAudioFormat(config)
+        val format = AudioMediaFormatFactory.from(config)
             ?: throw IllegalStateException("Unsupported audio codec: ${config.codec}")
 
         decoder = AudioDecoder(format) { pcmData, frameCount, timestampUs ->
