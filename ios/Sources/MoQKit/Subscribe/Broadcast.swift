@@ -147,6 +147,21 @@ public struct Broadcast: Sendable {
         self.consumer = consumer
     }
 
+    /// Subscribes to a raw MoQ track by name.
+    ///
+    /// This does not require the track to appear in the broadcast catalog. The returned
+    /// subscription emits every object from each received group as a ``TrackObject``.
+    ///
+    /// - Parameters:
+    ///   - name: Track name to subscribe to.
+    ///   - delivery: Group delivery mode. Defaults to monotonically increasing group sequence.
+    public func subscribeTrack(
+        name: String,
+        delivery: TrackDelivery = .monotonic
+    ) throws -> TrackSubscription {
+        try TrackSubscription(broadcast: consumer, name: name, delivery: delivery)
+    }
+
     /// Streams catalog updates for this broadcast until the catalog track ends.
     public func catalogs() -> AsyncStream<Catalog> {
         AsyncStream { continuation in
