@@ -1,28 +1,26 @@
 package com.swmansion.moqkit.publish
 
+import uniffi.moq.MoqTrackProducer
+
 /**
  * Push-based source for publishing raw binary frames on a data track.
- *
- * NOTE: Full support requires Android bindings rebuild to expose `MoqTrackProducer`.
- * Run `mise run build-android` to regenerate bindings from the current Rust source.
- * After rebuild, update `Publisher.startDataTrack` to wire a real `MoqTrackProducer`.
  */
 class DataTrackEmitter {
-    @Volatile internal var frameWriter: ((ByteArray) -> Unit)? = null
+    @Volatile private var producer: MoqTrackProducer? = null
     @Volatile private var stopped = false
 
-    internal fun attachWriter(writer: (ByteArray) -> Unit) {
+    internal fun attach(producer: MoqTrackProducer) {
         stopped = false
-        frameWriter = writer
+        this.producer = producer
     }
 
     internal fun detach() {
         stopped = true
-        frameWriter = null
+        producer = null
     }
 
     fun send(data: ByteArray) {
         if (stopped) return
-        try { frameWriter?.invoke(data) } catch (_: Exception) {}
+        producer?.writeFrame(data)
     }
 }

@@ -107,6 +107,31 @@ class Broadcast internal constructor(
     private var closed = false
 
     /**
+     * Subscribes to a raw MoQ track by name.
+     *
+     * This does not require the track to appear in the broadcast catalog. The returned
+     * subscription emits every object from each received group as a [TrackObject].
+     */
+    fun subscribeTrack(
+        name: String,
+        delivery: TrackDelivery = TrackDelivery.Monotonic,
+    ): TrackSubscription {
+        val retainedOwner = owner.retain()
+        return try {
+            val track = retainedOwner.consumer().subscribeTrack(name)
+            TrackSubscription(
+                name = name,
+                owner = retainedOwner,
+                track = track,
+                delivery = delivery,
+            )
+        } catch (t: Throwable) {
+            retainedOwner.release()
+            throw t
+        }
+    }
+
+    /**
      * Streams catalog updates for this broadcast until the catalog track ends.
      */
     fun catalogs(): Flow<Catalog> = flow {

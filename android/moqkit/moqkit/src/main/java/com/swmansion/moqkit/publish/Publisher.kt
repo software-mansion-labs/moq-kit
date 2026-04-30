@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import uniffi.moq.MoqBroadcastProducer
 import uniffi.moq.MoqMediaProducer
+import uniffi.moq.MoqTrackProducer
 
 private const val TAG = "Publisher"
 
@@ -98,7 +99,7 @@ class Publisher {
         for ((_, active) in activeAudioTracks) tearDownAudioTrack(active)
         activeAudioTracks.clear()
 
-        for ((_, active) in activeDataTracks) { active.emitter?.detach() }
+        for ((_, active) in activeDataTracks) tearDownDataTrack(active)
         activeDataTracks.clear()
 
         try { broadcast.finish() } catch (_: Exception) {}
@@ -223,15 +224,28 @@ class Publisher {
     // MARK: - Data
 
     private fun startDataTrack(desc: DataTrackDescriptor) {
-        // Requires MoqTrackProducer from Android bindings. Run `mise run build-android`
-        // to regenerate. After rebuild, replace this body with:
-        //   val producer = broadcast.publishTrack(desc.track.name)
-        //   desc.emitter.attachWriter { data -> producer.writeFrame(data) }
-        //   desc.track.stopAction = { desc.emitter.detach(); producer.finish(); ... }
-        //   desc.track.transition(PublishedTrackState.Active)
-        Log.w(TAG, "Data track '${desc.track.name}': skipped (requires binding rebuild)")
-        desc.track.transition(PublishedTrackState.Stopped)
-        _events.tryEmit(PublisherEvent.TrackError(desc.track.name, "Requires binding rebuild: run `mise run build-android`"))
+        val producer = broadcast.publishTrack(desc.track.name)
+        val active = ActiveDataTrack(desc.emitter, producer)
+        desc.emitter.attach(producer)
+
+        val trackHandle = desc.track
+        trackHandle.stopAction = {
+            tearDownDataTrack(active)
+            activeDataTracks.remove(trackHandle.name)
+            trackHandle.transition(PublishedTrackState.Stopped)
+            _events.tryEmit(PublisherEvent.TrackStopped(trackHandle.name))
+            checkAllTracksStopped()
+        }
+
+        activeDataTracks[desc.track.name] = active
+        trackHandle.transition(PublishedTrackState.Active)
+        _events.tryEmit(PublisherEvent.TrackStarted(trackHandle.name))
+    }
+
+    private fun tearDownDataTrack(active: ActiveDataTrack) {
+        active.emitter?.detach()
+        try { active.producer?.finish() } catch (_: Exception) {}
+        try { active.producer?.close() } catch (_: Exception) {}
     }
 
     // MARK: - Lifecycle
@@ -280,5 +294,8 @@ class Publisher {
         var mediaProducer: MoqMediaProducer? = null
     }
 
-    private data class ActiveDataTrack(val emitter: DataTrackEmitter?)
+    private data class ActiveDataTrack(
+        val emitter: DataTrackEmitter?,
+        val producer: MoqTrackProducer?,
+    )
 }
