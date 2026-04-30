@@ -43,8 +43,8 @@ moq-kit/
 ├── ios/              # iOS SDK — Swift wrapper with C interop
 ├── vendor/moq/       # moq-ffi source (git submodule → moq-dev/moq)
 ├── examples/
-│   ├── android/      # Android example apps (publisher, subscriber)
-│   └── ios/          # iOS example apps (publisher, subscriber)
+│   ├── android/      # Android demo app
+│   └── ios/          # iOS demo app
 └── docs/             # Architecture and design documentation
 ```
 

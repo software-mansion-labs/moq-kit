@@ -35,8 +35,8 @@ Both platforms use **UniFFI** via the standalone `moq-ffi` crate (NOT libmoq). *
 
 ## Examples
 
-- iOS: `examples/ios/subscriber/MoQSubscriber/`
-- Android: `examples/android/subscriber/MoQSubscriber/`
+- iOS: `examples/ios/demo/MoQDemo/`
+- Android: `examples/android/demo/MoQDemo/`
 
 Examples function as integration tests — no formal test suite exists.
 

@@ -11,12 +11,12 @@ description = "Assemble AAR and publish to local Maven (~/.m2)"
 run = "cd android/moqkit && ./gradlew :MoQKit:build && ./gradlew :MoQKit:publishToMavenLocal"
 
 [tasks."android:install"]
-description = "Install Android subscriber demo APK"
-run = "cd examples/android/subscriber/MoQSubscriber && ./gradlew installDebug"
+description = "Install Android demo APK"
+run = "cd examples/android/demo/MoQDemo && ./gradlew installDebug"
 
 [tasks."android:launch"]
-description = "Launch Android subscriber demo"
-run = "adb shell am start -n com.swmansion.moqsubscriber/.MainActivity"
+description = "Launch Android demo"
+run = "adb shell am start -n com.swmansion.moqdemo/.MainActivity"
 
 [tasks."android:build"]
 description = "Build Rust + UniFFI + .so + Kotlin bindings + AAR"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build and run the Android subscriber demo on a connected device"
+#MISE description="Build and run the Android demo on a connected device"
 #MISE depends=["android:aar"]
 set -euo pipefail
 
@@ -10,9 +10,9 @@ if ! adb devices | grep -q "device$"; then
 fi
 
 echo "==> Installing debug APK..."
-cd "$MISE_PROJECT_ROOT/examples/android/subscriber/MoQSubscriber" && ./gradlew installDebug
+cd "$MISE_PROJECT_ROOT/examples/android/demo/MoQDemo" && ./gradlew installDebug
 
 echo "==> Launching..."
-adb shell am start -n com.swmansion.moqsubscriber/.MainActivity
+adb shell am start -n com.swmansion.moqdemo/.MainActivity
 
 echo "Done."
