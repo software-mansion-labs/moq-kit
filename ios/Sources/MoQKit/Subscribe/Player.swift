@@ -120,6 +120,7 @@ public final class Player {
     private var selectedVideoTrack: VideoTrackInfo?
     private var selectedAudioTrack: AudioTrackInfo?
     private var targetBufferingMs: UInt64
+    private var storedAudioVolume: Float
     private let eventsContinuation: AsyncStream<PlayerEvent>.Continuation
 
     private var audioRenderer: AudioRenderer?
@@ -174,6 +175,7 @@ public final class Player {
     ///   - targetBufferingMs: Target playout delay in milliseconds. Higher values improve
     ///     resilience to network jitter at the cost of increased end-to-end latency. Defaults
     ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(ms:)``.
+    ///   - volume: Initial per-player audio output volume, clamped to `0...1`.
     /// - Throws: ``SessionError/noTracksSelected`` if both media types are disabled.
     /// - Throws: ``SessionError/invalidConfiguration(_:)`` if a requested track name does
     ///   not exist in the catalog.
@@ -181,7 +183,8 @@ public final class Player {
         catalog: Catalog,
         videoTrackName: String? = nil,
         audioTrackName: String? = nil,
-        targetBufferingMs: UInt64 = 100
+        targetBufferingMs: UInt64 = 100,
+        volume: Float = 1.0
     ) throws {
         let selection = try Self.resolveSelection(
             in: catalog,
@@ -195,6 +198,7 @@ public final class Player {
         self.hasVideoSelection = selection.videoTrack != nil
         self.hasAudioSelection = selection.audioTrack != nil
         self.targetBufferingMs = targetBufferingMs
+        self.storedAudioVolume = Self.clampedVolume(volume)
         self.videoLayer = AVSampleBufferDisplayLayer()
 
         var cont: AsyncStream<PlayerEvent>.Continuation!
@@ -203,6 +207,19 @@ public final class Player {
     }
 
     // MARK: - Public API
+
+    /// Per-player audio output volume, clamped to `0...1`.
+    public var audioVolume: Float {
+        get { storedAudioVolume }
+        set { setVolume(newValue) }
+    }
+
+    /// Sets the per-player audio output volume without affecting other audio on the system.
+    public func setVolume(_ volume: Float) {
+        let clamped = Self.clampedVolume(volume)
+        storedAudioVolume = clamped
+        audioRenderer?.setVolume(clamped)
+    }
 
     /// Adjusts the target playout delay without interrupting playback.
     ///
@@ -530,6 +547,7 @@ public final class Player {
             config: aInfo.rawConfig,
             timebase: timebase,
             targetLatencyMs: Int(targetBufferingMs),
+            initialVolume: storedAudioVolume,
             metrics: accumulator
         )
         try renderer.start()
@@ -716,6 +734,11 @@ public final class Player {
             ? currentUs - lastUs
             : lastUs - currentUs
         return diff > 500_000
+    }
+
+    private nonisolated static func clampedVolume(_ volume: Float) -> Float {
+        guard !volume.isNaN else { return 0 }
+        return min(max(volume, 0), 1)
     }
 
     private static func resolveSelection(

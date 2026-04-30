@@ -20,17 +20,20 @@ final class AudioRenderer: @unchecked Sendable {
     private let sourceNode: AVAudioSourceNode
     private let ringState: RingState
     private let metrics: PlaybackMetricsAccumulator
+    private var volume: Float
 
     init(
         config: MoqAudio,
         timebase: CMTimebase,
         targetLatencyMs: Int,
+        initialVolume: Float = 1.0,
         metrics: PlaybackMetricsAccumulator
     ) throws {
         // Create a temporary decoder only to discover the output format for AVAudioEngine setup.
         let formatDecoder = try AudioDecoder(config: config)
         self.timebase = timebase
         self.metrics = metrics
+        self.volume = Self.clampedVolume(initialVolume)
 
         let channelCount = Int(config.channelCount)
         let sampleRate = Int(config.sampleRate)
@@ -104,6 +107,7 @@ final class AudioRenderer: @unchecked Sendable {
 
             return noErr
         }
+        sourceNode.volume = volume
         self.sourceNode = sourceNode
 
         // AVAudioEngine setup
@@ -140,11 +144,22 @@ final class AudioRenderer: @unchecked Sendable {
         ringState.resize(latencyMs: Double(ms))
     }
 
+    func setVolume(_ volume: Float) {
+        let clamped = Self.clampedVolume(volume)
+        self.volume = clamped
+        sourceNode.volume = clamped
+    }
+
     func flush() {
         ringState.reset()
     }
 
     var bufferFillMs: Double { ringState.fillMs }
+
+    private static func clampedVolume(_ volume: Float) -> Float {
+        guard !volume.isNaN else { return 0 }
+        return min(max(volume, 0), 1)
+    }
 }
 
 // MARK: - RingState

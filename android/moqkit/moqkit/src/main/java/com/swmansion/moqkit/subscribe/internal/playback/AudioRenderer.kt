@@ -21,6 +21,7 @@ internal class AudioRenderer(
     private val config: MoqAudio,
     private val targetLatencyMs: Int,
     private val metrics: PlaybackMetricsAccumulator? = null,
+    initialVolume: Float = 1f,
 ) {
     private val sampleRate = config.sampleRate.toInt()
     private val channels = config.channelCount.toInt()
@@ -36,6 +37,9 @@ internal class AudioRenderer(
     private var audioTrack: AudioTrack? = null
     private var decoder: AudioDecoder? = null
     private var playbackThread: Thread? = null
+
+    @Volatile
+    private var volume = initialVolume.coerceIn(0f, 1f)
 
     @Volatile
     private var running = false
@@ -85,6 +89,7 @@ internal class AudioRenderer(
             .build()
 
         audioTrack = track
+        track.setVolume(volume)
 
         // Build MediaFormat for the decoder
         val format = AudioMediaFormatFactory.from(config)
@@ -156,6 +161,13 @@ internal class AudioRenderer(
         lock.withLock {
             ringBuffer.resize(ms.toDouble())
         }
+    }
+
+    /** Sets AudioTrack output volume, clamped to the 0.0-1.0 range. */
+    fun setVolume(value: Float) {
+        val clampedValue = value.coerceIn(0f, 1f)
+        volume = clampedValue
+        audioTrack?.setVolume(clampedValue)
     }
 
     /** Flush decoder and ring buffer (e.g. on discontinuity). */

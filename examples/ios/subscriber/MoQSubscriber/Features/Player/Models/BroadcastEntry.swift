@@ -14,14 +14,20 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var isPaused = false
     @Published var playbackStats: PlaybackStats?
     @Published var targetLatencyMs: Double
+    @Published var volume: Double = 1.0
 
     var videoLayer: AVSampleBufferDisplayLayer? {
         player?.videoLayer
     }
 
+    var hasAudio: Bool {
+        !catalog.audioTracks.isEmpty
+    }
+
     private var eventTask: Task<Void, Never>?
     private var statsTimer: Timer?
     private var pendingVideoTrackName: String?
+    private var lastNonZeroVolume: Double = 1.0
 
     var selectedVideoTrack: VideoTrackInfo? {
         guard let selectedVideoTrackName else { return nil }
@@ -49,6 +55,23 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     func updateTargetLatency(ms: UInt64) {
         targetLatencyMs = Double(ms)
         player?.updateTargetLatency(ms: ms)
+    }
+
+    func updateVolume(_ newVolume: Double) {
+        let clampedVolume = min(max(newVolume, 0), 1)
+        volume = clampedVolume
+        if clampedVolume > 0 {
+            lastNonZeroVolume = clampedVolume
+        }
+        player?.setVolume(Float(clampedVolume))
+    }
+
+    func toggleMute() {
+        if volume > 0 {
+            updateVolume(0)
+        } else {
+            updateVolume(lastNonZeroVolume)
+        }
     }
 
     func stop() async {

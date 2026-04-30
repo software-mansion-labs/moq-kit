@@ -47,6 +47,7 @@ private const val TAG = "Player"
  * @param targetLatencyMs Target end-to-end playback latency in milliseconds. Lower values
  *   reduce delay at the cost of increased risk of stalls. Defaults to 100 ms.
  * @param parentScope Coroutine scope whose lifetime bounds the player's internal coroutines.
+ * @param volume Initial audio volume, clamped to the 0.0-1.0 range.
  */
 class Player(
     private val catalog: Catalog,
@@ -54,6 +55,7 @@ class Player(
     audioTrackName: String? = null,
     targetLatencyMs: Int = 100,
     parentScope: CoroutineScope,
+    volume: Float = 1f,
 ) : AutoCloseable {
     /**
      * Playback lifecycle events emitted by the player.
@@ -81,6 +83,7 @@ class Player(
     private var selectedVideoTrack: VideoTrackInfo?
     private var selectedAudioTrack: AudioTrackInfo?
     private var targetLatencyMs = targetLatencyMs
+    private var storedAudioVolume = volume.coerceIn(0f, 1f)
 
     private var audioRenderer: AudioRenderer? = null
     private var videoRenderer: VideoRenderer? = null
@@ -104,6 +107,10 @@ class Player(
     /** Current playback time in microseconds. */
     val currentTimeUs: Long
         get() = audioRenderer?.currentTimeUs ?: 0L
+
+    /** Current audio output volume, clamped to the 0.0-1.0 range. */
+    val audioVolume: Float
+        get() = storedAudioVolume
 
     /** Snapshot of current playback metrics. */
     val stats: PlaybackStats
@@ -293,6 +300,16 @@ class Player(
     }
 
     /**
+     * Sets audio output volume for this player.
+     */
+    fun setVolume(volume: Float) {
+        check(!closed) { "Player is already closed" }
+        val clampedVolume = volume.coerceIn(0f, 1f)
+        storedAudioVolume = clampedVolume
+        audioRenderer?.setVolume(clampedVolume)
+    }
+
+    /**
      * Releases the retained broadcast handle and all playback resources.
      *
      * After [close] returns the player cannot be used again.
@@ -325,6 +342,7 @@ class Player(
             config = audioInfo.rawConfig,
             targetLatencyMs = targetLatencyMs,
             metrics = accumulator,
+            initialVolume = storedAudioVolume,
         )
         audioRenderer = renderer
         renderer.start()

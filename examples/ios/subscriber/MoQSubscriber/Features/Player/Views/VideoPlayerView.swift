@@ -78,6 +78,11 @@ struct VideoPlayerView: View {
                 Spacer()
                 HStack {
                     Spacer()
+                    VolumeControlView(
+                        entry: entry,
+                        onInteractionBegan: cancelAutoHide,
+                        onInteractionEnded: scheduleAutoHide
+                    )
                     Button {
                         isFullscreen = true
                     } label: {
@@ -105,6 +110,11 @@ struct VideoPlayerView: View {
         }
         hideTask = task
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: task)
+    }
+
+    private func cancelAutoHide() {
+        hideTask?.cancel()
+        hideTask = nil
     }
 
     private func togglePlayPause() {
@@ -192,6 +202,11 @@ private struct FullscreenVideoView: View {
                 Spacer()
                 HStack {
                     Spacer()
+                    VolumeControlView(
+                        entry: entry,
+                        onInteractionBegan: cancelAutoHide,
+                        onInteractionEnded: scheduleAutoHide
+                    )
                     Button {
                         dismiss()
                     } label: {
@@ -221,6 +236,11 @@ private struct FullscreenVideoView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: task)
     }
 
+    private func cancelAutoHide() {
+        hideTask?.cancel()
+        hideTask = nil
+    }
+
     private func togglePlayPause() {
         if entry.isPaused {
             Task { try? await entry.player?.play() }
@@ -230,5 +250,61 @@ private struct FullscreenVideoView: View {
             entry.isPaused = true
         }
         scheduleAutoHide()
+    }
+}
+
+// MARK: - Volume
+
+private struct VolumeControlView: View {
+    @ObservedObject var entry: BroadcastEntry
+    var onInteractionBegan: () -> Void
+    var onInteractionEnded: () -> Void
+
+    var body: some View {
+        if entry.hasAudio {
+            HStack(spacing: 8) {
+                Button {
+                    onInteractionBegan()
+                    entry.toggleMute()
+                    onInteractionEnded()
+                } label: {
+                    Image(systemName: volumeIconName)
+                        .font(.title3)
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 44)
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { entry.volume },
+                        set: { newValue in
+                            entry.updateVolume(newValue)
+                        }
+                    ),
+                    in: 0...1,
+                    onEditingChanged: { isEditing in
+                        if isEditing {
+                            onInteractionBegan()
+                        } else {
+                            onInteractionEnded()
+                        }
+                    }
+                )
+                .tint(.white)
+                .frame(width: 96)
+            }
+            .padding(.horizontal, 8)
+            .background(.black.opacity(0.35), in: Capsule())
+        }
+    }
+
+    private var volumeIconName: String {
+        if entry.volume == 0 {
+            return "speaker.slash.fill"
+        } else if entry.volume < 0.5 {
+            return "speaker.wave.1.fill"
+        } else {
+            return "speaker.wave.2.fill"
+        }
     }
 }

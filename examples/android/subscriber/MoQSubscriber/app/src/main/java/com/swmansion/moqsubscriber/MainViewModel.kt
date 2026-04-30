@@ -27,6 +27,8 @@ class BroadcastEntry(catalog: Catalog) {
     var isPlaying by mutableStateOf(false)
     var isPaused by mutableStateOf(false)
     var targetLatencyMs by mutableStateOf(200)
+    var volume by mutableStateOf(1f)
+    var lastNonZeroVolume by mutableStateOf(1f)
 
     var playbackStats by mutableStateOf<PlaybackStats?>(null)
     var selectedVideoTrack by mutableStateOf<VideoTrackInfo?>(null)
@@ -78,6 +80,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             entry.player?.play()
             // play() recreates renderers with the original constructor latency — restore the slider value
             entry.player?.updateTargetLatency(entry.targetLatencyMs)
+            entry.player?.setVolume(entry.volume)
             entry.isPaused = false
         } else {
             entry.player?.pause()
@@ -91,6 +94,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         entry.latencyUpdateJob = viewModelScope.launch {
             delay(300) // 300ms debounce, matching iOS
             entry.player?.updateTargetLatency(ms)
+        }
+    }
+
+    fun updateVolume(entry: BroadcastEntry, volume: Float) {
+        val clamped = volume.coerceIn(0f, 1f)
+        entry.volume = clamped
+        if (clamped > 0f) {
+            entry.lastNonZeroVolume = clamped
+        }
+        entry.player?.setVolume(clamped)
+    }
+
+    fun toggleMute(entry: BroadcastEntry) {
+        if (entry.volume > 0f) {
+            updateVolume(entry, 0f)
+        } else {
+            updateVolume(entry, entry.lastNonZeroVolume.takeIf { it > 0f } ?: 1f)
         }
     }
 
@@ -192,6 +212,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 audioTrackName = initialAudioName,
                 targetLatencyMs = entry.targetLatencyMs,
                 parentScope = viewModelScope,
+                volume = entry.volume,
             )
         } catch (_: IllegalArgumentException) {
             return
@@ -199,6 +220,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         entry.player = player
         entry.selectedVideoTrack = initialVideo
         player.play()
+        player.setVolume(entry.volume)
 
         entry.eventJob = viewModelScope.launch {
             player.events.collect { ev ->

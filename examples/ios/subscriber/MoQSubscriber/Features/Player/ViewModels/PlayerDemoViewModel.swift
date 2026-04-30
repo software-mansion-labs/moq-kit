@@ -138,7 +138,8 @@ final class PlayerDemoViewModel: ObservableObject {
             catalog: catalog,
             videoTrackName: selectedTracks.videoTrackName,
             audioTrackName: selectedTracks.audioTrackName,
-            targetBufferingMs: targetLatencyMs
+            targetBufferingMs: targetLatencyMs,
+            volume: Float(entry.volume)
         ) else {
             entry.offline = true
             return

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +52,8 @@ import androidx.compose.ui.zIndex
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Pause
@@ -304,17 +307,30 @@ private fun BroadcastCard(
                         )
                     }
 
-                    // Fullscreen — bottom-right corner
-                    IconButton(
-                        onClick = onFullscreen,
-                        enabled = entry.isPlaying || entry.isPaused,
-                        modifier = Modifier.align(Alignment.BottomEnd),
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Fullscreen,
-                            contentDescription = "Fullscreen",
-                            tint = Color.White,
-                        )
+                        if (entry.catalog.audioTracks.isNotEmpty()) {
+                            VolumeControl(
+                                volume = entry.volume,
+                                enabled = entry.isPlaying || entry.isPaused,
+                                onVolumeChange = { vm.updateVolume(entry, it) },
+                                onToggleMute = { vm.toggleMute(entry) },
+                            )
+                        }
+                        IconButton(
+                            onClick = onFullscreen,
+                            enabled = entry.isPlaying || entry.isPaused,
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Fullscreen,
+                                contentDescription = "Fullscreen",
+                                tint = Color.White,
+                            )
+                        }
                     }
                 }
             }
@@ -419,8 +435,58 @@ private fun FullscreenPlayerOverlay(
                         modifier = Modifier.size(48.dp),
                     )
                 }
+
+                if (entry.catalog.audioTracks.isNotEmpty()) {
+                    VolumeControl(
+                        volume = entry.volume,
+                        enabled = entry.isPlaying || entry.isPaused,
+                        onVolumeChange = { vm.updateVolume(entry, it) },
+                        onToggleMute = { vm.toggleMute(entry) },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 16.dp),
+                    )
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun VolumeControl(
+    volume: Float,
+    enabled: Boolean,
+    onVolumeChange: (Float) -> Unit,
+    onToggleMute: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        IconButton(
+            onClick = onToggleMute,
+            enabled = enabled,
+            modifier = Modifier.size(40.dp),
+        ) {
+            Icon(
+                imageVector = if (volume == 0f) {
+                    Icons.AutoMirrored.Filled.VolumeOff
+                } else {
+                    Icons.AutoMirrored.Filled.VolumeUp
+                },
+                contentDescription = if (volume == 0f) "Unmute" else "Mute",
+                tint = if (enabled) Color.White else Color.White.copy(alpha = 0.38f),
+            )
+        }
+        Slider(
+            value = volume,
+            onValueChange = onVolumeChange,
+            enabled = enabled,
+            valueRange = 0f..1f,
+            modifier = Modifier.width(104.dp),
+        )
     }
 }
 
