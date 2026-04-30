@@ -2,6 +2,7 @@ import SwiftUI
 
 private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
     case boy
+    case chat
     case player
 
     var id: String { rawValue }
@@ -10,6 +11,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .boy:
             return "Boy"
+        case .chat:
+            return "Chat"
         case .player:
             return "Player"
         }
@@ -19,6 +22,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .boy:
             return "Game Boy-style demo with announced games, live playback, and viewer controls."
+        case .chat:
+            return "Publish and receive JSON chat messages over raw MoQ data tracks."
         case .player:
             return "Raw broadcast player with relay URL and prefix controls."
         }
@@ -28,6 +33,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .boy:
             return "figure.wave"
+        case .chat:
+            return "message.fill"
         case .player:
             return "play.rectangle.fill"
         }
@@ -38,6 +45,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
         switch self {
         case .boy:
             BoyDemoView()
+        case .chat:
+            ChatDemoView()
         case .player:
             PlayerDemoView()
         }

@@ -8,6 +8,9 @@
 
 /* Begin PBXBuildFile section */
 		3B6C2D6B2F729D6D0087267B /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6C2D6A2F729D6D0087267B /* VideoPlayerView.swift */; };
+		B10000000000000000000001 /* ChatDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* ChatDemoView.swift */; };
+		B10000000000000000000002 /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* ChatModels.swift */; };
+		B10000000000000000000003 /* ChatDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* ChatDemoViewModel.swift */; };
 		A10000000000000000000081 /* BoyModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000091 /* BoyModels.swift */; };
 		A10000000000000000000082 /* BoyDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000092 /* BoyDemoViewModel.swift */; };
 		A10000000000000000000083 /* BoyConnectionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000093 /* BoyConnectionCardView.swift */; };
@@ -27,6 +30,9 @@
 
 /* Begin PBXFileReference section */
 		3B6C2D6A2F729D6D0087267B /* VideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
+		B10000000000000000000011 /* ChatDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDemoView.swift; sourceTree = "<group>"; };
+		B10000000000000000000012 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000013 /* ChatDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDemoViewModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000091 /* BoyModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000092 /* BoyDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyDemoViewModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000093 /* BoyConnectionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyConnectionCardView.swift; sourceTree = "<group>"; };
@@ -94,9 +100,36 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000026 /* Boy */,
+				B10000000000000000000021 /* Chat */,
 				A10000000000000000000027 /* Player */,
 			);
 			path = Features;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000021 /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000011 /* ChatDemoView.swift */,
+				B10000000000000000000022 /* Models */,
+				B10000000000000000000023 /* ViewModels */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000022 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000012 /* ChatModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000023 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000013 /* ChatDemoViewModel.swift */,
+			);
+			path = ViewModels;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000026 /* Boy */ = {
@@ -251,6 +284,9 @@
 				A10000000000000000000083 /* BoyConnectionCardView.swift in Sources */,
 				A10000000000000000000084 /* BoyConsoleView.swift in Sources */,
 				A10000000000000000000085 /* BoyControlPadView.swift in Sources */,
+				B10000000000000000000001 /* ChatDemoView.swift in Sources */,
+				B10000000000000000000002 /* ChatModels.swift in Sources */,
+				B10000000000000000000003 /* ChatDemoViewModel.swift in Sources */,
 				A10000000000000000000009 /* PlayerDemoView.swift in Sources */,
 				A1000000000000000000000A /* BroadcastEntry.swift in Sources */,
 				A10000000000000000000003 /* VideoLayerView.swift in Sources */,
