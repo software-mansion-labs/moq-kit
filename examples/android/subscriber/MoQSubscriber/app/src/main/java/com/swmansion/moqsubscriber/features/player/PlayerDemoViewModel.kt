@@ -1,4 +1,4 @@
-package com.swmansion.moqsubscriber
+package com.swmansion.moqsubscriber.features.player
 
 import android.app.Application
 import androidx.compose.runtime.getValue
@@ -39,7 +39,7 @@ class BroadcastEntry(catalog: Catalog) {
     internal var latencyUpdateJob: Job? = null
 }
 
-class MainViewModel(application: Application) : AndroidViewModel(application) {
+class PlayerDemoViewModel(application: Application) : AndroidViewModel(application) {
     var relayUrl by mutableStateOf("http://192.168.92.140:4443")
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
