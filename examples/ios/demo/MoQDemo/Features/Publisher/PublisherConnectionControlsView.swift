@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ConnectionControlsView: View {
+struct PublisherConnectionControlsView: View {
     @Binding var relayURL: String
     @Binding var broadcastPath: String
     let canConnect: Bool

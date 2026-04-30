@@ -1,34 +1,13 @@
 #!/usr/bin/env bash
-#MISE description="Build and run the iOS publisher or subscriber demo on a connected device"
-#USAGE flag "--app <app>" default="subscriber" help="App to run: subscriber or publisher"
-#USAGE flag "--simulator" help="Run on the iPhone simulator instead of a physical device"
+#MISE description="Build and run the iOS MoQ Demo on a connected device"
+#USAGE flag "--simulator" help="Run on an iPhone simulator instead of a physical device"
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
-APP="${usage_app:-subscriber}"
-
-case "$APP" in
-publisher | subscriber) ;;
-*)
-  echo "Unknown app: $APP. Expected publisher or subscriber." >&2
-  exit 1
-  ;;
-esac
-
-case "$APP" in
-subscriber)
-  PROJECT="$ROOT_DIR/examples/ios/subscriber/MoQSubscriber.xcodeproj"
-  SCHEME="MoQSubscriber"
-  TARGET="MoQSubscriber"
-  ;;
-publisher)
-  PROJECT="$ROOT_DIR/examples/ios/publisher/MoQPublisher.xcodeproj"
-  SCHEME="MoQPublisher"
-  TARGET="MoQPublisher"
-  ;;
-esac
-
-DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData/$APP"
+PROJECT="$ROOT_DIR/examples/ios/demo/MoQDemo.xcodeproj"
+SCHEME="MoQDemo"
+TARGET="MoQDemo"
+DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData/MoQDemo"
 
 resolve_build_product() {
   local sdk="$1"
@@ -47,14 +26,21 @@ resolve_build_product() {
   while IFS= read -r line; do
     build_info+=("$line")
   done < <(
-    printf '%s' "$settings_json" | python3 -c '
+    printf '%s' "$settings_json" | TARGET="$TARGET" python3 -c '
 import json
+import os
 import sys
 
+target = os.environ["TARGET"]
 data = json.load(sys.stdin)
-settings = data[0]["buildSettings"]
-print(settings["PRODUCT_BUNDLE_IDENTIFIER"])
-print(settings["TARGET_BUILD_DIR"] + "/" + settings["FULL_PRODUCT_NAME"])
+for entry in data:
+    if entry.get("target") == target:
+        settings = entry["buildSettings"]
+        print(settings["PRODUCT_BUNDLE_IDENTIFIER"])
+        print(settings["TARGET_BUILD_DIR"] + "/" + settings["FULL_PRODUCT_NAME"])
+        break
+else:
+    sys.exit(1)
 '
   )
 
@@ -68,18 +54,32 @@ print(settings["TARGET_BUILD_DIR"] + "/" + settings["FULL_PRODUCT_NAME"])
 }
 
 if [[ "${usage_simulator:-false}" = "true" ]]; then
-  echo "==> Using simulator for $APP..."
-  SIM_NAME="iPhone 16"
+  echo "==> Selecting an iPhone simulator..."
+  SIM_INFO=$(xcrun simctl list devices available -j | python3 -c '
+import json
+import sys
 
-  SIM_UDID=$(xcrun simctl list devices available -j | python3 -c "
-import json, sys
 data = json.load(sys.stdin)
-for runtime, devices in data['devices'].items():
-    for d in devices:
-        if d['name'] == '$SIM_NAME' and d['isAvailable']:
-            print(d['udid']); sys.exit(0)
-sys.exit(1)
-")
+iphones = [
+    d
+    for devices in data["devices"].values()
+    for d in devices
+    if d["isAvailable"] and d["name"].startswith("iPhone")
+]
+booted = next((d for d in iphones if d["state"] == "Booted"), None)
+chosen = booted or (iphones[0] if iphones else None)
+if chosen is None:
+    sys.exit(1)
+print(chosen["name"])
+print(chosen["udid"])
+')
+
+  SIM_NAME=$(printf '%s\n' "$SIM_INFO" | sed -n '1p')
+  SIM_UDID=$(printf '%s\n' "$SIM_INFO" | sed -n '2p')
+  if [[ -z "$SIM_UDID" ]]; then
+    echo "No available iPhone simulator found." >&2
+    exit 1
+  fi
 
   echo "Simulator: $SIM_NAME ($SIM_UDID)"
   xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
@@ -101,11 +101,11 @@ sys.exit(1)
   echo "==> Launching $BUNDLE_ID..."
   xcrun simctl launch "$SIM_UDID" "$BUNDLE_ID"
 else
-  echo "==> Detecting connected device for $APP..."
+  echo "==> Detecting connected iPhone..."
   DEVICE_UDID=$(xcrun xctrace list devices 2>/dev/null | grep "iPhone" | grep -v "Simulator" | grep -E "^\S.+\([0-9A-F-]+\)$" | head -1 | sed 's/.*(\([0-9A-F-]*\))$/\1/')
 
   if [[ -z "$DEVICE_UDID" ]]; then
-    echo "No real device found. Use --simulator to target a simulator instead." >&2
+    echo "No real iPhone found. Use --simulator to target a simulator instead." >&2
     exit 1
   fi
   echo "Device: $DEVICE_UDID"

@@ -14,8 +14,8 @@ final class PublisherViewModel: ObservableObject {
     @Published var screenEnabled = false
     @Published var micEnabled = true
     @Published var screenAudioEnabled = false
-    @Published var replayKitAppGroupIdentifier = "group.com.swmansion.moqpublisher"
-    @Published var replayKitExtensionBundleIdentifier = "com.swmansion.moqpublisher.broadcastupload"
+    @Published var replayKitAppGroupIdentifier = "group.com.swmansion.moqdemo"
+    @Published var replayKitExtensionBundleIdentifier = "com.swmansion.moqdemo.broadcastupload"
     @Published var replayKitPrepared = false
     @Published var cameraPosition: CameraPosition = .front
     @Published var videoCodec: VideoCodec = .h265
@@ -155,6 +155,22 @@ final class PublisherViewModel: ObservableObject {
 
     // MARK: - Publish Lifecycle
 
+    static func configurePlaybackAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(.playback, mode: .moviePlayback, options: [])
+        try? audioSession.setActive(true)
+    }
+
+    private func configurePublishingAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+        try? audioSession.setCategory(
+            .playAndRecord,
+            mode: .videoRecording,
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
+        )
+        try? audioSession.setActive(true)
+    }
+
     func prepareReplayKitDescriptor(url: String, path: String) {
         do {
             guard !replayKitAppGroupIdentifier.isEmpty else {
@@ -178,6 +194,8 @@ final class PublisherViewModel: ObservableObject {
     }
 
     func publish(url: String, path: String) {
+        configurePublishingAudioSession()
+
         lastError = nil
         publishedTracks = []
         trackStates = [:]
@@ -295,6 +313,7 @@ final class PublisherViewModel: ObservableObject {
         logger.info("cleaning up capture sources")
         cleanupCaptureSources()
         logger.info("capture sources cleaned up")
+        Self.configurePlaybackAudioSession()
 
         do {
             let store = ReplayKitBroadcastDescriptorStore(

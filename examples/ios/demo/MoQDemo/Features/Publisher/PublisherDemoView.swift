@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ContentView: View {
+struct PublisherDemoView: View {
     @State private var relayURL = "http://192.168.92.140:4443/anon"
 
     @State private var broadcastPath = "bbb/hey"
@@ -18,7 +18,7 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                ConnectionControlsView(
+                PublisherConnectionControlsView(
                     relayURL: $relayURL,
                     broadcastPath: $broadcastPath,
                     canConnect: canConnect,
@@ -150,5 +150,11 @@ struct ContentView: View {
         .onAppear {
             viewModel.startPreview()
         }
+        .onDisappear {
+            viewModel.stop()
+            viewModel.stopPreview()
+            PublisherViewModel.configurePlaybackAudioSession()
+        }
+        .navigationTitle("Publisher")
     }
 }

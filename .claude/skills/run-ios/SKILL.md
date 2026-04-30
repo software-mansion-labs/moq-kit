@@ -1,9 +1,9 @@
 ---
 name: run-ios
-description: Build and run the iOS publisher or subscriber demo on a connected device
+description: Build and run the iOS MoQ Demo on a connected device
 ---
 
-# Run iOS Demo
+# Run iOS MoQ Demo
 
 ## Quick run
 
@@ -11,13 +11,7 @@ description: Build and run the iOS publisher or subscriber demo on a connected d
 mise run run-ios
 ```
 
-Builds and launches the subscriber app by default.
-
-To run the publisher app instead:
-
-```bash
-mise run run-ios --app publisher
-```
+Builds and launches the unified MoQ Demo app.
 
 To target a simulator instead:
 

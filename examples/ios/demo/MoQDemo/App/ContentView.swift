@@ -1,9 +1,10 @@
 import SwiftUI
 
-private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
+private enum MoQDemo: String, CaseIterable, Hashable, Identifiable {
     case boy
     case chat
     case player
+    case publisher
 
     var id: String { rawValue }
 
@@ -15,6 +16,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
             return "Chat"
         case .player:
             return "Player"
+        case .publisher:
+            return "Publisher"
         }
     }
 
@@ -26,6 +29,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
             return "Publish and receive JSON chat messages over raw MoQ data tracks."
         case .player:
             return "Raw broadcast player with relay URL and prefix controls."
+        case .publisher:
+            return "Publish camera, microphone, and ReplayKit streams to a MoQ relay."
         }
     }
 
@@ -37,6 +42,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
             return "message.fill"
         case .player:
             return "play.rectangle.fill"
+        case .publisher:
+            return "dot.radiowaves.left.and.right"
         }
     }
 
@@ -49,6 +56,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
             ChatDemoView()
         case .player:
             PlayerDemoView()
+        case .publisher:
+            PublisherDemoView()
         }
     }
 }
@@ -56,8 +65,8 @@ private enum SubscriberDemo: String, CaseIterable, Hashable, Identifiable {
 struct ContentView: View {
     var body: some View {
         NavigationStack {
-            DemoSelectionView()
-                .navigationDestination(for: SubscriberDemo.self) { demo in
+                DemoSelectionView()
+                .navigationDestination(for: MoQDemo.self) { demo in
                     demo.destinationView
                 }
         }
@@ -71,7 +80,7 @@ private struct DemoSelectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Subscriber Demo")
+                    Text("MoQ Demo")
                         .font(.largeTitle.bold())
                     Text("Choose the demo mode you want to launch.")
                         .font(.subheadline)
@@ -79,7 +88,7 @@ private struct DemoSelectionView: View {
                 }
 
                 LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(SubscriberDemo.allCases) { demo in
+                    ForEach(MoQDemo.allCases) { demo in
                         NavigationLink(value: demo) {
                             DemoCardView(demo: demo)
                         }
@@ -94,7 +103,7 @@ private struct DemoSelectionView: View {
 }
 
 private struct DemoCardView: View {
-    let demo: SubscriberDemo
+    let demo: MoQDemo
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
