@@ -10,6 +10,8 @@ It is built on top of [`moq-ffi`](https://github.com/moq-dev/moq/tree/main/rs/mo
 the UniFFI Rust bindings from Luke Curley's [`moq-dev/moq`](https://github.com/moq-dev/moq)
 project.
 
+For the repository codemap, layer boundaries, and invariants, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Protocol
 
 moq-kit currently targets [`moq-lite`](https://datatracker.ietf.org/doc/draft-lcurley-moq-lite/)
@@ -227,24 +229,11 @@ and viewer controls.
 
 ## Local development
 
-Use [`mise-en-place`](https://mise.jdx.dev/) (`mise`) as the task runner for local development.
+Use [`mise-en-place`](https://mise.jdx.dev/) (`mise`) as the task runner for local
+development.
 
 ```bash
 mise tasks
-```
-
-Both platform SDKs use `moq-ffi` from the `vendor/moq` git submodule:
-
-```text
-moq-kit Swift / Kotlin APIs
-        |
-moq-ffi UniFFI bindings
-        |
-hang media layer
-        |
-moq-lite transport
-        |
-QUIC / WebTransport
 ```
 
 ### Build platform bindings
@@ -267,7 +256,8 @@ mise run android:build
 
 The task scripts in [mise-tasks](mise-tasks) are the source of truth for exact build
 outputs and generated files. Generated UniFFI bindings are overwritten by these builds and
-should not be edited manually.
+should not be edited manually. See [ARCHITECTURE.md](ARCHITECTURE.md) for binding
+boundaries and invariants.
 
 For local SDK development, the demo apps are usually the fastest feedback loop. Prefer
 wiring demos to local Swift and Android modules instead of published package versions when
@@ -313,20 +303,6 @@ mise run android:run
 You can also split the Android demo flow with `mise run android:install` and
 `mise run android:launch`.
 
-## Project structure
-
-```text
-moq-kit/
-|-- Package.swift      # Swift package for iOS
-|-- android/           # Android SDK and publishing setup
-|-- ios/               # Swift sources and moqFFI XCFramework
-|-- vendor/moq/        # moq-dev/moq submodule, including moq-ffi
-|-- examples/
-|   |-- android/       # Android demo app
-|   `-- ios/           # iOS demo app
-`-- mise-tasks/        # Local build, run, relay, and stream tasks
-```
-
 ## Status
 
 moq-kit is an active preview. It is suitable for demos, prototypes, and early integrations,
@@ -350,8 +326,12 @@ Built on top of [`moq-dev/moq`](https://github.com/moq-dev/moq) by
 Since 2012 [Software Mansion](https://swmansion.com) is a software agency with experience
 in building web and mobile apps. We are Core React Native Contributors and experts in
 dealing with all kinds of React Native issues. We can help you build your next dream
-product - [Hire us](https://swmansion.com/contact/projects?utm_source=react-native-executorch&utm_medium=readme).
+product - [Hire us][hire-us].
 
-[![swm](https://logo.swmansion.com/logo?color=white&variant=desktop&width=150&tag=react-native-executorch-github "Software Mansion")](https://swmansion.com)
+[![swm][swm-logo]][swm]
 
 Copyright 2026, [Software Mansion](https://swmansion.com/)
+
+[hire-us]: https://swmansion.com/contact/projects?utm_source=react-native-executorch&utm_medium=readme
+[swm]: https://swmansion.com
+[swm-logo]: https://logo.swmansion.com/logo?color=white&variant=desktop&width=150&tag=react-native-executorch-github

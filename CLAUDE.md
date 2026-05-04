@@ -4,25 +4,17 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## Architecture
 
-moq-kit wraps **moq-ffi** (Rust) with idiomatic Swift and Kotlin APIs. The stack:
-
-```
-moq-kit (Swift / Kotlin)    ← platform APIs in this repo
-moq-ffi (UniFFI bindings)   ← vendor/moq/rs/moq-ffi/
-libmoq (C bindings)         ← vendor/moq/rs/libmoq/ (pure C API)
-hang (media layer)          ← codecs, containers, catalogs
-moq-lite (transport)        ← pub/sub over QUIC
-QUIC / WebTransport         ← network transport
-```
-
-**vendor/moq** is a git submodule pointing to `moq-dev/moq`. The UniFFI crate lives at `vendor/moq/rs/moq-ffi/`, the C bindings at `vendor/moq/rs/libmoq/`.
+Read `ARCHITECTURE.md` for the repository codemap, layer boundaries, and invariants.
+In particular, Swift and Kotlin APIs should stay equivalent as much as the platforms allow
+because future React Native bindings should be able to sit on top of both SDKs cleanly.
 
 ## UniFFI Bindings
 
-Both platforms use **UniFFI** via the standalone `moq-ffi` crate (NOT libmoq). **Never edit generated binding files manually** — they're overwritten every build.
+Both platforms use **UniFFI** via the standalone `moq-ffi` crate, not `libmoq`. Never edit
+generated binding files manually; they're overwritten every build.
 
-- iOS generated bindings: `ios/Sources/MoQKit/moq.swift`
-- Android generated bindings: `android/moqkit/MoQKit/src/main/java/uniffi/moq/`
+- iOS generated bindings: `ios/Sources/MoQKitFFI/moq.swift`
+- Android generated bindings: `android/moqkit/moqkit/src/main/java/uniffi/moq/`
 
 ## Key Concepts
 
@@ -30,7 +22,8 @@ Both platforms use **UniFFI** via the standalone `moq-ffi` crate (NOT libmoq). *
 - **Session** — a QUIC connection to a MOQ relay with publish/consume origins
 - **Broadcast** — named collection of tracks addressed by path
 - **Track** — single media stream (one video rendition or audio track)
-- **Group** — decodable unit starting with a keyframe; can be independently decoded for latency-based skipping
+- **Group** — decodable unit starting with a keyframe; can be independently decoded for
+  latency-based skipping
 - **Catalog** — JSON track describing all other tracks (codec params, resolution, sample rate)
 
 ## Examples
