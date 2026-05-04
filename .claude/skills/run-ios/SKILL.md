@@ -8,7 +8,7 @@ description: Build and run the iOS MoQ Demo on a connected device
 ## Quick run
 
 ```bash
-mise run run-ios
+mise run ios:run
 ```
 
 Builds and launches the unified MoQ Demo app.
@@ -16,5 +16,5 @@ Builds and launches the unified MoQ Demo app.
 To target a simulator instead:
 
 ```bash
-mise run run-ios --simulator
+mise run ios:run --simulator
 ```

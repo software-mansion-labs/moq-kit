@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#MISE description="Launch the installed Android demo on a connected device"
+set -euo pipefail
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+  -h | --help)
+    echo "Usage: android:launch"
+    echo ""
+    echo "Launch the installed Android demo on a connected device."
+    exit 0
+    ;;
+  *)
+    echo "Unknown argument: $1" >&2
+    exit 1
+    ;;
+  esac
+fi
+
+adb shell am start -n com.swmansion.moqdemo/.MainActivity

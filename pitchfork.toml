@@ -1,21 +1,20 @@
 [daemons.relay]
-run = "mise run relay"
+run = "mise run relay:run"
 
 [daemons.publish-shrek]
-run = "mise run publish-stream --name public/shrek"
+run = "mise run stream:file --name public/shrek"
 
 [daemons.publish-another-shrek]
-run = "mise run publish-stream --name bbb/another-shrek"
+run = "mise run stream:file --name bbb/another-shrek"
 
 [daemons.stream-obs-h264]
-run = "mise run stream-obs moq-local-h264"
+run = "mise run stream:obs moq-local-h264"
 
 [daemons.stream-obs-h265]
-run = "mise run stream-obs moq-local-h265"
+run = "mise run stream:obs moq-local-h265"
 
 [daemons.stream-obs-av1]
-run = "mise run stream-obs moq-local-av1"
+run = "mise run stream:obs moq-local-av1"
 
 [daemons.web]
 run = "cd vendor/moq && just web"
-

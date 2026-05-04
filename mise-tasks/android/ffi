@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-#MISE description="Build Rust → UniFFI → .so + Kotlin bindings for Android"
+#MISE description="Build Rust moq-ffi for Android and generate Kotlin UniFFI/JNI artifacts"
+#USAGE flag "--debug" help="Build Rust with debug symbols using the debug profile"
 set -euo pipefail
 
-# usage: build-android [--debug]
-#   --debug  Build Rust with debug symbols (debug profile)
-#
 # Produces:
-#   android/moqkit/MoQKit/src/main/jniLibs/arm64-v8a/moq_ffi.so
-#   android/moqkit/MoQKit/src/main/java/uniffi/ (Kotlin bindings)
+#   android/moqkit/moqkit/src/main/jniLibs/arm64-v8a/moq_ffi.so
+#   android/moqkit/moqkit/src/main/java/uniffi/ (Kotlin bindings)
 
 DEBUG=0
 for arg in "$@"; do
@@ -23,7 +21,7 @@ done
 ROOT_DIR="$MISE_PROJECT_ROOT"
 WORKSPACE_CARGO="$ROOT_DIR/vendor/moq/Cargo.toml"
 TARGET_BASE="$ROOT_DIR/vendor/moq/target"
-ANDROID_OUT="$ROOT_DIR/android/moqkit/MoQKit/src/main"
+ANDROID_OUT="$ROOT_DIR/android/moqkit/moqkit/src/main"
 
 if ! command -v cargo-ndk >/dev/null 2>&1; then
   echo "Error: cargo-ndk is not installed. Install with: cargo install cargo-ndk" >&2
@@ -88,7 +86,7 @@ resolve_ndk() {
 
 check_ndk_version() {
   local ndk_dir="$1"
-  echo "NDK DIR $ndk_dir"
+  echo "NDK dir: $ndk_dir"
   local props="$ndk_dir/source.properties"
   if [[ ! -f "$props" ]]; then
     return 0

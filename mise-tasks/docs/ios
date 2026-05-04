@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+#MISE description="Build iOS DocC documentation into docs/ios, or preview it locally"
+#USAGE flag "--preview" help="Live-preview iOS docs with swift package instead of building static docs"
+set -euo pipefail
+
+PREVIEW=0
+
+for arg in "$@"; do
+  case "$arg" in
+  --preview) PREVIEW=1 ;;
+  *)
+    echo "Unknown argument: $arg" >&2
+    exit 1
+    ;;
+  esac
+done
+
+cd "$MISE_PROJECT_ROOT"
+
+if [[ $PREVIEW -eq 1 ]]; then
+  exec swift package --disable-sandbox preview-documentation --target MoQKit
+fi
+
+xcodebuild docbuild \
+  -scheme MoQKit \
+  -destination "generic/platform=iOS Simulator" \
+  -derivedDataPath .build/docbuild
+
+path=$(find .build/docbuild -name "*.doccarchive")
+
+xcrun docc process-archive transform-for-static-hosting "$path" \
+  --output-path ./docs/ios \
+  --hosting-base-path /

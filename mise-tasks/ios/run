@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build and run the iOS MoQ Demo on a connected device"
+#MISE description="Build, install, and launch the iOS MoQ Demo on a connected device or simulator"
 #USAGE flag "--simulator" help="Run on an iPhone simulator instead of a physical device"
 set -euo pipefail
 

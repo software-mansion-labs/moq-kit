@@ -79,7 +79,7 @@ Add the Swift package and depend on the `MoQKit` product:
 ```
 
 The Swift package imports a prebuilt `moqFFI` XCFramework binary target. For local
-development, rebuild that binary with `mise run build-xcframework`.
+development, rebuild that binary with `mise run ios:ffi`.
 
 ### Android
 
@@ -253,15 +253,15 @@ iOS builds Rust `moq-ffi` into an XCFramework that the Swift package imports thr
 `MoQKitFFI`:
 
 ```bash
-mise run build-xcframework
-mise run build-ios
+mise run ios:ffi
+mise run ios:build
 ```
 
 Android builds Rust `moq-ffi` into JNI/shared-library artifacts and generates Kotlin
 UniFFI bindings:
 
 ```bash
-mise run build-moq-jni
+mise run android:ffi
 mise run android:build
 ```
 
@@ -276,54 +276,42 @@ the local `android/moqkit` build.
 
 ### Run a local relay and test streams
 
-For development, it is usually easiest to run the moq-lite relay locally from this checkout:
+For development, the regular flow is to run the local moq-lite relay and publish a single
+prepared media file into it. Start by checking the task list:
 
 ```bash
-mise run relay
+mise tasks
 ```
 
-Then publish test media into it:
+The main streaming tasks are:
+
+- `relay:run` — run the local moq-lite relay from this checkout.
+- `media:to-fmp4` — convert a source video to CMAF fragmented MP4.
+- `stream:file` — loop one or more CMAF fragmented MP4 file streams into a relay.
+- `stream:obs` — control OBS through `obs-cmd` and publish an OBS stream.
+
+Use `mise task <task>` to see what a task does and which flags it accepts before running
+it:
 
 ```bash
-mise run publish-stream --url http://localhost:4443/anon --name live/test
-mise run publish-streams --url http://localhost:4443/anon --count 3 --prefix live/
+mise task relay:run
+mise task stream:file
+mise task media:to-fmp4
+mise task stream:obs
 ```
 
-`publish-stream` loops a local media file through `ffmpeg` and publishes it with
-`moq-cli`. It has several useful flags for relay URL, broadcast name, input file, and
-passthrough mode. Run this before using it for the first time:
-
-```bash
-mise run publish-stream --help
-```
-
-For OBS-based streams:
-
-```bash
-mise run stream-obs --url http://localhost:4443/anon <obs-profile>
-```
-
-`stream-obs` configures OBS through `obs-cmd`, switches to the selected OBS profile, sets
-the MoQ service URL, and monitors the stream until it stops. Its setup requirements are not
-obvious yet, so check the script help first:
-
-```bash
-mise run stream-obs --help
-```
-
-To prepare local media files for `publish-stream`, convert them to CMAF fragmented MP4:
-
-```bash
-mise run to-fmp4 --input path/to/video.mp4
-```
+`stream:file` expects a CMAF fragmented MP4 input. Prepare local media with
+`media:to-fmp4` first, then run `relay:run` and publish the file with `stream:file`.
 
 Run the demos with:
 
 ```bash
-mise run run-ios --simulator
-mise run android:install
-mise run android:launch
+mise run ios:run --simulator
+mise run android:run
 ```
+
+You can also split the Android demo flow with `mise run android:install` and
+`mise run android:launch`.
 
 ## Project structure
 

@@ -7,7 +7,7 @@ description: Build and run the Android subscriber demo on a connected device
 
 ## Quick run
 ```bash
-mise run run-android
+mise run android:run
 ```
 Builds the AAR, installs the debug APK, and launches the app.
 
@@ -15,7 +15,7 @@ Builds the AAR, installs the debug APK, and launches the app.
 
 ### 1. Build library AAR
 ```bash
-mise run android:aar
+mise run android:build
 ```
 
 ### 2. Check for connected device

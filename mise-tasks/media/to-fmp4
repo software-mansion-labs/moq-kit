@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-#MISE description="Convert a video file to CMAF fragmented MP4 for MOQ publishing"
-#USAGE flag "--input <input>" help="Path to source video file"
-#USAGE flag "--output <output>" default="" help="Output path (default: replaces extension with .fmp4)"
+#MISE description="Convert a source video to CMAF fragmented MP4 for MOQ publishing"
+#USAGE flag "--input <input>" help="Path to the source video file"
+#USAGE flag "--output <output>" default="" help="Output path, defaulting to the input name with .fmp4"
 #USAGE flag "--audio-rate <audio_rate>" default="48000" help="Audio sample rate in Hz"
 set -euo pipefail
 
@@ -21,6 +21,6 @@ ffmpeg -loglevel error -i "$INPUT" \
 ffmpeg -loglevel error -i "$OUTPUT_MP4" \
   -c:v copy \
   -f mp4 -movflags cmaf+separate_moof+delay_moov+skip_trailer+frag_every_frame \
-  -y $OUTPUT_FMP4
+  -y "$OUTPUT_FMP4"
 
 echo "Written: $OUTPUT_FMP4"

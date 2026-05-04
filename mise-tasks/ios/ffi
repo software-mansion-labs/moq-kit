@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-#MISE description="Build Rust → UniFFI → XCFramework for iOS"
-#MISE alias="xcf"
+#MISE description="Build Rust moq-ffi, generate Swift UniFFI bindings, and create the iOS XCFramework"
+#USAGE flag "--debug" help="Build Rust with optimized debug symbols using the release-with-debug profile"
+#USAGE flag "--macos" help="Also build the macOS arm64 slice required for Swift DocC preview"
 set -euo pipefail
 
-# usage: build-xcframework [--debug] [--macos]
-#   --debug  Build with debug symbols (release-with-debug profile: optimized + DWARF)
-#   --macos  Also build for aarch64-apple-darwin (required for swift package doc generation)
-#
 # Produces:
 #   ios/Frameworks/moqffi.xcframework/   (XCFramework with moqFFI module)
 #   ios/Sources/MoQKitFFI/moq.swift      (generated Swift bindings, overwritten each build)
@@ -54,7 +51,7 @@ done
 
 # Set iOS deployment target so aws-lc-sys C/asm build matches the Rust linker target.
 # Without this, Xcode defaults to the current SDK version (e.g. 26.2), producing
-# objects that reference ___chkstk_darwin — a symbol unavailable at iOS 10.0,
+# objects that reference ___chkstk_darwin, a symbol unavailable at iOS 10.0,
 # which is what aarch64-apple-ios links against by default.
 export IPHONEOS_DEPLOYMENT_TARGET=16.0
 

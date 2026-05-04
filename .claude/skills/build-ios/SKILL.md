@@ -7,30 +7,30 @@ description: Build iOS XCFramework and Swift package
 
 Run the following steps sequentially:
 
-## 1. Build XCFramework (Rust → UniFFI → XCFramework)
+## 1. Build XCFramework (Rust -> UniFFI -> XCFramework)
 
 ```bash
-mise run build-xcframework
+mise run ios:ffi
 ```
 
-This compiles Rust for `aarch64-apple-ios` and `aarch64-apple-ios-sim`, runs `uniffi-bindgen` to generate `ios/Sources/MoQKit/moq.swift`, and creates `ios/Frameworks/libmoq.xcframework`.
+This compiles Rust for `aarch64-apple-ios` and `aarch64-apple-ios-sim`, runs `uniffi-bindgen` to generate `ios/Sources/MoQKitFFI/moq.swift`, and creates `ios/Frameworks/moqffi.xcframework`.
 
 ## 2. Build Swift package
 
 ```bash
-mise run build-ios
+mise run ios:build
 ```
 
 ## 3. Verify
 
-- Confirm `ios/Frameworks/libmoq.xcframework/` exists
-- Confirm `ios/Sources/MoQKit/moq.swift` was freshly generated
+- Confirm `ios/Frameworks/moqffi.xcframework/` exists
+- Confirm `ios/Sources/MoQKitFFI/moq.swift` was freshly generated
 - Check the Swift build succeeded with no errors
 
 ## Full build shortcut
 
 ```bash
-mise run build-ios
+mise run ios:build
 ```
 
 Runs both steps above.

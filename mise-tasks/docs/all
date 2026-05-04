@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#MISE description="Build both iOS DocC and Android Dokka documentation"
+#USAGE flag "--preview" help="Preview iOS DocC documentation instead of building static docs"
+
+set -euo pipefail
+
+PREVIEW=0
+
+for arg in "$@"; do
+  case "$arg" in
+  --preview) PREVIEW=1 ;;
+  *)
+    echo "Unknown argument: $arg" >&2
+    exit 1
+    ;;
+  esac
+done
+
+if [[ $PREVIEW -eq 1 ]]; then
+  exec mise run docs:ios --preview
+fi
+
+mise run docs:ios
+mise run docs:android

@@ -3,7 +3,7 @@ description: Android SDK conventions and patterns
 globs:
   - "android/**"
   - "examples/android/**"
-  - "mise-tasks/build-android"
+  - "mise-tasks/android/**"
 ---
 
 # Android SDK Rules
@@ -19,4 +19,4 @@ globs:
 - `MoQMediaSource` is a custom `BaseMediaSource` bridging `Flow<FrameData>` → `SampleQueue` → ExoPlayer
 
 ## Generated Bindings
-- `android/moqkit/MoQKit/src/main/java/uniffi/moq/` — auto-generated, never edit
+- `android/moqkit/moqkit/src/main/java/uniffi/moq/` — auto-generated, never edit

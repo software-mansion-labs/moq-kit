@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#MISE description="Build Android Dokka documentation for the MoQKit Android SDK"
+set -euo pipefail
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+  -h | --help)
+    echo "Usage: docs:android"
+    echo ""
+    echo "Build Android Dokka documentation for the MoQKit Android SDK."
+    exit 0
+    ;;
+  *)
+    echo "Unknown argument: $1" >&2
+    exit 1
+    ;;
+  esac
+fi
+
+cd "$MISE_PROJECT_ROOT/android/moqkit"
+./gradlew :moqkit:dokkaHtml

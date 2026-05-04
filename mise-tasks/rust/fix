@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#MISE description="Auto-format and fix Rust code in vendor/moq"
+set -euo pipefail
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+  -h | --help)
+    echo "Usage: rust:fix"
+    echo ""
+    echo "Auto-format and fix Rust code in vendor/moq."
+    exit 0
+    ;;
+  *)
+    echo "Unknown argument: $1" >&2
+    exit 1
+    ;;
+  esac
+fi
+
+cd "$MISE_PROJECT_ROOT/vendor/moq"
+just fix

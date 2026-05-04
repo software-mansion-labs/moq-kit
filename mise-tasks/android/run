@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-#MISE description="Build and run the Android demo on a connected device"
-#MISE depends=["android:aar"]
+#MISE description="Build, install, and launch the Android demo on a connected device"
+#USAGE flag "--debug" help="Build Rust FFI artifacts with debug symbols before installing the demo"
 set -euo pipefail
 
 echo "==> Checking for connected device..."
@@ -8,6 +8,9 @@ if ! adb devices | grep -q "device$"; then
   echo "Error: No Android device connected. Connect a device and enable USB debugging." >&2
   exit 1
 fi
+
+echo "==> Building Android SDK and demo inputs..."
+mise run android:build "$@"
 
 echo "==> Installing debug APK..."
 cd "$MISE_PROJECT_ROOT/examples/android/demo/MoQDemo" && ./gradlew installDebug

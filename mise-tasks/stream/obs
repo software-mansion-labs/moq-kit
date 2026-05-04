@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#MISE description="Use obs-cmd to switch OBS to a profile, start a MOQ stream, and monitor it until stopped"
+#USAGE flag "--url <url>" default="http://localhost:4443/anon" help="Relay URL, including the origin path"
+#USAGE arg "<profile>" help="OBS profile to switch to before streaming" long_help="""
+#USAGE obs-cmd relies on the selected OBS profile to launch a MOQ publish stream.
+#USAGE
+#USAGE OBS must have WebSocket support enabled so obs-cmd can control it. For more
+#USAGE information, see https://github.com/grigio/obs-cmd.
+#USAGE
+#USAGE OBS must also have the MoQ output plugin installed. For setup details, see
+#USAGE https://github.com/moq-dev/obs.
+#USAGE
+#USAGE Configure the OBS profile for low-latency MoQ publishing: use a 2 second
+#USAGE keyframe interval, choose an H.264 or H.265 profile (baseline is preferred
+#USAGE when available), and disable B-frames.
+#USAGE """
+set -euo pipefail
+
+if ! command -v obs-cmd >/dev/null 2>&1; then
+  echo "Error: obs-cmd is not installed or is not on PATH." >&2
+  echo "Install and configure obs-cmd, then enable OBS WebSocket support." >&2
+  echo "See: https://github.com/grigio/obs-cmd" >&2
+  exit 1
+fi
+
+cleanup() {
+  echo "Stopping OBS stream..."
+  obs-cmd streaming stop
+  exit 0
+}
+
+trap cleanup SIGINT SIGTERM
+
+echo "Switching OBS profile"
+obs-cmd profile switch "$usage_profile"
+
+echo "Setting the streaming service"
+obs-cmd stream-service set --service-type moq_service --server "$usage_url/$usage_profile"
+
+echo "Starting OBS stream..."
+obs-cmd streaming start
+
+while true; do
+  sleep 1
+  status=$(obs-cmd streaming status)
+  if ! echo "$status" | grep -q "Active: true"; then
+    echo "Stream is no longer active. Exiting."
+    exit 1
+  fi
+done

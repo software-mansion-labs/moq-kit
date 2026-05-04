@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#MISE description="Build Android FFI artifacts and assemble the MoQKit AAR"
+#USAGE flag "--debug" help="Build Rust FFI artifacts with debug symbols before assembling the AAR"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+
+echo "==> Building Android FFI artifacts..."
+mise run android:ffi "$@"
+
+echo "==> Assembling Android AAR..."
+cd "$ROOT_DIR/android/moqkit"
+./gradlew :moqkit:build

@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#MISE description="Loop one or more CMAF fragmented MP4 file streams to a MOQ relay"
+#USAGE flag "--url <url>" default="http://localhost:4443/anon" help="Relay URL, including the origin path"
+#USAGE flag "--name <name>" default="bbb" {
+#USAGE   help "Broadcast name or path to publish"
+#USAGE   long_help """
+#USAGE   Broadcast name or path to publish.
+#USAGE
+#USAGE   When --count is 1, the task publishes exactly this name.
+#USAGE   When --count is greater than 1, the task appends an index suffix to each
+#USAGE   stream name, for example live/test1, live/test2, live/test3.
+#USAGE   """
+#USAGE }
+#USAGE flag "--count <count>" default="1" help="Number of concurrent file streams to publish"
+#USAGE flag "--input <input>" default="bin/shrek.fmp4" {
+#USAGE   help "Input CMAF fragmented MP4 file to loop and publish"
+#USAGE   long_help """
+#USAGE   Input must be a CMAF fragmented MP4 file. Prepare local media first with:
+#USAGE
+#USAGE     mise run media:to-fmp4 --input path/to/video.mp4
+#USAGE
+#USAGE   Use supported publish codecs: H.264/H.265 video with AAC or Opus audio.
+#USAGE   H.264 with AAC or Opus is the best-tested path.
+#USAGE   AV1 is playback-only and depends on platform decoder hardware.
+#USAGE   """
+#USAGE }
+#USAGE flag "--passthrough" help="Publish media in passthrough mode without catalog conversion"
+set -euo pipefail
+
+INPUT=$(realpath "$usage_input")
+PIDS=()
+
+if [ "${usage_passthrough:-false}" = "true" ]; then
+  passthrough="--passthrough"
+else
+  passthrough=""
+fi
+
+publish_stream() {
+  local name="$1"
+
+  ffmpeg -hide_banner -v quiet \
+    -stream_loop -1 -re \
+    -i "$INPUT" \
+    -c copy \
+    -f mp4 -movflags cmaf+separate_moof+delay_moov+skip_trailer+frag_every_frame - |
+    cargo run --bin moq-cli -- publish --url "$usage_url" --name "$name" fmp4 $passthrough
+}
+
+cleanup() {
+  if [[ ${#PIDS[@]} -eq 0 ]]; then
+    return
+  fi
+
+  echo "Stopping all streams..."
+  for pid in "${PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  wait "${PIDS[@]}" 2>/dev/null || true
+  echo "All streams stopped."
+}
+
+cd "$MISE_PROJECT_ROOT/vendor/moq"
+
+if [[ "$usage_count" == "1" ]]; then
+  publish_stream "$usage_name"
+  exit $?
+fi
+
+trap cleanup EXIT INT TERM
+
+for i in $(seq 1 "$usage_count"); do
+  name="${usage_name}${i}"
+  echo "Starting stream: $name"
+  publish_stream "$name" &
+  PIDS+=($!)
+done
+
+echo "Publishing ${usage_count} streams (${usage_name}1...${usage_name}${usage_count}). Press Ctrl-C to stop."
+wait "${PIDS[@]}"

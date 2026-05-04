@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-#MISE description="Build Rust + UniFFI, then publish Android AAR to Maven Central"
+#MISE description="Build Android FFI artifacts and publish the MoQKit AAR to Maven Central"
+#USAGE flag "--debug" help="Build Rust FFI artifacts with debug symbols before publishing"
 set -euo pipefail
 
-# usage: publish-android [--debug]
-#   --debug  Build Rust with debug symbols (passed through to build-android)
-#
 # Requires in ~/.gradle/gradle.properties:
 #   mavenCentralUsername=<Central Portal token username>
 #   mavenCentralPassword=<Central Portal token password>
@@ -17,12 +15,12 @@ set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
-echo "==> Building Rust + UniFFI bindings for Android..."
-mise run build-android "$@"
+echo "==> Building Android AAR..."
+mise run android:build "$@"
 
 echo "==> Publishing MoQKit AAR to Maven Central..."
 (cd "$ROOT_DIR/android/moqkit" &&
-  ./gradlew :MoQKit:publishToMavenCentral)
+  ./gradlew :moqkit:publishToMavenCentral)
 
 echo ""
 echo "Done. Check https://central.sonatype.com for publication status."
