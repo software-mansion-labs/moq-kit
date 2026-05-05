@@ -115,6 +115,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun switchVideoTrack(entry: BroadcastEntry, track: VideoTrackInfo) {
+        if (!track.isPlayable) return
         entry.pendingVideoTrack = track
         try {
             entry.player?.switchTrack(track.name)
@@ -194,13 +195,13 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun hasPlayableTracks(catalog: Catalog): Boolean {
-        return catalog.videoTracks.isNotEmpty() || catalog.audioTracks.isNotEmpty()
+        return catalog.playableVideoTracks.isNotEmpty() || catalog.playableAudioTracks.isNotEmpty()
     }
 
     private fun startPlayer(entry: BroadcastEntry, preferredVideoName: String?) {
         val catalog = entry.catalog
         val initialVideo = preferredVideoTrack(catalog, preferredVideoName)
-        val initialAudioName = catalog.audioTracks.firstOrNull()?.name
+        val initialAudioName = catalog.playableAudioTracks.firstOrNull()?.name
         if (initialVideo == null && initialAudioName == null) {
             return
         }
@@ -273,9 +274,9 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun preferredVideoTrack(catalog: Catalog, preferredName: String?): VideoTrackInfo? {
         if (preferredName != null) {
-            catalog.videoTracks.firstOrNull { it.name == preferredName }?.let { return it }
+            catalog.playableVideoTracks.firstOrNull { it.name == preferredName }?.let { return it }
         }
-        return catalog.videoTracks.maxByOrNull { track ->
+        return catalog.playableVideoTracks.maxByOrNull { track ->
             (track.config.coded?.height ?: 0u) * (track.config.coded?.width ?: 0u)
         }
     }

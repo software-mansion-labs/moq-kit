@@ -18,10 +18,10 @@ final class PublisherViewModel: ObservableObject {
     @Published var replayKitExtensionBundleIdentifier = "com.swmansion.moqdemo.broadcastupload"
     @Published var replayKitPrepared = false
     @Published var cameraPosition: CameraPosition = .front
-    @Published var videoCodec: VideoCodec = .h265
+    @Published var videoCodec: VideoCodec = PublisherViewModel.defaultVideoCodec()
     @Published var videoResolution: VideoResolution = .hd
     @Published var videoFrameRate: VideoFrameRate = .fps30
-    @Published var audioCodec: MoQKit.AudioCodec = .opus
+    @Published var audioCodec: MoQKit.AudioCodec = PublisherViewModel.defaultAudioCodec()
     @Published var audioSampleRate: AudioSampleRate = .khz48
     @Published var trackStates: [String: PublishedTrackState] = [:]
     @Published var lastError: String?
@@ -49,7 +49,8 @@ final class PublisherViewModel: ObservableObject {
             return false
         }
         if case .publishing = publisherState { return false }
-        return cameraEnabled || screenEnabled || micEnabled || screenAudioEnabled
+        return (cameraEnabled || screenEnabled || micEnabled || screenAudioEnabled)
+            && publishUnsupportedReason(videoConfig: currentVideoConfig(), audioConfig: currentAudioConfig()) == nil
     }
 
     var hasReplayKitTracks: Bool {
@@ -65,6 +66,14 @@ final class PublisherViewModel: ObservableObject {
         if sessionState == .connecting || sessionState == .connected { return true }
         if replayKitPrepared { return true }
         return false
+    }
+
+    var supportedVideoCodecs: [VideoCodec] {
+        VideoEncoderConfig.supportedCodecs()
+    }
+
+    var supportedAudioCodecs: [MoQKit.AudioCodec] {
+        AudioEncoderConfig.supportedCodecs()
     }
 
     var stateLabel: String {
@@ -200,6 +209,17 @@ final class PublisherViewModel: ObservableObject {
         publishedTracks = []
         trackStates = [:]
 
+        let videoEncoderConfig = currentVideoConfig()
+        let audioEncoderConfig = currentAudioConfig()
+        if let unsupportedReason = publishUnsupportedReason(
+            videoConfig: videoEncoderConfig,
+            audioConfig: audioEncoderConfig
+        ) {
+            lastError = unsupportedReason
+            publisherState = .error(unsupportedReason)
+            return
+        }
+
         if hasReplayKitTracks {
             prepareReplayKitDescriptor(url: url, path: path)
             if lastError != nil { return }
@@ -225,18 +245,6 @@ final class PublisherViewModel: ObservableObject {
 
                 let pub = try Publisher()
                 self.publisher = pub
-
-                // Create and start capture sources, then add tracks
-                let videoEncoderConfig = VideoEncoderConfig(
-                    codec: self.videoCodec,
-                    width: self.videoResolution.width,
-                    height: self.videoResolution.height,
-                    maxFrameRate: self.videoFrameRate.value
-                )
-                let audioEncoderConfig = AudioEncoderConfig(
-                    codec: self.audioCodec,
-                    sampleRate: self.audioSampleRate.value
-                )
 
                 if self.cameraEnabled {
                     // Reuse the preview CameraCapture, or create one if preview wasn't started
@@ -333,6 +341,47 @@ final class PublisherViewModel: ObservableObject {
         camera = nil
         microphone?.stop()
         microphone = nil
+    }
+
+    private func currentVideoConfig() -> VideoEncoderConfig {
+        VideoEncoderConfig(
+            codec: videoCodec,
+            width: videoResolution.width,
+            height: videoResolution.height,
+            maxFrameRate: videoFrameRate.value
+        )
+    }
+
+    private func currentAudioConfig() -> AudioEncoderConfig {
+        AudioEncoderConfig(
+            codec: audioCodec,
+            sampleRate: audioSampleRate.value
+        )
+    }
+
+    private func publishUnsupportedReason(
+        videoConfig: VideoEncoderConfig,
+        audioConfig: AudioEncoderConfig
+    ) -> String? {
+        if (cameraEnabled || screenEnabled), let reason = videoConfig.unsupportedReason {
+            return reason
+        }
+        if (micEnabled || screenAudioEnabled), let reason = audioConfig.unsupportedReason {
+            return reason
+        }
+        return nil
+    }
+
+    private static func defaultVideoCodec() -> VideoCodec {
+        let supported = VideoEncoderConfig.supportedCodecs()
+        if supported.contains(.h265) { return .h265 }
+        return supported.first ?? .h264
+    }
+
+    private static func defaultAudioCodec() -> MoQKit.AudioCodec {
+        let supported = AudioEncoderConfig.supportedCodecs()
+        if supported.contains(.opus) { return .opus }
+        return supported.first ?? .aac
     }
 
     private func observePublisher(_ pub: Publisher) {

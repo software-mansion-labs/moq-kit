@@ -106,7 +106,7 @@ private struct BroadcastPlayerView: View {
                                 InfoPill(text: "\(size.width)×\(size.height)")
                             }
                         }
-                        if let audio = entry.catalog.audioTracks.first {
+                        if let audio = entry.catalog.playableAudioTracks.first {
                             InfoPill(text: "\(audio.config.codec) \(audio.config.sampleRate) Hz")
                         }
                         Spacer()
@@ -114,9 +114,9 @@ private struct BroadcastPlayerView: View {
                 }
 
                 // Rendition picker
-                if entry.catalog.videoTracks.count > 1 {
+                if entry.catalog.playableVideoTracks.count > 1 {
                     RenditionPickerView(
-                        tracks: entry.catalog.videoTracks,
+                        tracks: entry.catalog.playableVideoTracks,
                         selected: entry.selectedVideoTrack,
                         onSelect: { entry.switchVideoTrack(to: $0.name) }
                     )

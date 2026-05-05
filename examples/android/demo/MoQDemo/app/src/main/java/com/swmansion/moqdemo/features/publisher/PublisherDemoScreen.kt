@@ -280,9 +280,11 @@ private fun CodecConfigCard(vm: PublisherViewModel) {
             LabeledRow("Video codec") {
                 SingleChoiceSegmentedButtonRow {
                     VideoCodec.entries.forEachIndexed { i, codec ->
+                        val supported = codec in vm.supportedVideoCodecs
                         SegmentedButton(
                             selected = vm.videoCodec == codec,
-                            onClick = { vm.videoCodec = codec },
+                            onClick = { if (supported) vm.videoCodec = codec },
+                            enabled = supported,
                             shape = SegmentedButtonDefaults.itemShape(i, VideoCodec.entries.size),
                             label = { Text(codec.name) },
                         )
@@ -322,9 +324,11 @@ private fun CodecConfigCard(vm: PublisherViewModel) {
             LabeledRow("Audio codec") {
                 SingleChoiceSegmentedButtonRow {
                     AudioCodec.entries.forEachIndexed { i, codec ->
+                        val supported = codec in vm.supportedAudioCodecs
                         SegmentedButton(
                             selected = vm.audioCodec == codec,
-                            onClick = { vm.selectAudioCodec(codec) },
+                            onClick = { if (supported) vm.selectAudioCodec(codec) },
+                            enabled = supported,
                             shape = SegmentedButtonDefaults.itemShape(i, AudioCodec.entries.size),
                             label = { Text(if (codec == AudioCodec.OPUS) "Opus" else "AAC") },
                         )

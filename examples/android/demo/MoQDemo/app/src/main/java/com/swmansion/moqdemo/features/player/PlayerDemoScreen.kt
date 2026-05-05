@@ -219,14 +219,14 @@ private fun BroadcastCard(
 
             val catalog = entry.catalog
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                catalog.videoTracks.firstOrNull()?.let { track ->
+                catalog.playableVideoTracks.firstOrNull()?.let { track ->
                     Text(
                         text = "Video: ${track.config.codec}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                catalog.audioTracks.firstOrNull()?.let { track ->
+                catalog.playableAudioTracks.firstOrNull()?.let { track ->
                     Text(
                         text = "Audio: ${track.config.codec} ${track.config.sampleRate} Hz",
                         style = MaterialTheme.typography.bodySmall,
@@ -313,7 +313,7 @@ private fun BroadcastCard(
                             .padding(end = 4.dp, bottom = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        if (entry.catalog.audioTracks.isNotEmpty()) {
+                        if (entry.catalog.playableAudioTracks.isNotEmpty()) {
                             VolumeControl(
                                 volume = entry.volume,
                                 enabled = entry.isPlaying || entry.isPaused,
@@ -436,7 +436,7 @@ private fun FullscreenPlayerOverlay(
                     )
                 }
 
-                if (entry.catalog.audioTracks.isNotEmpty()) {
+                if (entry.catalog.playableAudioTracks.isNotEmpty()) {
                     VolumeControl(
                         volume = entry.volume,
                         enabled = entry.isPlaying || entry.isPaused,
@@ -697,8 +697,8 @@ private fun formatMs(ms: Double): String = String.format("%.1f ms", ms)
 
 @Composable
 private fun RenditionPickerRow(entry: BroadcastEntry, vm: PlayerDemoViewModel) {
-    val tracks = remember(entry.catalog.videoTracks) {
-        entry.catalog.videoTracks.sortedByDescending {
+    val tracks = remember(entry.catalog.playableVideoTracks) {
+        entry.catalog.playableVideoTracks.sortedByDescending {
             it.config.coded?.let { d -> d.width.toLong() * d.height.toLong() } ?: 0L
         }
     }

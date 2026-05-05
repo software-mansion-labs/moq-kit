@@ -1,6 +1,7 @@
 package com.swmansion.moqkit.subscribe
 
 import android.util.Log
+import com.swmansion.moqkit.subscribe.internal.playback.PlaybackCodecSupport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -57,7 +58,15 @@ data class VideoTrackInfo internal constructor(
     override val name: String,
     val config: VideoTrackConfig,
     internal val rawConfig: MoqVideo,
-) : TrackInfo
+) : TrackInfo {
+    /** Whether this track can be decoded on the current device. */
+    val isPlayable: Boolean
+        get() = PlaybackCodecSupport.video(rawConfig).isSupported
+
+    /** Human-readable reason this track is not playable, or null when playable. */
+    val unsupportedReason: String?
+        get() = PlaybackCodecSupport.video(rawConfig).reason
+}
 
 /**
  * An audio track discovered from a broadcast catalog.
@@ -67,7 +76,15 @@ data class AudioTrackInfo internal constructor(
     override val name: String,
     val config: AudioTrackConfig,
     internal val rawConfig: MoqAudio,
-) : TrackInfo
+) : TrackInfo {
+    /** Whether this track can be decoded on the current device. */
+    val isPlayable: Boolean
+        get() = PlaybackCodecSupport.audio(rawConfig).isSupported
+
+    /** Human-readable reason this track is not playable, or null when playable. */
+    val unsupportedReason: String?
+        get() = PlaybackCodecSupport.audio(rawConfig).reason
+}
 
 /**
  * The latest playable track metadata for a single broadcast path.
@@ -78,6 +95,14 @@ class Catalog internal constructor(
     val audioTracks: List<AudioTrackInfo>,
     internal val owner: BroadcastOwner,
 ) {
+    /** Video tracks from this catalog that can be decoded on the current device. */
+    val playableVideoTracks: List<VideoTrackInfo>
+        get() = videoTracks.filter { it.isPlayable }
+
+    /** Audio tracks from this catalog that can be decoded on the current device. */
+    val playableAudioTracks: List<AudioTrackInfo>
+        get() = audioTracks.filter { it.isPlayable }
+
     internal constructor(path: String, catalog: MoqCatalog, owner: BroadcastOwner) : this(
         path = path,
         videoTracks = catalog.video.map { (name, rendition) ->

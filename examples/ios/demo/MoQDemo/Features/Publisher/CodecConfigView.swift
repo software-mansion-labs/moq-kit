@@ -68,6 +68,14 @@ struct CodecConfigView: View {
     @Binding var audioCodec: AudioCodec
     @Binding var audioSampleRate: AudioSampleRate
 
+    private var supportedVideoCodecs: [VideoCodec] {
+        VideoEncoderConfig.supportedCodecs()
+    }
+
+    private var supportedAudioCodecs: [AudioCodec] {
+        AudioEncoderConfig.supportedCodecs()
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             // Video codec settings
@@ -79,8 +87,8 @@ struct CodecConfigView: View {
                     .textCase(.uppercase)
 
                 Picker("Codec", selection: $videoCodec) {
-                    Text("H.264").tag(VideoCodec.h264)
-                    Text("H.265").tag(VideoCodec.h265)
+                    Text("H.264").tag(VideoCodec.h264).disabled(!supportedVideoCodecs.contains(.h264))
+                    Text("H.265").tag(VideoCodec.h265).disabled(!supportedVideoCodecs.contains(.h265))
                 }
                 .pickerStyle(.segmented)
 
@@ -106,8 +114,8 @@ struct CodecConfigView: View {
                     .textCase(.uppercase)
 
                 Picker("Codec", selection: $audioCodec) {
-                    Text("Opus").tag(AudioCodec.opus)
-                    Text("AAC").tag(AudioCodec.aac)
+                    Text("Opus").tag(AudioCodec.opus).disabled(!supportedAudioCodecs.contains(.opus))
+                    Text("AAC").tag(AudioCodec.aac).disabled(!supportedAudioCodecs.contains(.aac))
                 }
                 .pickerStyle(.segmented)
 

@@ -2,6 +2,7 @@ package com.swmansion.moqkit.subscribe
 
 import android.util.Log
 import android.view.Surface
+import com.swmansion.moqkit.UnsupportedCodecException
 import com.swmansion.moqkit.subscribe.internal.subscribeTrack
 import com.swmansion.moqkit.subscribe.internal.playback.AudioRenderer
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackMetricsAccumulator
@@ -180,6 +181,7 @@ class Player(
             return
         }
 
+        validateSelectedTracks()
         playing = true
         accumulator.markPlayStart()
         startAudio()
@@ -201,6 +203,7 @@ class Player(
         check(newTrack != null || selectedAudioTrack != null) {
             "at least one audio or video track is expected"
         }
+        validatePlayable(newTrack)
 
         val currentTrack = selectedVideoTrack
         selectedVideoTrack = newTrack
@@ -233,6 +236,7 @@ class Player(
         check(selectedVideoTrack != null || newTrack != null) {
             "at least one audio or video track is expected"
         }
+        validatePlayable(newTrack)
 
         val currentTrack = selectedAudioTrack
         selectedAudioTrack = newTrack
@@ -475,6 +479,7 @@ class Player(
         Log.d(TAG, "Restarting playback for selection change")
         teardownPlayback(resetAccumulator = false)
         if (playing) {
+            validateSelectedTracks()
             startAudio()
             surface?.let { startVideo(it) }
         }
@@ -553,5 +558,20 @@ class Player(
             ?: throw IllegalArgumentException(
                 "Unknown audio track '$trackName' for catalog ${catalog.path}",
             )
+    }
+
+    private fun validateSelectedTracks() {
+        validatePlayable(selectedVideoTrack)
+        validatePlayable(selectedAudioTrack)
+    }
+
+    private fun validatePlayable(track: VideoTrackInfo?) {
+        val reason = track?.unsupportedReason ?: return
+        throw UnsupportedCodecException("Video track '${track.name}' is not playable: $reason")
+    }
+
+    private fun validatePlayable(track: AudioTrackInfo?) {
+        val reason = track?.unsupportedReason ?: return
+        throw UnsupportedCodecException("Audio track '${track.name}' is not playable: $reason")
     }
 }

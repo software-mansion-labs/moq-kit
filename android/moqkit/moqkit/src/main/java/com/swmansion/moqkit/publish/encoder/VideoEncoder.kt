@@ -33,10 +33,7 @@ internal class VideoEncoder(val config: VideoEncoderConfig) {
         sps = null
         pps = null
 
-        val mimeType = when (config.codec) {
-            VideoCodec.H264 -> MediaFormat.MIMETYPE_VIDEO_AVC
-            VideoCodec.H265 -> MediaFormat.MIMETYPE_VIDEO_HEVC
-        }
+        val mimeType = config.mimeType
 
         val format = MediaFormat.createVideoFormat(mimeType, config.width, config.height).apply {
             setInteger(MediaFormat.KEY_BIT_RATE, config.bitrate)

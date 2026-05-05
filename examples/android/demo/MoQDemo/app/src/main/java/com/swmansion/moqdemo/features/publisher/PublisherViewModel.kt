@@ -68,10 +68,17 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     var publishedTracks by mutableStateOf<List<PublishedTrack>>(emptyList())
     var lastError by mutableStateOf<String?>(null)
 
+    val supportedVideoCodecs: List<VideoCodec>
+        get() = VideoEncoderConfig.supportedCodecs()
+
+    val supportedAudioCodecs: List<AudioCodec>
+        get() = AudioEncoderConfig.supportedCodecs()
+
     val isPublishing get() = publisherState == PublisherState.Publishing
     val canPublish get() = sessionState == Session.State.Idle
             && publisherState == PublisherState.Idle
             && (cameraEnabled || micEnabled || screenEnabled)
+            && publishUnsupportedReason() == null
     val canStop get() = isPublishing || sessionState == Session.State.Connecting
             || sessionState == Session.State.Connected
 
@@ -100,6 +107,15 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     private var previewSurface: Surface? = null
     private var sessionJob: Job? = null
     private var publisherJobs = mutableListOf<Job>()
+
+    init {
+        if (videoCodec !in supportedVideoCodecs) {
+            videoCodec = supportedVideoCodecs.firstOrNull() ?: videoCodec
+        }
+        if (audioCodec !in supportedAudioCodecs) {
+            audioCodec = supportedAudioCodecs.firstOrNull() ?: audioCodec
+        }
+    }
 
     fun setPreviewSurface(surface: Surface?) {
         previewSurface = surface
@@ -157,6 +173,13 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         trackStates.clear()
         publishedTracks = emptyList()
 
+        val videoConfig = currentVideoConfig()
+        val audioConfig = currentAudioConfig()
+        publishUnsupportedReason(videoConfig, audioConfig)?.let {
+            lastError = it
+            return
+        }
+
         val s = Session(url = relayUrl, parentScope = viewModelScope)
         session = s
 
@@ -168,17 +191,6 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val pub = Publisher()
                 publisher = pub
-
-                val videoConfig = VideoEncoderConfig(
-                    codec = videoCodec,
-                    width = videoResolution.width,
-                    height = videoResolution.height,
-                    frameRate = videoFrameRate.fps,
-                )
-                val audioConfig = AudioEncoderConfig(
-                    codec = audioCodec,
-                    sampleRate = audioSampleRate,
-                )
 
                 val tracks = mutableListOf<PublishedTrack>()
 
@@ -301,6 +313,31 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
             Intent(getApplication(), ScreenCaptureService::class.java)
         )
         // Camera is kept alive for preview — only stopped on demand
+    }
+
+    private fun currentVideoConfig(): VideoEncoderConfig = VideoEncoderConfig(
+        codec = videoCodec,
+        width = videoResolution.width,
+        height = videoResolution.height,
+        frameRate = videoFrameRate.fps,
+    )
+
+    private fun currentAudioConfig(): AudioEncoderConfig = AudioEncoderConfig(
+        codec = audioCodec,
+        sampleRate = audioSampleRate,
+    )
+
+    private fun publishUnsupportedReason(
+        videoConfig: VideoEncoderConfig = currentVideoConfig(),
+        audioConfig: AudioEncoderConfig = currentAudioConfig(),
+    ): String? {
+        if ((cameraEnabled || screenEnabled) && !videoConfig.isSupported) {
+            return videoConfig.unsupportedReason ?: "Selected video codec is not supported"
+        }
+        if (micEnabled && !audioConfig.isSupported) {
+            return audioConfig.unsupportedReason ?: "Selected audio codec is not supported"
+        }
+        return null
     }
 
     private fun observePublisher(pub: Publisher, tracks: List<PublishedTrack>) {

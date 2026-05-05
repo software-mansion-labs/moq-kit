@@ -160,8 +160,8 @@ final class PlayerDemoViewModel: ObservableObject {
     private func preferredTracks(
         for catalog: Catalog
     ) -> (videoTrackName: String?, audioTrackName: String?) {
-        let audioTrackName = catalog.audioTracks.first?.name
-        let highestVideoTrackName = catalog.videoTracks.max(by: isLowerQualityVideoTrack)?.name
+        let audioTrackName = catalog.playableAudioTracks.first?.name
+        let highestVideoTrackName = catalog.playableVideoTracks.max(by: isLowerQualityVideoTrack)?.name
         return (highestVideoTrackName, audioTrackName)
     }
 

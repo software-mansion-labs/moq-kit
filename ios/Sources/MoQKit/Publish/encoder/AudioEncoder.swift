@@ -59,7 +59,7 @@ struct EncodedAudioFrame {
 }
 
 /// Codec for audio encoding.
-public enum AudioCodec: String, Sendable, Hashable, Codable {
+public enum AudioCodec: String, Sendable, Hashable, Codable, CaseIterable {
     case aac
     case opus
 }

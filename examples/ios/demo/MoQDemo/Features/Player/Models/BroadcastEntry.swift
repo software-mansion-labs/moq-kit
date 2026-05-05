@@ -21,7 +21,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     var hasAudio: Bool {
-        !catalog.audioTracks.isEmpty
+        !catalog.playableAudioTracks.isEmpty
     }
 
     private var eventTask: Task<Void, Never>?
@@ -31,7 +31,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     var selectedVideoTrack: VideoTrackInfo? {
         guard let selectedVideoTrackName else { return nil }
-        return catalog.videoTracks.first(where: { $0.name == selectedVideoTrackName })
+        return catalog.playableVideoTracks.first(where: { $0.name == selectedVideoTrackName })
     }
 
     init(catalog: Catalog, initialVideoTrackName: String?, initialLatencyMs: UInt64) {
@@ -48,6 +48,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     func switchVideoTrack(to trackName: String) {
+        guard catalog.playableVideoTracks.contains(where: { $0.name == trackName }) else { return }
         pendingVideoTrackName = trackName
         Task { try? await player?.switchTrack(to: trackName) }
     }

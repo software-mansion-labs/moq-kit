@@ -316,7 +316,7 @@ struct EncodedVideoFrame {
 }
 
 /// Codec for video encoding.
-public enum VideoCodec: String, Sendable, Hashable, Codable {
+public enum VideoCodec: String, Sendable, Hashable, Codable, CaseIterable {
     case h264
     case h265
 }

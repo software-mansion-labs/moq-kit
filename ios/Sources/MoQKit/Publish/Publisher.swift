@@ -263,6 +263,8 @@ public final class Publisher {
             "Starting publisher with \(self.videoDescriptors.count) video + \(self.audioDescriptors.count) audio tracks"
         )
 
+        try validateCodecSupport()
+
         // Start video tracks
         for desc in videoDescriptors {
             try startVideoTrack(desc)
@@ -358,6 +360,22 @@ public final class Publisher {
     }
 
     // MARK: - Private: Video Track Wiring
+
+    private func validateCodecSupport() throws {
+        for desc in videoDescriptors {
+            if let reason = desc.config.unsupportedReason {
+                throw SessionError.unsupportedCodec(
+                    "Video track '\(desc.track.name)' is not supported: \(reason)")
+            }
+        }
+
+        for desc in audioDescriptors {
+            if let reason = desc.config.unsupportedReason {
+                throw SessionError.unsupportedCodec(
+                    "Audio track '\(desc.track.name)' is not supported: \(reason)")
+            }
+        }
+    }
 
     private func startVideoTrack(_ desc: VideoTrackDescriptor) throws {
         let active = VideoTrack()

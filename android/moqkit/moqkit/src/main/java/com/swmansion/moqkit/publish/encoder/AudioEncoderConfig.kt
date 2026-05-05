@@ -13,4 +13,18 @@ data class AudioEncoderConfig(
             AudioCodec.AAC -> "aac"
             AudioCodec.OPUS -> "opus"
         }
+
+    /** Whether this exact encoder configuration can be created on the current device. */
+    val isSupported: Boolean
+        get() = EncoderCodecSupport.audio(this).isSupported
+
+    /** Human-readable reason this configuration is unsupported, or null when supported. */
+    val unsupportedReason: String?
+        get() = EncoderCodecSupport.audio(this).reason
+
+    companion object {
+        /** Audio codecs that can be encoded on the current device with default settings. */
+        fun supportedCodecs(): List<AudioCodec> =
+            AudioCodec.entries.filter { codec -> AudioEncoderConfig(codec = codec).isSupported }
+    }
 }

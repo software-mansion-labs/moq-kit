@@ -257,6 +257,7 @@ public final class Player {
     public func play() async throws {
         guard videoTask == nil && audioTask == nil else { return }
 
+        try validateSelectedTracks()
         try subscribe()
 
         let timebase = try Self.createTimebase()
@@ -275,7 +276,7 @@ public final class Player {
         accumulator.markPlayStart()
 
         try setupAudioRenderer(timebase: timebase)
-        setupVideoRenderer(timebase: timebase)
+        try setupVideoRenderer(timebase: timebase)
 
         startIngestTasks()
     }
@@ -326,6 +327,7 @@ public final class Player {
         guard newTrack != nil || selectedAudioTrack != nil else {
             throw SessionError.noTracksSelected
         }
+        try validatePlayable(newTrack)
 
         let wasVideoEnabled = selectedVideoTrack != nil
 
@@ -367,6 +369,7 @@ public final class Player {
         guard selectedVideoTrack != nil || newTrack != nil else {
             throw SessionError.noTracksSelected
         }
+        try validatePlayable(newTrack)
 
         let wasAudioEnabled = selectedAudioTrack != nil
 
@@ -555,17 +558,11 @@ public final class Player {
         self.audioRendererForStats = renderer
     }
 
-    private func setupVideoRenderer(timebase: CMTimebase) {
+    private func setupVideoRenderer(timebase: CMTimebase) throws {
         guard let vInfo = selectedVideoTrack else { return }
 
-        let track: VideoRendererTrack
-        do {
-            track = try VideoRendererTrack(
-                config: vInfo.rawConfig, targetBufferingMs: targetBufferingMs)
-        } catch {
-            KitLogger.player.error("Failed to create VideoRendererTrack: \(error)")
-            return
-        }
+        let track = try VideoRendererTrack(
+            config: vInfo.rawConfig, targetBufferingMs: targetBufferingMs)
 
         let renderer = VideoRenderer(
             timebase: timebase,
@@ -739,6 +736,23 @@ public final class Player {
     private nonisolated static func clampedVolume(_ volume: Float) -> Float {
         guard !volume.isNaN else { return 0 }
         return min(max(volume, 0), 1)
+    }
+
+    private func validateSelectedTracks() throws {
+        try validatePlayable(selectedVideoTrack)
+        try validatePlayable(selectedAudioTrack)
+    }
+
+    private func validatePlayable(_ track: VideoTrackInfo?) throws {
+        guard let track, let reason = track.unsupportedReason else { return }
+        throw SessionError.unsupportedCodec(
+            "Video track '\(track.name)' is not playable: \(reason)")
+    }
+
+    private func validatePlayable(_ track: AudioTrackInfo?) throws {
+        guard let track, let reason = track.unsupportedReason else { return }
+        throw SessionError.unsupportedCodec(
+            "Audio track '\(track.name)' is not playable: \(reason)")
     }
 
     private static func resolveSelection(

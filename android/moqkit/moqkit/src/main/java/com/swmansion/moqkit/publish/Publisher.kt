@@ -1,6 +1,7 @@
 package com.swmansion.moqkit.publish
 
 import android.util.Log
+import com.swmansion.moqkit.UnsupportedCodecException
 import com.swmansion.moqkit.publish.encoder.AudioEncoder
 import com.swmansion.moqkit.publish.encoder.AudioEncoderConfig
 import com.swmansion.moqkit.publish.encoder.VideoEncoder
@@ -80,6 +81,8 @@ class Publisher {
         check(_state.value == PublisherState.Idle) { "Publisher already started" }
         Log.d(TAG, "Starting publisher: ${videoDescriptors.size} video, ${audioDescriptors.size} audio, ${dataDescriptors.size} data tracks")
 
+        validateCodecSupport()
+
         for (desc in videoDescriptors) startVideoTrack(desc)
         for (desc in audioDescriptors) startAudioTrack(desc)
         for (desc in dataDescriptors) startDataTrack(desc)
@@ -113,6 +116,21 @@ class Publisher {
     }
 
     // MARK: - Video
+
+    private fun validateCodecSupport() {
+        for (desc in videoDescriptors) {
+            val reason = desc.config.unsupportedReason
+            if (reason != null) {
+                throw UnsupportedCodecException("Video track '${desc.track.name}' is not supported: $reason")
+            }
+        }
+        for (desc in audioDescriptors) {
+            val reason = desc.config.unsupportedReason
+            if (reason != null) {
+                throw UnsupportedCodecException("Audio track '${desc.track.name}' is not supported: $reason")
+            }
+        }
+    }
 
     private fun startVideoTrack(desc: VideoTrackDescriptor) {
         val active = ActiveVideoTrack()
