@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Compile the Android SDK and run unit tests without regenerating FFI artifacts"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+
+echo "==> Compiling Android SDK and running unit tests..."
+cd "$ROOT_DIR/android/moqkit"
+./gradlew :moqkit:compileDebugKotlin :moqkit:testDebugUnitTest
+
+echo ""
+echo "Done."

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#MISE description="Compile the MoQKit Swift package for the iOS simulator without regenerating FFI artifacts"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+
+echo "==> Building Swift package for iOS simulator..."
+SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+swift build \
+    --package-path "$ROOT_DIR" \
+    --sdk "$SDK" \
+    --triple arm64-apple-ios16.0-simulator
+
+echo ""
+echo "Done."
