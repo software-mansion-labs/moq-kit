@@ -1,7 +1,6 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaCodecList
-import android.media.MediaFormat
 import uniffi.moq.MoqAudio
 import uniffi.moq.MoqVideo
 
@@ -12,34 +11,37 @@ internal data class PlaybackSupportResult(
 
 internal object PlaybackCodecSupport {
     fun video(config: MoqVideo): PlaybackSupportResult {
-        val format = VideoMediaFormatFactory.from(config) ?: probeVideoFormat(config)
+        val mime = videoMime(config.codec)
             ?: return PlaybackSupportResult(false, "Unsupported video codec: ${config.codec}")
-        return decoderSupport(format, "${config.codec} video decoder")
+        return decoderSupport(mime, "${config.codec} video decoder")
     }
 
     fun audio(config: MoqAudio): PlaybackSupportResult {
-        val format = AudioMediaFormatFactory.from(config)
+        val mime = audioMime(config.codec)
             ?: return PlaybackSupportResult(false, "Unsupported audio codec: ${config.codec}")
-        return decoderSupport(format, "${config.codec} audio decoder")
+        return decoderSupport(mime, "${config.codec} audio decoder")
     }
 
-    private fun probeVideoFormat(config: MoqVideo): MediaFormat? {
-        val codec = VideoCodec.from(config.codec)
-        val mime = codec.mime ?: return null
-        return MediaFormat.createVideoFormat(
-            mime,
-            config.coded?.width?.toInt() ?: 1920,
-            config.coded?.height?.toInt() ?: 1080,
-        )
+    internal fun videoMime(codec: String): String? = VideoCodec.from(codec.lowercase()).mime
+
+    internal fun audioMime(codec: String): String? {
+        val normalized = codec.lowercase()
+        return when {
+            normalized.startsWith("mp4a") || normalized.startsWith("aac") -> CodecMime.AUDIO_AAC
+            normalized.startsWith("opus") -> CodecMime.AUDIO_OPUS
+            else -> null
+        }
     }
 
-    private fun decoderSupport(format: MediaFormat, label: String): PlaybackSupportResult =
+    private fun decoderSupport(mime: String, label: String): PlaybackSupportResult =
         try {
-            val codecName = MediaCodecList(MediaCodecList.ALL_CODECS).findDecoderForFormat(format)
-            if (codecName == null) {
-                PlaybackSupportResult(false, "No $label is available for $format")
-            } else {
+            val hasDecoder = MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos.any { codecInfo ->
+                !codecInfo.isEncoder && codecInfo.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+            }
+            if (hasDecoder) {
                 PlaybackSupportResult(true)
+            } else {
+                PlaybackSupportResult(false, "No $label is available for $mime")
             }
         } catch (t: Throwable) {
             PlaybackSupportResult(false, "Failed to query $label support: ${t.message ?: t::class.java.simpleName}")

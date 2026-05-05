@@ -50,8 +50,8 @@ final class ChatDemoViewModel: ObservableObject {
             return "connecting..."
         case .connected:
             return "connected"
-        case .error(let message):
-            return "error: \(message)"
+        case .error(let error):
+            return "error: \(error.localizedDescription)"
         case .closed:
             return "closed"
         }
@@ -79,17 +79,17 @@ final class ChatDemoViewModel: ObservableObject {
         let token = UUID()
 
         guard !relayURL.isEmpty else {
-            sessionState = .error("Relay URL is required")
+            sessionState = .error(.invalidConfiguration("Relay URL is required"))
             statusMessage = "Relay URL is required."
             return
         }
         guard !prefix.isEmpty else {
-            sessionState = .error("Subscribe prefix is required")
+            sessionState = .error(.invalidConfiguration("Subscribe prefix is required"))
             statusMessage = "Subscribe prefix is required."
             return
         }
         guard !path.isEmpty else {
-            sessionState = .error("Publish path is required")
+            sessionState = .error(.invalidConfiguration("Publish path is required"))
             statusMessage = "Publish path is required."
             return
         }
@@ -154,8 +154,9 @@ final class ChatDemoViewModel: ObservableObject {
                     await session.close()
                     return
                 }
-                self.sessionState = .error(error.localizedDescription)
-                self.statusMessage = error.localizedDescription
+                let sessionError = error as? SessionError ?? .connectionFailed(error.localizedDescription)
+                self.sessionState = .error(sessionError)
+                self.statusMessage = sessionError.localizedDescription
                 await session.close()
             }
         }

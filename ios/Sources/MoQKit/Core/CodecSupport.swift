@@ -71,7 +71,8 @@ internal enum CodecSupport {
             mFormatID: formatID,
             mFormatFlags: 0,
             mBytesPerPacket: 0,
-            mFramesPerPacket: formatID == kAudioFormatMPEG4AAC ? 1024 : UInt32(config.sampleRate * 0.020),
+            mFramesPerPacket: formatID == kAudioFormatMPEG4AAC
+                ? 1024 : UInt32(config.sampleRate * 0.020),
             mBytesPerFrame: 0,
             mChannelsPerFrame: config.channels,
             mBitsPerChannel: 0,
@@ -102,36 +103,10 @@ internal enum CodecSupport {
             return .unsupported("Unsupported video codec: \(config.codec)")
         }
 
-        let formatDescription: CMFormatDescription
-        do {
-            if config.description != nil {
-                formatDescription = try SampleBufferFactory.makeVideoFormatDescription(from: config)
-            } else {
-                formatDescription = try makeProbeVideoFormatDescription(
-                    codecType: codecType,
-                    width: Int32(config.coded?.width ?? 1920),
-                    height: Int32(config.coded?.height ?? 1080)
-                )
-            }
-        } catch {
-            return .unsupported("Invalid \(config.codec) video description: \(error)")
+        guard VTIsHardwareDecodeSupported(codecType) else {
+            return .unsupported("No hardware \(config.codec) video decoder is available")
         }
 
-        var session: VTDecompressionSession?
-        let status = VTDecompressionSessionCreate(
-            allocator: kCFAllocatorDefault,
-            formatDescription: formatDescription,
-            decoderSpecification: nil,
-            imageBufferAttributes: nil,
-            outputCallback: nil,
-            decompressionSessionOut: &session
-        )
-
-        guard status == noErr, let session else {
-            return .unsupported("Failed to create \(config.codec) video decoder: \(status)")
-        }
-
-        VTDecompressionSessionInvalidate(session)
         return .supported
     }
 
@@ -146,93 +121,74 @@ internal enum CodecSupport {
         }
     }
 
-    private static func makeProbeVideoFormatDescription(
-        codecType: CMVideoCodecType,
-        width: Int32,
-        height: Int32
-    ) throws -> CMFormatDescription {
-        var formatDescription: CMFormatDescription?
-        let status = CMVideoFormatDescriptionCreate(
-            allocator: kCFAllocatorDefault,
-            codecType: codecType,
-            width: width,
-            height: height,
-            extensions: nil,
-            formatDescriptionOut: &formatDescription
-        )
-        guard status == noErr, let formatDescription else {
-            throw SessionError.formatDescriptionFailed(status)
-        }
-        return formatDescription
-    }
 }
 
-public extension VideoEncoderConfig {
+extension VideoEncoderConfig {
     /// Video codecs that can be encoded on the current device with default settings.
-    static func supportedCodecs() -> [VideoCodec] {
+    public static func supportedCodecs() -> [VideoCodec] {
         VideoCodec.allCases.filter { VideoEncoderConfig(codec: $0).isSupported }
     }
 
     /// Whether this exact encoder configuration can be created on the current device.
-    var isSupported: Bool {
+    public var isSupported: Bool {
         CodecSupport.videoEncoder(self).isSupported
     }
 
     /// Human-readable reason this configuration is unsupported, or `nil` when supported.
-    var unsupportedReason: String? {
+    public var unsupportedReason: String? {
         CodecSupport.videoEncoder(self).reason
     }
 }
 
-public extension AudioEncoderConfig {
+extension AudioEncoderConfig {
     /// Audio codecs that can be encoded on the current device with default settings.
-    static func supportedCodecs() -> [AudioCodec] {
+    public static func supportedCodecs() -> [AudioCodec] {
         AudioCodec.allCases.filter { AudioEncoderConfig(codec: $0).isSupported }
     }
 
     /// Whether this exact encoder configuration can be created on the current device.
-    var isSupported: Bool {
+    public var isSupported: Bool {
         CodecSupport.audioEncoder(self).isSupported
     }
 
     /// Human-readable reason this configuration is unsupported, or `nil` when supported.
-    var unsupportedReason: String? {
+    public var unsupportedReason: String? {
         CodecSupport.audioEncoder(self).reason
     }
 }
 
-public extension VideoTrackInfo {
+extension VideoTrackInfo {
     /// Whether this track can be decoded on the current device.
-    var isPlayable: Bool {
+    public var isPlayable: Bool {
         CodecSupport.videoPlayback(rawConfig).isSupported
     }
 
     /// Human-readable reason this track is not playable, or `nil` when playable.
-    var unsupportedReason: String? {
+    public var unsupportedReason: String? {
         CodecSupport.videoPlayback(rawConfig).reason
     }
 }
 
-public extension AudioTrackInfo {
+extension AudioTrackInfo {
     /// Whether this track can be decoded on the current device.
-    var isPlayable: Bool {
+    public var isPlayable: Bool {
         CodecSupport.audioPlayback(rawConfig).isSupported
     }
 
     /// Human-readable reason this track is not playable, or `nil` when playable.
-    var unsupportedReason: String? {
+    public var unsupportedReason: String? {
         CodecSupport.audioPlayback(rawConfig).reason
     }
 }
 
-public extension Catalog {
+extension Catalog {
     /// Video tracks from this catalog that can be decoded on the current device.
-    var playableVideoTracks: [VideoTrackInfo] {
+    public var playableVideoTracks: [VideoTrackInfo] {
         videoTracks.filter(\.isPlayable)
     }
 
     /// Audio tracks from this catalog that can be decoded on the current device.
-    var playableAudioTracks: [AudioTrackInfo] {
+    public var playableAudioTracks: [AudioTrackInfo] {
         audioTracks.filter(\.isPlayable)
     }
 }

@@ -126,8 +126,9 @@ final class BoyDemoViewModel: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
-                    self?.lastError = error.localizedDescription
-                    self?.sessionState = .error(error.localizedDescription)
+                    let sessionError = error as? SessionError ?? .connectionFailed(error.localizedDescription)
+                    self?.lastError = sessionError.localizedDescription
+                    self?.sessionState = .error(sessionError)
                 }
             }
         }

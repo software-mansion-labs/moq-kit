@@ -31,7 +31,7 @@ final class PlayerDemoViewModel: ObservableObject {
         case .idle: return "idle"
         case .connecting: return "connecting..."
         case .connected: return "connected"
-        case .error(let msg): return "error: \(msg)"
+        case .error(let error): return "error: \(error.localizedDescription)"
         case .closed: return "closed"
         }
     }
@@ -70,7 +70,9 @@ final class PlayerDemoViewModel: ObservableObject {
                     }
                 }
             } catch {
-                sessionState = .error(error.localizedDescription)
+                let sessionError =
+                    error as? SessionError ?? .connectionFailed(error.localizedDescription)
+                sessionState = .error(sessionError)
             }
         }
     }
@@ -134,13 +136,15 @@ final class PlayerDemoViewModel: ObservableObject {
         )
         broadcasts.append(entry)
 
-        guard let player = try? Player(
-            catalog: catalog,
-            videoTrackName: selectedTracks.videoTrackName,
-            audioTrackName: selectedTracks.audioTrackName,
-            targetBufferingMs: targetLatencyMs,
-            volume: Float(entry.volume)
-        ) else {
+        guard
+            let player = try? Player(
+                catalog: catalog,
+                videoTrackName: selectedTracks.videoTrackName,
+                audioTrackName: selectedTracks.audioTrackName,
+                targetBufferingMs: targetLatencyMs,
+                volume: Float(entry.volume)
+            )
+        else {
             entry.offline = true
             return
         }
@@ -161,7 +165,8 @@ final class PlayerDemoViewModel: ObservableObject {
         for catalog: Catalog
     ) -> (videoTrackName: String?, audioTrackName: String?) {
         let audioTrackName = catalog.playableAudioTracks.first?.name
-        let highestVideoTrackName = catalog.playableVideoTracks.max(by: isLowerQualityVideoTrack)?.name
+        let highestVideoTrackName = catalog.playableVideoTracks.max(by: isLowerQualityVideoTrack)?
+            .name
         return (highestVideoTrackName, audioTrackName)
     }
 

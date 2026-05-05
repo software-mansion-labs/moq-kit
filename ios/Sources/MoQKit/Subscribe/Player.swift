@@ -605,7 +605,7 @@ public final class Player {
         return Task.detached {
             var lastPtsUs: UInt64 = 0
             var firstFrame = true
-            
+
             defer {
                 KitLogger.player.debug("Exited reading task")
             }
@@ -691,7 +691,8 @@ public final class Player {
                     if firstFrame {
                         firstFrame = false
                         metrics.markFirstAudioFrame()
-                        let event: PlayerEvent = isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
+                        let event: PlayerEvent =
+                            isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
                         continuation.yield(event)
                     }
                 } catch {

@@ -81,7 +81,7 @@ final class PublisherViewModel: ObservableObject {
         case .idle: return "idle"
         case .connecting: return "connecting..."
         case .connected: return "connected"
-        case .error(let msg): return "error: \(msg)"
+        case .error(let error): return "error: \(error.localizedDescription)"
         case .closed: return "closed"
         }
     }

@@ -4,7 +4,7 @@ import MoQKitFFI
 // MARK: - SessionError (codec/format related)
 
 /// Errors thrown by ``Session`` and ``Player``.
-public enum SessionError: Error, Sendable {
+public enum SessionError: Error, Sendable, Equatable {
     /// The track uses a codec that MoQKit does not support.
     case unsupportedCodec(String)
     /// A video codec requires an out-of-band parameter set (SPS/PPS/VPS) but none was provided.
@@ -44,9 +44,8 @@ public enum SessionState: Sendable, Equatable {
     case connecting
     /// Transport is ready. The session may now publish and create broadcast subscriptions.
     case connected
-    /// An irrecoverable error occurred. The associated string contains a human-readable
-    /// description. The session cannot be reused — create a new one.
-    case error(String)
+    /// An irrecoverable error occurred. The session cannot be reused — create a new one.
+    case error(SessionError)
     /// The session was closed via ``Session/close()``. No further events will be emitted.
     case closed
 }
@@ -176,18 +175,20 @@ public actor Session {
             }
 
         } catch let error as MoqError {
-            KitLogger.session.error("Connection failed: \(error)")
-            transition(to: .error(error.localizedDescription))
+            let sessionError = SessionError.connectionFailed(error.moqKitMessage)
+            KitLogger.session.error("Connection failed: \(sessionError)")
+            transition(to: .error(sessionError))
             tearDown()
-            throw SessionError.connectionFailed(error.localizedDescription)
+            throw sessionError
         } catch let error as SessionError {
             KitLogger.session.error("Connection failed: \(error)")
-            transition(to: .error("\(error)"))
+            transition(to: .error(error))
             tearDown()
             throw error
         } catch {
-            KitLogger.session.error("Connection failed: \(error)")
-            transition(to: .error(error.localizedDescription))
+            let sessionError = SessionError.connectionFailed(error.localizedDescription)
+            KitLogger.session.error("Connection failed: \(sessionError)")
+            transition(to: .error(sessionError))
             tearDown()
             throw error
         }
@@ -310,14 +311,14 @@ public actor Session {
     private func handleSessionEnded(error: Error?) async {
         if let error {
             KitLogger.session.warning("Session ended with error: \(error)")
-            transition(to: .error("Session ended: \(error)"))
+            transition(to: .error(.connectionFailed("Session ended: \(error.localizedDescription)")))
             await close()
             return
         }
 
         if currentState == .connected {
             KitLogger.session.warning("Session ended unexpectedly")
-            transition(to: .error("Session ended unexpectedly"))
+            transition(to: .error(.connectionFailed("Session ended unexpectedly")))
             await close()
         }
     }
