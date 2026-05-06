@@ -1,13 +1,10 @@
-import CoreMedia
 import Foundation
 
 /// Tracks wall-clock intervals between packet arrivals to detect stalls, bursts, and OOO timestamps.
-/// Measures end-to-end latency by comparing the latest recorded PTS against the shared CMTimebase.
 final class PacketTimingTracer: @unchecked Sendable {
     enum TrackKind: String { case video, audio }
 
     private let kind: TrackKind
-    private let timebase: CMTimebase
     private let stallFactor: Double
     private let burstFactor: Double
     private let reportInterval: Int
@@ -30,50 +27,25 @@ final class PacketTimingTracer: @unchecked Sendable {
     private var minGapMs: Double = .greatestFiniteMagnitude
     private var maxOooDeltaMs: Double = 0
 
-    // Latency: latest PTS we've seen
-    private var latestPtsUs: UInt64 = 0
-
     init(
         kind: TrackKind,
-        timebase: CMTimebase,
         stallFactor: Double = 2.0,
         burstFactor: Double = 0.3,
         reportInterval: Int = 120,
         reportCallback: @escaping (String) -> Void
     ) {
         self.kind = kind
-        self.timebase = timebase
         self.stallFactor = stallFactor
         self.burstFactor = burstFactor
         self.reportInterval = reportInterval
         self.reportCallback = reportCallback
     }
 
-    /// Current end-to-end latency in milliseconds.
-    /// Computed as the difference between the latest received PTS and the current timebase position.
-    var latencyMs: Double {
-        lock.lock()
-        let pts = latestPtsUs
-        lock.unlock()
-
-        let timebaseTime = CMTimebaseGetTime(timebase)
-        let timebaseUs = UInt64(max(0, timebaseTime.seconds * 1_000_000))
-
-        guard pts > 0, timebaseUs > 0 else { return 0 }
-        guard pts > timebaseUs else { return 0 }
-        return Double(pts - timebaseUs) / 1000.0
-    }
-
-    /// Record a packet arrival, updating both timing diagnostics and latency measurement.
+    /// Record a packet arrival, updating timing diagnostics.
     func record(ptsUs: UInt64) {
         let nowNs = DispatchTime.now().uptimeNanoseconds
 
         lock.lock()
-
-        // --- Latency: track latest PTS ---
-        if ptsUs > latestPtsUs {
-            latestPtsUs = ptsUs
-        }
 
         // --- Packet timing diagnostics ---
         if let highest = highestPtsUs, ptsUs < highest {
@@ -126,7 +98,7 @@ final class PacketTimingTracer: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Reset all timing stats and latency.
+    /// Reset all timing stats.
     func reset() {
         lock.lock()
         defer { lock.unlock() }
@@ -144,6 +116,5 @@ final class PacketTimingTracer: @unchecked Sendable {
         maxGapMs = 0
         minGapMs = .greatestFiniteMagnitude
         maxOooDeltaMs = 0
-        latestPtsUs = 0
     }
 }

@@ -14,7 +14,7 @@ import CoreMedia
 /// while the render callback reads from the audio thread. Both paths are serialized
 /// via `os_unfair_lock`.
 final class AudioRenderer: @unchecked Sendable {
-    let timebase: CMTimebase
+    let mediaTimebase: MediaTimebase
 
     private let engine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
@@ -24,14 +24,14 @@ final class AudioRenderer: @unchecked Sendable {
 
     init(
         config: MoqAudio,
-        timebase: CMTimebase,
+        mediaTimebase: MediaTimebase,
         targetLatencyMs: Int,
         initialVolume: Float = 1.0,
         metrics: PlaybackMetricsAccumulator
     ) throws {
         // Create a temporary decoder only to discover the output format for AVAudioEngine setup.
         let formatDecoder = try AudioDecoder(config: config)
-        self.timebase = timebase
+        self.mediaTimebase = mediaTimebase
         self.metrics = metrics
         self.volume = Self.clampedVolume(initialVolume)
 
@@ -84,23 +84,19 @@ final class AudioRenderer: @unchecked Sendable {
             }
 
             if framesRead > 0 {
-                CMTimebaseSetTime(
-                    timebase,
-                    time: CMTime(
-                        value: CMTimeValue(ts), timescale: 1_000_000)
-                )
+                mediaTimebase.setTimeUs(ts)
 
                 // Start timebase on first real audio data
                 if !timebaseStarted {
                     timebaseStarted = true
-                    CMTimebaseSetRate(timebase, rate: 1.0)
+                    mediaTimebase.setRate(1.0)
                     metricsRef.audioStallEnded()
                 }
             } else {
                 // Full underflow: pause timebase to prevent drift
                 if timebaseStarted {
                     timebaseStarted = false
-                    CMTimebaseSetRate(timebase, rate: 0)
+                    mediaTimebase.setRate(0)
                     metricsRef.audioStallBegan()
                 }
             }

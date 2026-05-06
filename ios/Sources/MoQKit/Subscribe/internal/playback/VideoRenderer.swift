@@ -41,6 +41,7 @@ final class VideoRenderer: @unchecked Sendable {
     private var onTrackActivated: (() -> Void)?
 
     private let enqueueQueue: DispatchQueue
+    private let mediaTimebase: MediaTimebase
     private let isTimebaseOwner: Bool
     private var timebaseStarted: Bool
     private let metrics: PlaybackMetricsAccumulator
@@ -54,23 +55,25 @@ final class VideoRenderer: @unchecked Sendable {
     /// If the first pending keyframe is more than this behind the active PTS, use the
     /// flush-and-swap strategy instead of cut-in (2 s).
     private let flushThresholdUs: Int64 = 2_000_000
+    private let ptsCorrectionThresholdUs: Int64 = 2_000_000
 
     init(
-        timebase: CMTimebase,
+        mediaTimebase: MediaTimebase,
         isTimebaseOwner: Bool,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
         metrics: PlaybackMetricsAccumulator
     ) {
         self.layer = layer
-        self.timebase = timebase
+        self.timebase = mediaTimebase.cmTimebase
+        self.mediaTimebase = mediaTimebase
         self.isTimebaseOwner = isTimebaseOwner
         self.metrics = metrics
         self.activeTrack = track
         self.enqueueQueue = DispatchQueue(
             label: "com.swmansion.MoQKit.VideoEnqueue", qos: .userInteractive)
 
-        layer.controlTimebase = timebase
+        layer.controlTimebase = mediaTimebase.cmTimebase
         self.timebaseStarted = !isTimebaseOwner
     }
 
@@ -92,7 +95,7 @@ final class VideoRenderer: @unchecked Sendable {
         pendingPhase = nil
         layer.stopRequestingMediaData()
         if isTimebaseOwner {
-            CMTimebaseSetRate(timebase, rate: 0)
+            mediaTimebase.setRate(0)
         }
         timebaseStarted = !isTimebaseOwner
         enqueueQueue.async {
@@ -165,11 +168,9 @@ final class VideoRenderer: @unchecked Sendable {
                 // Without this the timebase stays at 0 while frames have large live PTS
                 // values, causing them to be scheduled far in the future and never display.
                 if let firstPts = self.activeTrack.peekFront()?.timestampUs {
-                    CMTimebaseSetTime(
-                        videoTimebase,
-                        time: CMTime(value: CMTimeValue(firstPts), timescale: 1_000_000))
+                    self.mediaTimebase.setTimeUs(firstPts)
                 }
-                CMTimebaseSetRate(videoTimebase, rate: 1.0)
+                self.mediaTimebase.setRate(1.0)
             }
 
             while layer.isReadyForMoreMediaData {
@@ -249,16 +250,22 @@ final class VideoRenderer: @unchecked Sendable {
                 }
 
                 if !playable {
-                    self.doNotDisplaySample(entry.item.sampleBuffer)
                     metricsRef.recordVideoFrameDropped()
                 } else {
                     metricsRef.recordVideoFrameDisplayed()
                 }
-                layer.enqueue(entry.item.sampleBuffer)
+
+                let displaySample = self.displaySampleBuffer(
+                    for: entry.item.sampleBuffer,
+                    sourceTimestampUs: entry.timestampUs)
+
+                if !playable {
+                    self.doNotDisplaySample(displaySample.sampleBuffer)
+                }
+
+                layer.enqueue(displaySample.sampleBuffer)
                 self.lastEnqueuedPTSus = entry.timestampUs
-                self.lastEnqueuedPTS = CMTime(
-                    value: CMTimeValue(entry.timestampUs),
-                    timescale: 1_000_000)
+                self.lastEnqueuedPTS = displaySample.presentationTime
             }
         }
     }
@@ -270,6 +277,9 @@ final class VideoRenderer: @unchecked Sendable {
         activeTrack = newTrack
         pendingTrack = nil
         newTrack.setOnDataAvailable(makeDataAvailableCallback())
+        // Current rendition switching assumes all video tracks share one timestamp domain.
+        // If future renditions do not, MediaTimebase needs per-video-track offset state or
+        // a reset/recompute when the pending track becomes active.
         KitLogger.player.debug("VideoRenderer: swapped to pending track")
         onTrackActivated?()
         onTrackActivated = nil
@@ -288,6 +298,61 @@ final class VideoRenderer: @unchecked Sendable {
                 self.armVideoEnqueue()
             }
         }
+    }
+
+    private func displaySampleBuffer(
+        for sampleBuffer: CMSampleBuffer,
+        sourceTimestampUs: UInt64
+    ) -> (sampleBuffer: CMSampleBuffer, presentationTime: CMTime) {
+        let sourceTime = CMTime(value: CMTimeValue(sourceTimestampUs), timescale: 1_000_000)
+        guard let correction = mediaTimebase.videoPtsCorrection(
+            forSourceTimestampUs: sourceTimestampUs,
+            thresholdUs: ptsCorrectionThresholdUs)
+        else {
+            return (sampleBuffer, sourceTime)
+        }
+
+        guard let retimed = Self.copySampleBuffer(
+            sampleBuffer,
+            shiftingTimingByUs: correction.offsetUs)
+        else {
+            return (sampleBuffer, sourceTime)
+        }
+
+        return (
+            retimed,
+            CMTime(value: CMTimeValue(correction.correctedTimestampUs), timescale: 1_000_000)
+        )
+    }
+
+    private static func copySampleBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        shiftingTimingByUs correctionUs: Int64
+    ) -> CMSampleBuffer? {
+        var timing = CMSampleTimingInfo()
+        let timingStatus = CMSampleBufferGetSampleTimingInfo(
+            sampleBuffer,
+            at: 0,
+            timingInfoOut: &timing
+        )
+        guard timingStatus == noErr, timing.presentationTimeStamp.isValid else { return nil }
+
+        let correction = CMTime(value: CMTimeValue(correctionUs), timescale: 1_000_000)
+        timing.presentationTimeStamp = CMTimeAdd(timing.presentationTimeStamp, correction)
+        if timing.decodeTimeStamp.isValid {
+            timing.decodeTimeStamp = CMTimeAdd(timing.decodeTimeStamp, correction)
+        }
+
+        var retimed: CMSampleBuffer?
+        let copyStatus = CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timing,
+            sampleBufferOut: &retimed
+        )
+        guard copyStatus == noErr else { return nil }
+        return retimed
     }
 
     private func doNotDisplaySample(_ sampleBuffer: CMSampleBuffer) {

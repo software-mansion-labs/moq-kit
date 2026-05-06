@@ -22,6 +22,11 @@ let package = Package(
             dependencies: ["moqFFI"],
             path: "ios/Sources/MoQKitFFI"
         ),
+        .testTarget(
+            name: "MoQKitTests",
+            dependencies: ["MoQKit"],
+            path: "ios/Tests/MoQKitTests"
+        ),
         .binaryTarget(
             name: "moqFFI",
             url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.0.1-alpha5/moqffi.xcframework.zip",
