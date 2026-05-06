@@ -48,26 +48,28 @@ private enum MoQDemo: String, CaseIterable, Hashable, Identifiable {
     }
 
     @ViewBuilder
-    var destinationView: some View {
+    func destinationView(relayURLs: MoQDemoRelayURLs) -> some View {
         switch self {
         case .boy:
-            BoyDemoView()
+            BoyDemoView(relayURL: relayURLs.boyDemoURL)
         case .chat:
-            ChatDemoView()
+            ChatDemoView(relayURL: relayURLs.sharedRelayURL)
         case .player:
-            PlayerDemoView()
+            PlayerDemoView(relayURL: relayURLs.sharedRelayURL)
         case .publisher:
-            PublisherDemoView()
+            PublisherDemoView(relayURL: relayURLs.sharedRelayURL)
         }
     }
 }
 
 struct ContentView: View {
+    let relayURLs: MoQDemoRelayURLs
+
     var body: some View {
         NavigationStack {
-                DemoSelectionView()
+            DemoSelectionView()
                 .navigationDestination(for: MoQDemo.self) { demo in
-                    demo.destinationView
+                    demo.destinationView(relayURLs: relayURLs)
                 }
         }
     }

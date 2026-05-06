@@ -3,10 +3,13 @@ import SwiftUI
 struct PlayerDemoView: View {
     @Environment(\.dismiss) private var dismiss
 
-    // @State private var relayURL = "https://moq.fishjam.work"
-    @State private var relayURL = "http://192.168.92.128:4443/anon"
+    @State private var relayURL: String
     @State private var broadcastPath = ""
     @StateObject private var player = PlayerDemoViewModel()
+
+    init(relayURL: String) {
+        _relayURL = State(initialValue: relayURL)
+    }
 
     private var canConnect: Bool {
         !relayURL.isEmpty && player.canConnect

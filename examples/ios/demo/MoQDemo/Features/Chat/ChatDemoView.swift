@@ -4,11 +4,15 @@ struct ChatDemoView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var viewModel = ChatDemoViewModel()
 
-    @State private var relayURL = "http://192.168.92.140:4443/anon"
+    @State private var relayURL: String
     @State private var subscribePrefix = "chat"
     @State private var publishPath = "chat/ios"
     @State private var displayName = UIDevice.current.name
     @State private var draftMessage = ""
+
+    init(relayURL: String) {
+        _relayURL = State(initialValue: relayURL)
+    }
 
     private var canConnect: Bool {
         viewModel.canConnect

@@ -3,13 +3,13 @@ import SwiftUI
 
 @MainActor
 final class BoyDemoViewModel: ObservableObject {
-    static let relayURL = "https://cdn.moq.dev/demo"
-
     private static let subscribePrefix = "boy"
     private static let viewerPrefix = "viewer/boy"
     private static let repeatIntervalNs: UInt64 = 10_000_000
     private static let longPressThresholdNs: UInt64 = 300_000_000
     private static let defaultTargetLatencyMs: UInt64 = 200
+
+    private let relayURL: String
 
     @Published private(set) var sessionState: SessionState = .idle
     @Published private(set) var games: [BoyGame] = []
@@ -30,6 +30,10 @@ final class BoyDemoViewModel: ObservableObject {
     private var heldButtons: Set<BoyButton> = []
     private var holdStartTimes: [BoyButton: UInt64] = [:]
     private var repeatTask: Task<Void, Never>?
+
+    init(relayURL: String) {
+        self.relayURL = relayURL
+    }
 
     var canConnect: Bool {
         switch sessionState {
@@ -101,7 +105,7 @@ final class BoyDemoViewModel: ObservableObject {
         stop()
         lastError = nil
 
-        let session = Session(url: Self.relayURL)
+        let session = Session(url: relayURL)
         self.session = session
 
         stateObserverTask = Task { [weak self] in

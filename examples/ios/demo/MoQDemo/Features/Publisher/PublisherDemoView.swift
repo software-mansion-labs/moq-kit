@@ -1,10 +1,14 @@
 import SwiftUI
 
 struct PublisherDemoView: View {
-    @State private var relayURL = "http://192.168.92.140:4443/anon"
+    @State private var relayURL: String
 
     @State private var broadcastPath = "bbb/hey"
     @StateObject private var viewModel = PublisherViewModel()
+
+    init(relayURL: String) {
+        _relayURL = State(initialValue: relayURL)
+    }
 
     private var isPublishing: Bool {
         if case .publishing = viewModel.publisherState { return true }

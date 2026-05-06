@@ -2,7 +2,11 @@ import SwiftUI
 
 struct BoyDemoView: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var viewModel = BoyDemoViewModel()
+    @StateObject private var viewModel: BoyDemoViewModel
+
+    init(relayURL: String) {
+        _viewModel = StateObject(wrappedValue: BoyDemoViewModel(relayURL: relayURL))
+    }
 
     var body: some View {
         ZStack {
