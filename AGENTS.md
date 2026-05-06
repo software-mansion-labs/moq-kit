@@ -32,6 +32,7 @@ Common validation commands:
 ```bash
 mise tasks
 mise run ios:check
+mise run ios:demo:build
 mise run android:check
 mise run ios:build
 mise run android:build
@@ -42,6 +43,10 @@ mise run docs:all
 Use `ios:check` and `android:check` for Swift/Kotlin-only SDK changes. These fast checks
 compile the platform SDKs against the currently checked-in/generated FFI artifacts and do
 not regenerate bindings or binary artifacts.
+
+Use `ios:demo:build` for iOS demo-app changes. It compiles the `MoQDemo` Xcode project
+for a generic iOS simulator without installing or launching the app. `ios:check` only
+compiles the Swift package; it does not build the demo app or ReplayKit extension.
 
 Use `ios:build` and `android:build` when validating FFI changes, generated artifacts,
 release artifacts, or anything that may depend on rebuilt Rust bindings. These full builds
@@ -59,6 +64,9 @@ mise run ios:run
 mise run ios:run --simulator
 mise run android:run
 ```
+
+Use `ios:run` and `ios:run --simulator` for manual runtime smoke tests after the demo
+builds successfully. These commands install and launch the demo on a device or simulator.
 
 For generated bindings only:
 

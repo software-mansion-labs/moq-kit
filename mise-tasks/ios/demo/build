@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+#MISE description="Build the iOS MoQ Demo app for a generic simulator without installing or launching"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+PROJECT="$ROOT_DIR/examples/ios/demo/MoQDemo.xcodeproj"
+SCHEME="MoQDemo"
+DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData/MoQDemo"
+
+echo "==> Building $SCHEME for generic iOS simulator..."
+xcodebuild -project "$PROJECT" \
+  -scheme "$SCHEME" \
+  -configuration Debug \
+  -sdk iphonesimulator \
+  -destination "generic/platform=iOS Simulator" \
+  -derivedDataPath "$DERIVED_DATA_PATH" \
+  build
+
+echo ""
+echo "Done."
