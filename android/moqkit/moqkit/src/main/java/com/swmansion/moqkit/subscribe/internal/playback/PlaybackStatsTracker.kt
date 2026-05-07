@@ -1,16 +1,65 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
+import com.swmansion.moqkit.subscribe.FrameArrivalStats
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.StallStats
 import com.swmansion.moqkit.subscribe.VideoDecodeStats
+import uniffi.moq.MoqFrame
 
 /**
- * Thread-safe accumulator for playback quality metrics.
+ * Thread-safe tracker for playback quality metrics and received-frame diagnostics.
  *
  * All write methods are lightweight (synchronized on a single lock).
  * One [snapshot] method reads all fields under the lock and returns [PlaybackStats].
  */
-internal class PlaybackMetricsAccumulator {
+internal class PlaybackStatsTracker(
+    private val clock: () -> Long = System::nanoTime,
+) : MediaFrameObserver {
+    private data class ArrivalInterval(val ns: Long, val ms: Double)
+
+    private data class FrameArrivalState(
+        var lastWallNs: Long? = null,
+        var lastPtsUs: Long? = null,
+        var highestPtsUs: Long? = null,
+        val frameTimestamps: MutableList<Long> = mutableListOf(),
+        val intervalsWindow: MutableList<ArrivalInterval> = mutableListOf(),
+        var intervalMsTotal: Double = 0.0,
+        var arrivalGapCount: Long = 0,
+        var burstCount: Long = 0,
+        var outOfOrderCount: Long = 0,
+        var maxOutOfOrderDeltaMs: Double = 0.0,
+        var discontinuityCount: Long = 0,
+        var maxDiscontinuityGapMs: Double = 0.0,
+    ) {
+        val hasData: Boolean
+            get() = frameTimestamps.isNotEmpty() ||
+                arrivalGapCount > 0 ||
+                burstCount > 0 ||
+                outOfOrderCount > 0 ||
+                discontinuityCount > 0
+
+        fun resetAll() {
+            lastWallNs = null
+            lastPtsUs = null
+            highestPtsUs = null
+            frameTimestamps.clear()
+            intervalsWindow.clear()
+            intervalMsTotal = 0.0
+            arrivalGapCount = 0
+            burstCount = 0
+            outOfOrderCount = 0
+            maxOutOfOrderDeltaMs = 0.0
+            discontinuityCount = 0
+            maxDiscontinuityGapMs = 0.0
+        }
+
+        fun resetTimingBaseline() {
+            lastWallNs = null
+            lastPtsUs = null
+            highestPtsUs = null
+        }
+    }
+
     private val lock = Any()
 
     // TTFF
@@ -36,16 +85,18 @@ internal class PlaybackMetricsAccumulator {
     private var videoPlayStartNs: Long = 0
     private var videoIsPlaying: Boolean = false
 
-    // Bitrate — audio (1-sec rolling window)
-    private val audioBytesWindow = mutableListOf<Pair<Long, Int>>() // (ns, bytes)
+    // Bitrate — audio/video (1-sec rolling window)
+    private val audioBytesWindow = mutableListOf<Pair<Long, Int>>()
     private var audioBytesTotal: Int = 0
-
-    // Bitrate — video (1-sec rolling window)
     private val videoBytesWindow = mutableListOf<Pair<Long, Int>>()
     private var videoBytesTotal: Int = 0
 
-    // FPS — video (1-sec rolling window)
+    // FPS — displayed video (1-sec rolling window)
     private val videoFrameTimestamps = mutableListOf<Long>()
+
+    // Received-frame arrival diagnostics
+    private val audioArrival = FrameArrivalState()
+    private val videoArrival = FrameArrivalState()
 
     // Dropped frames
     private var audioFramesDroppedCount: Long = 0
@@ -66,40 +117,77 @@ internal class PlaybackMetricsAccumulator {
     private var videoDecodeTotalOutputIntervalNs: Long = 0
 
     companion object {
-        private const val WINDOW_NS = 1_000_000_000L // 1 second
+        private const val WINDOW_NS = 1_000_000_000L
+        private const val MIN_WINDOW_SPAN_NS = 100_000_000L
+        private const val ARRIVAL_GAP_FACTOR = 2.0
+        private const val BURST_FACTOR = 0.3
+        private const val DISCONTINUITY_THRESHOLD_US = 2_000_000L
+    }
+
+    override fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
+        val now = clock()
+        val timestampUs = frame.timestampUs.toLong()
+        val payloadSize = frame.payload.size
+
+        synchronized(lock) {
+            when (kind) {
+                MediaFrameKind.AUDIO -> {
+                    if (firstAudioFrameNs == 0L) {
+                        firstAudioFrameNs = now
+                    }
+                    audioBytesWindow.add(now to payloadSize)
+                    audioBytesTotal += payloadSize
+                    pruneWindow(audioBytesWindow, now) { audioBytesTotal -= it }
+                    recordArrival(timestampUs, now, audioArrival)
+                }
+
+                MediaFrameKind.VIDEO -> {
+                    if (firstVideoFrameNs == 0L) {
+                        firstVideoFrameNs = now
+                    }
+                    videoBytesWindow.add(now to payloadSize)
+                    videoBytesTotal += payloadSize
+                    pruneWindow(videoBytesWindow, now) { videoBytesTotal -= it }
+                    recordArrival(timestampUs, now, videoArrival)
+                }
+            }
+        }
+    }
+
+    override fun onFrameDiscontinuity(kind: MediaFrameKind, gapUs: Long) {
+        synchronized(lock) {
+            val gapMs = gapUs.toDouble() / 1_000.0
+            when (kind) {
+                MediaFrameKind.AUDIO -> {
+                    audioArrival.discontinuityCount++
+                    audioArrival.maxDiscontinuityGapMs =
+                        maxOf(audioArrival.maxDiscontinuityGapMs, gapMs)
+                    audioArrival.resetTimingBaseline()
+                }
+
+                MediaFrameKind.VIDEO -> {
+                    videoArrival.discontinuityCount++
+                    videoArrival.maxDiscontinuityGapMs =
+                        maxOf(videoArrival.maxDiscontinuityGapMs, gapMs)
+                    videoArrival.resetTimingBaseline()
+                }
+            }
+        }
     }
 
     // -- TTFF --
 
     fun markPlayStart() {
-        val now = System.nanoTime()
+        val now = clock()
         synchronized(lock) {
             playStartNs = now
-        }
-    }
-
-    fun markFirstAudioFrame() {
-        val now = System.nanoTime()
-        synchronized(lock) {
-            if (firstAudioFrameNs == 0L) {
-                firstAudioFrameNs = now
-            }
-        }
-    }
-
-    fun markFirstVideoFrame() {
-        val now = System.nanoTime()
-        synchronized(lock) {
-            if (firstVideoFrameNs == 0L) {
-                firstVideoFrameNs = now
-            }
         }
     }
 
     // -- Stalls --
 
     fun audioStallBegan() {
-        val now = System.nanoTime()
+        val now = clock()
         synchronized(lock) {
             if (!audioIsStalled) {
                 audioIsStalled = true
@@ -114,7 +202,7 @@ internal class PlaybackMetricsAccumulator {
     }
 
     fun audioStallEnded() {
-        val now = System.nanoTime()
+        val now = clock()
         synchronized(lock) {
             if (audioIsStalled) {
                 audioIsStalled = false
@@ -129,7 +217,7 @@ internal class PlaybackMetricsAccumulator {
     }
 
     fun videoStallBegan() {
-        val now = System.nanoTime()
+        val now = clock()
         synchronized(lock) {
             if (!videoIsStalled) {
                 videoIsStalled = true
@@ -144,7 +232,7 @@ internal class PlaybackMetricsAccumulator {
     }
 
     fun videoStallEnded() {
-        val now = System.nanoTime()
+        val now = clock()
         synchronized(lock) {
             if (videoIsStalled) {
                 videoIsStalled = false
@@ -158,30 +246,10 @@ internal class PlaybackMetricsAccumulator {
         }
     }
 
-    // -- Bitrate --
-
-    fun recordAudioBytes(count: Int) {
-        val now = System.nanoTime()
-        synchronized(lock) {
-            audioBytesWindow.add(now to count)
-            audioBytesTotal += count
-            pruneWindow(audioBytesWindow, now) { audioBytesTotal -= it }
-        }
-    }
-
-    fun recordVideoBytes(count: Int) {
-        val now = System.nanoTime()
-        synchronized(lock) {
-            videoBytesWindow.add(now to count)
-            videoBytesTotal += count
-            pruneWindow(videoBytesWindow, now) { videoBytesTotal -= it }
-        }
-    }
-
     // -- FPS --
 
     fun recordVideoFrameDisplayed() {
-        val now = System.nanoTime()
+        val now = clock()
         synchronized(lock) {
             videoFrameTimestamps.add(now)
             pruneTimestamps(videoFrameTimestamps, now)
@@ -237,7 +305,7 @@ internal class PlaybackMetricsAccumulator {
     fun recordVideoDecodeTime(
         trackName: String,
         durationNs: Long,
-        outputAtNs: Long = System.nanoTime(),
+        outputAtNs: Long = clock(),
     ) {
         if (durationNs < 0) return
         synchronized(lock) {
@@ -281,9 +349,8 @@ internal class PlaybackMetricsAccumulator {
         videoJitterBufferMs: Double? = null,
         videoDecodeStatsEnabled: Boolean = true,
     ): PlaybackStats {
-        val now = System.nanoTime()
+        val now = clock()
         synchronized(lock) {
-            // TTFF
             val ttfAudio = if (playStartNs > 0 && firstAudioFrameNs > 0) {
                 (firstAudioFrameNs - playStartNs).toDouble() / 1_000_000.0
             } else null
@@ -292,7 +359,6 @@ internal class PlaybackMetricsAccumulator {
                 (firstVideoFrameNs - playStartNs).toDouble() / 1_000_000.0
             } else null
 
-            // Stalls
             val aStalls = if (audioStallCount > 0 || audioIsPlaying || audioIsStalled) {
                 makeStallStats(
                     audioStallCount, audioStallTotalNs,
@@ -311,14 +377,9 @@ internal class PlaybackMetricsAccumulator {
                 )
             } else null
 
-            // Bitrate
             val aBitrate = computeBitrateKbps(audioBytesWindow, audioBytesTotal, now)
             val vBitrate = computeBitrateKbps(videoBytesWindow, videoBytesTotal, now)
-
-            // FPS
             val fps = computeFps(videoFrameTimestamps, now)
-
-            // Dropped
             val aDrop = if (audioFramesDroppedCount > 0) audioFramesDroppedCount else null
             val vDrop = if (videoFramesDroppedCount > 0) videoFramesDroppedCount else null
             val decodeStats = if (videoDecodeStatsEnabled) makeVideoDecodeStats() else null
@@ -338,6 +399,8 @@ internal class PlaybackMetricsAccumulator {
                 audioRingBufferMs = audioRingBufferMs,
                 videoJitterBufferMs = videoJitterBufferMs,
                 videoDecodeStats = decodeStats,
+                audioArrival = makeFrameArrivalStats(audioArrival, now),
+                videoArrival = makeFrameArrivalStats(videoArrival, now),
             )
         }
     }
@@ -371,6 +434,8 @@ internal class PlaybackMetricsAccumulator {
             videoBytesWindow.clear()
             videoBytesTotal = 0
             videoFrameTimestamps.clear()
+            audioArrival.resetAll()
+            videoArrival.resetAll()
 
             audioFramesDroppedCount = 0
             videoFramesDroppedCount = 0
@@ -391,6 +456,46 @@ internal class PlaybackMetricsAccumulator {
     }
 
     // -- Private helpers (called under lock) --
+
+    private fun recordArrival(timestampUs: Long, now: Long, state: FrameArrivalState) {
+        state.frameTimestamps.add(now)
+        pruneTimestamps(state.frameTimestamps, now)
+        pruneArrivalIntervals(state, now)
+
+        val highestPtsUs = state.highestPtsUs
+        if (highestPtsUs != null && timestampUs < highestPtsUs) {
+            state.outOfOrderCount++
+            val deltaMs = (highestPtsUs - timestampUs).toDouble() / 1_000.0
+            state.maxOutOfOrderDeltaMs = maxOf(state.maxOutOfOrderDeltaMs, deltaMs)
+        }
+        state.highestPtsUs = maxOf(state.highestPtsUs ?: 0L, timestampUs)
+
+        val previousWallNs = state.lastWallNs
+        val previousPtsUs = state.lastPtsUs
+        if (previousWallNs != null && previousPtsUs != null) {
+            val isOutOfOrder = timestampUs < previousPtsUs
+            val ptsDeltaUs = if (isOutOfOrder) 0L else timestampUs - previousPtsUs
+
+            if (!isOutOfOrder && ptsDeltaUs <= DISCONTINUITY_THRESHOLD_US) {
+                val wallDeltaMs = (now - previousWallNs).toDouble() / 1_000_000.0
+                state.intervalsWindow.add(ArrivalInterval(now, wallDeltaMs))
+                state.intervalMsTotal += wallDeltaMs
+                pruneArrivalIntervals(state, now)
+
+                val ptsDeltaMs = ptsDeltaUs.toDouble() / 1_000.0
+                if (ptsDeltaMs > 0.0) {
+                    if (wallDeltaMs > ptsDeltaMs * ARRIVAL_GAP_FACTOR) {
+                        state.arrivalGapCount++
+                    } else if (wallDeltaMs < ptsDeltaMs * BURST_FACTOR) {
+                        state.burstCount++
+                    }
+                }
+            }
+        }
+
+        state.lastWallNs = now
+        state.lastPtsUs = timestampUs
+    }
 
     private fun makeVideoDecodeStats(): VideoDecodeStats? {
         val trackName = videoDecodeTrackName ?: return null
@@ -441,6 +546,13 @@ internal class PlaybackMetricsAccumulator {
         }
     }
 
+    private fun pruneArrivalIntervals(state: FrameArrivalState, now: Long) {
+        val cutoff = if (now >= WINDOW_NS) now - WINDOW_NS else 0L
+        while (state.intervalsWindow.isNotEmpty() && state.intervalsWindow[0].ns < cutoff) {
+            state.intervalMsTotal -= state.intervalsWindow.removeAt(0).ms
+        }
+    }
+
     private fun computeBitrateKbps(
         entries: List<Pair<Long, Int>>,
         total: Int,
@@ -448,7 +560,7 @@ internal class PlaybackMetricsAccumulator {
     ): Double? {
         if (entries.isEmpty()) return null
         val spanNs = now - entries[0].first
-        if (spanNs < 100_000_000L) return null // need at least 100ms
+        if (spanNs < MIN_WINDOW_SPAN_NS) return null
         val spanSec = spanNs.toDouble() / 1_000_000_000.0
         return total.toDouble() * 8.0 / 1000.0 / spanSec
     }
@@ -456,9 +568,31 @@ internal class PlaybackMetricsAccumulator {
     private fun computeFps(entries: List<Long>, now: Long): Double? {
         if (entries.size < 2) return null
         val spanNs = now - entries[0]
-        if (spanNs < 100_000_000L) return null
+        if (spanNs < MIN_WINDOW_SPAN_NS) return null
         val spanSec = spanNs.toDouble() / 1_000_000_000.0
         return entries.size.toDouble() / spanSec
+    }
+
+    private fun makeFrameArrivalStats(
+        state: FrameArrivalState,
+        now: Long,
+    ): FrameArrivalStats? {
+        if (!state.hasData) return null
+        val averageInterarrivalMs = if (state.intervalsWindow.isNotEmpty()) {
+            state.intervalMsTotal / state.intervalsWindow.size.toDouble()
+        } else null
+
+        return FrameArrivalStats(
+            receivedFramesPerSecond = computeFps(state.frameTimestamps, now),
+            averageInterarrivalMs = averageInterarrivalMs,
+            maxInterarrivalMs = state.intervalsWindow.maxOfOrNull { it.ms },
+            arrivalGapCount = state.arrivalGapCount,
+            burstCount = state.burstCount,
+            outOfOrderCount = state.outOfOrderCount,
+            maxOutOfOrderDeltaMs = state.maxOutOfOrderDeltaMs.takeIf { it > 0.0 },
+            discontinuityCount = state.discontinuityCount,
+            maxDiscontinuityGapMs = state.maxDiscontinuityGapMs.takeIf { it > 0.0 },
+        )
     }
 
     private fun makeStallStats(

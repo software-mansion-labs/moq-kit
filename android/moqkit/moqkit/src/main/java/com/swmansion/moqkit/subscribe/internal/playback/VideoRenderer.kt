@@ -36,7 +36,7 @@ internal class VideoRenderer(
     @Volatile private var outputSurface: Surface,
     private val timebase: MediaTimebase? = null,
     private val timestampAligner: MediaTimestampAligner? = null,
-    private val metrics: PlaybackMetricsAccumulator? = null,
+    private val metrics: PlaybackStatsTracker? = null,
     private val onError: (Throwable) -> Unit = {},
 ) {
     // Pending-track swap state machine

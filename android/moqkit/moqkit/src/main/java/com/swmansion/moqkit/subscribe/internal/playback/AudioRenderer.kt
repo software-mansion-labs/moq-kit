@@ -20,7 +20,7 @@ private const val TAG = "AudioRenderer"
 internal class AudioRenderer(
     private val config: MoqAudio,
     private val targetLatencyMs: Int,
-    private val metrics: PlaybackMetricsAccumulator? = null,
+    private val metrics: PlaybackStatsTracker? = null,
     initialVolume: Float = 1f,
     mediaTimebase: MediaTimebase = MediaTimebase(),
 ) {

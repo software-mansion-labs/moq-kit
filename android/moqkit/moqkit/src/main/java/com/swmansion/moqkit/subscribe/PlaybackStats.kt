@@ -23,6 +23,8 @@ package com.swmansion.moqkit.subscribe
  * @property audioRingBufferMs Current fill level of the audio ring buffer in milliseconds.
  * @property videoJitterBufferMs Current fill level of the video jitter buffer in milliseconds.
  * @property videoDecodeStats Decode timing statistics for the currently active video track.
+ * @property audioArrival Audio frame arrival timing diagnostics.
+ * @property videoArrival Video frame arrival timing diagnostics.
  */
 data class PlaybackStats(
     val audioLatencyMs: Double?,
@@ -39,6 +41,33 @@ data class PlaybackStats(
     val audioRingBufferMs: Double?,
     val videoJitterBufferMs: Double?,
     val videoDecodeStats: VideoDecodeStats? = null,
+    val audioArrival: FrameArrivalStats? = null,
+    val videoArrival: FrameArrivalStats? = null,
+)
+
+/**
+ * Arrival timing diagnostics for one received media stream.
+ *
+ * @property receivedFramesPerSecond Received compressed frames per second over the rolling window.
+ * @property averageInterarrivalMs Average wall-clock interval between received frames.
+ * @property maxInterarrivalMs Maximum wall-clock interval between received frames.
+ * @property arrivalGapCount Number of intervals where wall-clock arrival lagged PTS spacing.
+ * @property burstCount Number of intervals where frames arrived much faster than PTS spacing.
+ * @property outOfOrderCount Number of frames whose timestamp regressed.
+ * @property maxOutOfOrderDeltaMs Largest timestamp regression observed.
+ * @property discontinuityCount Number of player-detected timestamp discontinuities.
+ * @property maxDiscontinuityGapMs Largest player-detected timestamp discontinuity.
+ */
+data class FrameArrivalStats(
+    val receivedFramesPerSecond: Double?,
+    val averageInterarrivalMs: Double?,
+    val maxInterarrivalMs: Double?,
+    val arrivalGapCount: Long,
+    val burstCount: Long,
+    val outOfOrderCount: Long,
+    val maxOutOfOrderDeltaMs: Double?,
+    val discontinuityCount: Long,
+    val maxDiscontinuityGapMs: Double?,
 )
 
 /**

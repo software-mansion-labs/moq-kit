@@ -1,5 +1,6 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
+import uniffi.moq.MoqFrame
 import kotlin.math.abs
 
 /**
@@ -8,7 +9,7 @@ import kotlin.math.abs
 internal class MediaTimestampAligner(
     val audioLiveEdge: MediaLiveEdge = MediaLiveEdge(),
     val videoLiveEdge: MediaLiveEdge = MediaLiveEdge(),
-) {
+) : MediaFrameObserver {
     fun videoOffset(threshold: Long): Long? {
         val audioTime = audioLiveEdge.estimatedLivePTS() ?: return null
         val videoTime = videoLiveEdge.estimatedLivePTS() ?: return null
@@ -41,5 +42,20 @@ internal class MediaTimestampAligner(
     private fun absoluteValueExceeds(value: Long, threshold: Long): Boolean {
         if (threshold < 0L || value == Long.MIN_VALUE) return true
         return abs(value) > threshold
+    }
+
+    override fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
+        val timestampUs = frame.timestampUs.toLong()
+        when (kind) {
+            MediaFrameKind.AUDIO -> audioLiveEdge.recordTimestamp(timestampUs)
+            MediaFrameKind.VIDEO -> videoLiveEdge.recordTimestamp(timestampUs)
+        }
+    }
+
+    override fun onFrameDiscontinuity(kind: MediaFrameKind, gapUs: Long) {
+        when (kind) {
+            MediaFrameKind.AUDIO -> audioLiveEdge.reset()
+            MediaFrameKind.VIDEO -> videoLiveEdge.reset()
+        }
     }
 }

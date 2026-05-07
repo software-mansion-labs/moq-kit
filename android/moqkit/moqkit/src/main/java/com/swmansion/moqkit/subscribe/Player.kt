@@ -5,9 +5,11 @@ import android.view.Surface
 import com.swmansion.moqkit.UnsupportedCodecException
 import com.swmansion.moqkit.subscribe.internal.subscribeTrack
 import com.swmansion.moqkit.subscribe.internal.playback.AudioRenderer
+import com.swmansion.moqkit.subscribe.internal.playback.CompositeMediaFrameObserver
+import com.swmansion.moqkit.subscribe.internal.playback.MediaFrameKind
 import com.swmansion.moqkit.subscribe.internal.playback.MediaTimestampAligner
 import com.swmansion.moqkit.subscribe.internal.playback.MediaTimebase
-import com.swmansion.moqkit.subscribe.internal.playback.PlaybackMetricsAccumulator
+import com.swmansion.moqkit.subscribe.internal.playback.PlaybackStatsTracker
 import com.swmansion.moqkit.subscribe.internal.playback.VideoRenderer
 import com.swmansion.moqkit.subscribe.internal.playback.VideoRendererTrack
 import kotlinx.coroutines.CancellationException
@@ -78,9 +80,10 @@ class Player(
     }
 
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
-    private val accumulator = PlaybackMetricsAccumulator()
+    private val statsTracker = PlaybackStatsTracker()
     private val mediaTimebase = MediaTimebase()
     private val mediaTimestampAligner = MediaTimestampAligner()
+    private val frameObserver = CompositeMediaFrameObserver(listOf(statsTracker, mediaTimestampAligner))
 
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
     val events: SharedFlow<Event> = _events
@@ -138,7 +141,7 @@ class Player(
                 } else null
             } else null
 
-            return accumulator.snapshot(
+            return statsTracker.snapshot(
                 audioLatencyMs = audioLatencyMs,
                 videoLatencyMs = videoLatencyMs,
                 audioRingBufferMs = if (selectedAudioTrack != null) audioRenderer?.bufferFillMs else null,
@@ -190,7 +193,7 @@ class Player(
 
         validateSelectedTracks()
         playing = true
-        accumulator.markPlayStart()
+        statsTracker.markPlayStart()
         startAudio()
         surface?.let { startVideo(it) }
     }
@@ -291,7 +294,7 @@ class Player(
     fun stop() {
         check(!closed) { "Player is already closed" }
         if (!playing && audioRenderer == null && videoRenderer == null) {
-            accumulator.reset()
+            statsTracker.reset()
             return
         }
 
@@ -352,7 +355,7 @@ class Player(
         val renderer = AudioRenderer(
             config = audioInfo.rawConfig,
             targetLatencyMs = targetLatencyMs,
-            metrics = accumulator,
+            metrics = statsTracker,
             initialVolume = storedAudioVolume,
             mediaTimebase = mediaTimebase,
         )
@@ -368,16 +371,25 @@ class Player(
 
         audioIngestJob = scope.launch {
             var firstFrame = true
+            var lastPtsUs = 0L
             try {
                 audioFlow.collect { frame ->
                     val timestampUs = frame.timestampUs.toLong()
-                    mediaTimestampAligner.audioLiveEdge.recordTimestamp(timestampUs)
+                    if (isDiscontinuity(timestampUs, lastPtsUs, keyframe = true)) {
+                        Log.d(TAG, "Audio discontinuity detected")
+                        renderer.flush()
+                        frameObserver.onFrameDiscontinuity(
+                            MediaFrameKind.AUDIO,
+                            timestampGapUs(timestampUs, lastPtsUs),
+                        )
+                    }
+                    lastPtsUs = timestampUs
+
+                    frameObserver.onMediaFrame(frame, MediaFrameKind.AUDIO)
                     renderer.submitFrame(frame.payload, timestampUs)
-                    accumulator.recordAudioBytes(frame.payload.size)
 
                     if (firstFrame) {
                         firstFrame = false
-                        accumulator.markFirstAudioFrame()
                         Log.d(TAG, "First audio frame received")
                         _events.tryEmit(Event.TrackPlaying("audio"))
                     }
@@ -402,7 +414,7 @@ class Player(
 
         Log.d(TAG, "Starting video: '${videoInfo.name}' codec=${videoInfo.config.codec}")
 
-        accumulator.resetVideoDecodeStats(videoInfo.name)
+        statsTracker.resetVideoDecodeStats(videoInfo.name)
 
         val track = VideoRendererTrack(
             trackName = videoInfo.name,
@@ -414,7 +426,7 @@ class Player(
             outputSurface = surface,
             timebase = mediaTimebase,
             timestampAligner = mediaTimestampAligner,
-            metrics = accumulator,
+            metrics = statsTracker,
             onError = ::handleVideoRendererError,
         )
         videoRenderer = renderer
@@ -441,17 +453,18 @@ class Player(
                     val timestampUs = frame.timestampUs.toLong()
                     if (isDiscontinuity(timestampUs, lastPtsUs, frame.keyframe)) {
                         Log.d(TAG, "Video discontinuity detected")
-                        mediaTimestampAligner.videoLiveEdge.reset()
+                        frameObserver.onFrameDiscontinuity(
+                            MediaFrameKind.VIDEO,
+                            timestampGapUs(timestampUs, lastPtsUs),
+                        )
                     }
                     lastPtsUs = timestampUs
 
-                    mediaTimestampAligner.videoLiveEdge.recordTimestamp(timestampUs)
+                    frameObserver.onMediaFrame(frame, MediaFrameKind.VIDEO)
                     track.insert(frame.payload, timestampUs, frame.keyframe)
-                    accumulator.recordVideoBytes(frame.payload.size)
 
                     if (firstFrame) {
                         firstFrame = false
-                        accumulator.markFirstVideoFrame()
                         Log.d(TAG, "First video frame received")
                         _events.tryEmit(Event.TrackPlaying("video"))
                     }
@@ -548,7 +561,7 @@ class Player(
         videoRenderer?.stop()
         videoRenderer = null
         if (resetAccumulator) {
-            accumulator.reset()
+            statsTracker.reset()
         }
     }
 
@@ -599,9 +612,11 @@ class Player(
         if (!keyframe || lastUs <= 0L) {
             return false
         }
-        val diffUs = if (currentUs >= lastUs) currentUs - lastUs else lastUs - currentUs
-        return diffUs > 500_000L
+        return timestampGapUs(currentUs, lastUs) > 500_000L
     }
+
+    private fun timestampGapUs(currentUs: Long, lastUs: Long): Long =
+        if (currentUs >= lastUs) currentUs - lastUs else lastUs - currentUs
 
     private fun latencyMs(liveTime: Long?): Double? {
         val live = liveTime ?: return null

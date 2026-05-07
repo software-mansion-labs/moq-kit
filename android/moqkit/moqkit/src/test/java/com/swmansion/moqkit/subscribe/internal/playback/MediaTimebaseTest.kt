@@ -3,6 +3,7 @@ package com.swmansion.moqkit.subscribe.internal.playback
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import uniffi.moq.MoqFrame
 
 class MediaLiveEdgeTest {
     @Test
@@ -98,6 +99,41 @@ class MediaTimestampAlignerTest {
         assertEquals(4_000L, aligner.audioTime(videoTime = 10_000L, threshold = 2_000L))
         assertEquals(10_000L, aligner.videoTime(audioTime = 4_000L, threshold = 2_000L))
     }
+
+    @Test
+    fun observerRecordsLiveEdgeForFrameKind() {
+        var wallClock = 1_000L
+        val aligner = MediaTimestampAligner(
+            audioLiveEdge = MediaLiveEdge { wallClock },
+            videoLiveEdge = MediaLiveEdge { wallClock },
+        )
+
+        aligner.onMediaFrame(testFrame(timestampUs = 10_000u), MediaFrameKind.AUDIO)
+
+        assertEquals(10_000L, aligner.audioLiveEdge.estimatedLivePTS())
+        assertNull(aligner.videoLiveEdge.estimatedLivePTS())
+
+        aligner.onMediaFrame(testFrame(timestampUs = 7_000u), MediaFrameKind.VIDEO)
+
+        assertEquals(7_000L, aligner.videoLiveEdge.estimatedLivePTS())
+    }
+
+    @Test
+    fun observerDiscontinuityResetsOnlyAffectedLiveEdge() {
+        var wallClock = 1_000L
+        val aligner = MediaTimestampAligner(
+            audioLiveEdge = MediaLiveEdge { wallClock },
+            videoLiveEdge = MediaLiveEdge { wallClock },
+        )
+
+        aligner.onMediaFrame(testFrame(timestampUs = 10_000u), MediaFrameKind.AUDIO)
+        aligner.onMediaFrame(testFrame(timestampUs = 7_000u), MediaFrameKind.VIDEO)
+
+        aligner.onFrameDiscontinuity(MediaFrameKind.VIDEO, gapUs = 700_000L)
+
+        assertEquals(10_000L, aligner.audioLiveEdge.estimatedLivePTS())
+        assertNull(aligner.videoLiveEdge.estimatedLivePTS())
+    }
 }
 
 class MediaTimebaseTest {
@@ -112,3 +148,10 @@ class MediaTimebaseTest {
         assertEquals(0L, timebase.currentTimeUs)
     }
 }
+
+private fun testFrame(timestampUs: ULong): MoqFrame =
+    MoqFrame(
+        payload = ByteArray(1),
+        timestampUs = timestampUs,
+        keyframe = false,
+    )
