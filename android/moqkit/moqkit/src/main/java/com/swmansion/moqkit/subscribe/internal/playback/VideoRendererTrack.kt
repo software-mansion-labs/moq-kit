@@ -34,10 +34,6 @@ internal class VideoRendererTrack(
     private val lock = Object()
     private var onDataAvailable: (() -> Unit)? = null
 
-    @Volatile
-    var lastIngestPtsUs: Long = 0L
-        private set
-
     init {
         buffer.setOnDataAvailable {
             val cb = synchronized(lock) { onDataAvailable }
@@ -46,7 +42,6 @@ internal class VideoRendererTrack(
     }
 
     fun insert(payload: ByteArray, timestampUs: Long, keyframe: Boolean) {
-        lastIngestPtsUs = timestampUs
         val processed = processor.processPayload(payload, keyframe) ?: return
         val frame = ProcessedFrame(processed, timestampUs, keyframe)
 

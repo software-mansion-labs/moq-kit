@@ -5,6 +5,8 @@ import android.view.Surface
 import com.swmansion.moqkit.UnsupportedCodecException
 import com.swmansion.moqkit.subscribe.internal.subscribeTrack
 import com.swmansion.moqkit.subscribe.internal.playback.AudioRenderer
+import com.swmansion.moqkit.subscribe.internal.playback.MediaTimestampAligner
+import com.swmansion.moqkit.subscribe.internal.playback.MediaTimebase
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackMetricsAccumulator
 import com.swmansion.moqkit.subscribe.internal.playback.VideoRenderer
 import com.swmansion.moqkit.subscribe.internal.playback.VideoRendererTrack
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
 
 private const val TAG = "Player"
+private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
 
 /**
  * Real-time audio+video player with fine-grained latency control.
@@ -76,6 +79,8 @@ class Player(
 
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
     private val accumulator = PlaybackMetricsAccumulator()
+    private val mediaTimebase = MediaTimebase()
+    private val mediaTimestampAligner = MediaTimestampAligner()
 
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
     val events: SharedFlow<Event> = _events
@@ -107,7 +112,7 @@ class Player(
 
     /** Current playback time in microseconds. */
     val currentTimeUs: Long
-        get() = audioRenderer?.currentTimeUs ?: 0L
+        get() = mediaTimebase.currentTimeUs
 
     /** Current audio output volume, clamped to the 0.0-1.0 range. */
     val audioVolume: Float
@@ -116,24 +121,26 @@ class Player(
     /** Snapshot of current playback metrics. */
     val stats: PlaybackStats
         get() {
-            val timeUs = audioRenderer?.currentTimeUs ?: 0L
-            val audioLatency = audioRenderer?.let {
-                if (it.lastIngestPtsUs > 0 && timeUs > 0) {
-                    (it.lastIngestPtsUs - timeUs).toDouble() / 1000.0
-                } else {
-                    null
-                }
-            }
-            val videoLatency = videoRenderer?.let {
-                if (it.lastIngestPtsUs > 0 && timeUs > 0) {
-                    (it.lastIngestPtsUs - timeUs).toDouble() / 1000.0
-                } else {
-                    null
-                }
-            }
+            val audioLatencyMs = if (selectedAudioTrack != null) {
+                latencyMs(mediaTimestampAligner.audioLiveEdge.estimatedLivePTS())
+            } else null
+            val videoLatencyMs = if (selectedVideoTrack != null) {
+                val videoTime = mediaTimestampAligner.videoLiveEdge.estimatedLivePTS()
+                if (videoTime != null &&
+                    (selectedAudioTrack == null || mediaTimestampAligner.audioLiveEdge.estimatedLivePTS() != null)
+                ) {
+                    latencyMs(
+                        mediaTimestampAligner.audioTime(
+                            videoTime = videoTime,
+                            threshold = PTS_CORRECTION_THRESHOLD_US,
+                        ),
+                    )
+                } else null
+            } else null
+
             return accumulator.snapshot(
-                audioLatencyMs = if (selectedAudioTrack != null) audioLatency else null,
-                videoLatencyMs = if (selectedVideoTrack != null) videoLatency else null,
+                audioLatencyMs = audioLatencyMs,
+                videoLatencyMs = videoLatencyMs,
                 audioRingBufferMs = if (selectedAudioTrack != null) audioRenderer?.bufferFillMs else null,
                 videoJitterBufferMs = if (selectedVideoTrack != null) videoRenderer?.bufferFillMs else null,
                 videoDecodeStatsEnabled = selectedVideoTrack != null && videoRenderer != null,
@@ -347,6 +354,7 @@ class Player(
             targetLatencyMs = targetLatencyMs,
             metrics = accumulator,
             initialVolume = storedAudioVolume,
+            mediaTimebase = mediaTimebase,
         )
         audioRenderer = renderer
         renderer.start()
@@ -362,7 +370,9 @@ class Player(
             var firstFrame = true
             try {
                 audioFlow.collect { frame ->
-                    renderer.submitFrame(frame.payload, frame.timestampUs.toLong())
+                    val timestampUs = frame.timestampUs.toLong()
+                    mediaTimestampAligner.audioLiveEdge.recordTimestamp(timestampUs)
+                    renderer.submitFrame(frame.payload, timestampUs)
                     accumulator.recordAudioBytes(frame.payload.size)
 
                     if (firstFrame) {
@@ -402,7 +412,8 @@ class Player(
         val renderer = VideoRenderer(
             activeTrack = track,
             outputSurface = surface,
-            timebase = audioRenderer?.timebase,
+            timebase = mediaTimebase,
+            timestampAligner = mediaTimestampAligner,
             metrics = accumulator,
             onError = ::handleVideoRendererError,
         )
@@ -423,10 +434,19 @@ class Player(
 
         return scope.launch {
             var firstFrame = true
+            var lastPtsUs = 0L
             try {
                 Log.d(TAG, "Waiting for video frames")
                 videoFlow.collect { frame ->
-                    track.insert(frame.payload, frame.timestampUs.toLong(), frame.keyframe)
+                    val timestampUs = frame.timestampUs.toLong()
+                    if (isDiscontinuity(timestampUs, lastPtsUs, frame.keyframe)) {
+                        Log.d(TAG, "Video discontinuity detected")
+                        mediaTimestampAligner.videoLiveEdge.reset()
+                    }
+                    lastPtsUs = timestampUs
+
+                    mediaTimestampAligner.videoLiveEdge.recordTimestamp(timestampUs)
+                    track.insert(frame.payload, timestampUs, frame.keyframe)
                     accumulator.recordVideoBytes(frame.payload.size)
 
                     if (firstFrame) {
@@ -573,5 +593,25 @@ class Player(
     private fun validatePlayable(track: AudioTrackInfo?) {
         val reason = track?.unsupportedReason ?: return
         throw UnsupportedCodecException("Audio track '${track.name}' is not playable: $reason")
+    }
+
+    private fun isDiscontinuity(currentUs: Long, lastUs: Long, keyframe: Boolean): Boolean {
+        if (!keyframe || lastUs <= 0L) {
+            return false
+        }
+        val diffUs = if (currentUs >= lastUs) currentUs - lastUs else lastUs - currentUs
+        return diffUs > 500_000L
+    }
+
+    private fun latencyMs(liveTime: Long?): Double? {
+        val live = liveTime ?: return null
+        val current = mediaTimebase.currentTimeUs
+        if (current <= 0L) return null
+        val latencyUs = try {
+            Math.subtractExact(live, current)
+        } catch (_: ArithmeticException) {
+            return null
+        }
+        return maxOf(0L, latencyUs).toDouble() / 1_000.0
     }
 }

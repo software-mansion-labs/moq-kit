@@ -35,6 +35,7 @@ internal class VideoRenderer(
     @Volatile private var activeTrack: VideoRendererTrack,
     @Volatile private var outputSurface: Surface,
     private val timebase: MediaTimebase? = null,
+    private val timestampAligner: MediaTimestampAligner? = null,
     private val metrics: PlaybackMetricsAccumulator? = null,
     private val onError: (Throwable) -> Unit = {},
 ) {
@@ -91,6 +92,7 @@ internal class VideoRenderer(
         private const val MAX_AHEAD_US = 500_000L
         private const val MAX_RENDER_SCHEDULE_NS = 500_000_000L
         private const val LATE_DROP_THRESHOLD_US = 50_000L
+        private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
         private const val CUT_IN_WINDOW_US = 500_000L
         private const val FLUSH_THRESHOLD_US = 2_000_000L
         private const val AWAITING_KEYFRAME_TIMEOUT_MS = 5_000L
@@ -98,9 +100,6 @@ internal class VideoRenderer(
     }
 
     val bufferFillMs: Double get() = activeTrack.depthMs
-
-    /** PTS of the most recently ingested frame from the network. */
-    val lastIngestPtsUs: Long get() = activeTrack.lastIngestPtsUs
 
     // MARK: - Lifecycle
 
@@ -255,7 +254,7 @@ internal class VideoRenderer(
             }
 
             if (mediaTimeUs != null) {
-                val aheadUs = nextPts - mediaTimeUs
+                val aheadUs = audioTime(nextPts) - mediaTimeUs
                 if (aheadUs > MAX_AHEAD_US) {
                     val delayMs = ((aheadUs - MAX_AHEAD_US) / 1000L).coerceIn(1L, 100L)
                     delayedDrainToken = Any()
@@ -264,7 +263,9 @@ internal class VideoRenderer(
                 }
             }
 
-            val (entry, playable) = activeTrack.dequeue(mediaTimeUs)
+            val (entry, playable) = activeTrack.dequeue(
+                mediaTimeUs = mediaTimeUs?.let(::videoTime),
+            )
             if (entry == null) {
                 return
             }
@@ -373,6 +374,9 @@ internal class VideoRenderer(
         Log.d(TAG, "VideoRenderer: swapping to pending track (hardFlush=$hardFlush)")
 
         ensureMatchingCodecs(activeTrack, newTrack)
+        // Rendition switching assumes all video tracks use the same source timestamp domain.
+        // If future tracks can use different domains, MediaTimestampAligner needs per-track
+        // live edges or switch-time offsets before comparing keyframe and fed PTS values.
 
         val currentDecoder = decoder
         if (currentDecoder != null) {
@@ -461,6 +465,7 @@ internal class VideoRenderer(
             )
         }
         val playable = metadata?.playable ?: true
+        val displayTimestampUs = audioTime(timestampUs)
         val dec = decoder ?: return
 
         // After a CuttingIn swap, suppress display of frames that overlap with the
@@ -481,14 +486,14 @@ internal class VideoRenderer(
         val mediaTimeUs = timebase?.currentTimeUs?.takeIf { it > 0L }
 
         // If frame is too far behind the timebase it means that we can't play it smoothly.
-        if (mediaTimeUs != null && timestampUs < mediaTimeUs - LATE_DROP_THRESHOLD_US) {
+        if (mediaTimeUs != null && displayTimestampUs < mediaTimeUs - LATE_DROP_THRESHOLD_US) {
             dec.releaseOutputBuffer(bufferIndex, false)
             metrics?.recordVideoFrameDropped()
             return
         }
 
         val delayUs = if (mediaTimeUs != null) {
-            timestampUs - mediaTimeUs
+            displayTimestampUs - mediaTimeUs
         } else {
             timestampUs - activeTrack.estimatedPlaybackTimeUs()
         }
@@ -562,4 +567,17 @@ internal class VideoRenderer(
         hasPendingTrack = false
         onError(error)
     }
+
+    private fun audioTime(videoTime: Long): Long =
+        timestampAligner?.audioTime(
+            videoTime = videoTime,
+            threshold = PTS_CORRECTION_THRESHOLD_US,
+        ) ?: videoTime
+
+    private fun videoTime(audioTime: Long): Long =
+        timestampAligner?.videoTime(
+            audioTime = audioTime,
+            threshold = PTS_CORRECTION_THRESHOLD_US,
+        ) ?: audioTime
+
 }

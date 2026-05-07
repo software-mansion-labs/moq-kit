@@ -22,11 +22,12 @@ internal class AudioRenderer(
     private val targetLatencyMs: Int,
     private val metrics: PlaybackMetricsAccumulator? = null,
     initialVolume: Float = 1f,
+    mediaTimebase: MediaTimebase = MediaTimebase(),
 ) {
     private val sampleRate = config.sampleRate.toInt()
     private val channels = config.channelCount.toInt()
     private val lock = ReentrantLock()
-    internal val timebase = MediaTimebase()
+    internal val timebase = mediaTimebase
 
     private var ringBuffer = AudioRingBuffer(
         rate = sampleRate,
@@ -43,14 +44,6 @@ internal class AudioRenderer(
 
     @Volatile
     private var running = false
-
-    /** PTS of the most recently submitted frame, in microseconds. */
-    @Volatile
-    var lastIngestPtsUs: Long = 0L
-        private set
-
-    /** Current playback time in microseconds, driven by AudioTrack head position. */
-    val currentTimeUs: Long get() = timebase.currentTimeUs
 
     val bufferFillMs: Double get() = lock.withLock {
         (ringBuffer.length.toDouble() / sampleRate) * 1000.0
@@ -99,7 +92,7 @@ internal class AudioRenderer(
             lock.withLock {
                 // Set timebase base on first decoded frame
                 if (timebase.currentTimeUs == 0L) {
-                    timebase.setBase(timestampUs, sampleRate)
+                    timebase.setCurrentTimeUs(timestampUs)
                 }
                 ringBuffer.write(timestampUs, pcmData, frameCount)
             }
@@ -131,7 +124,7 @@ internal class AudioRenderer(
                         metrics?.audioStallEnded()
                     }
                     track.write(chunkBuf, 0, framesRead * channels)
-                    timebase.update(ts)
+                    timebase.setCurrentTimeUs(ts)
                 } else {
                     if (!wasStalled && everPlayed) {
                         wasStalled = true
@@ -152,7 +145,6 @@ internal class AudioRenderer(
 
     /** Submit a compressed audio frame for decoding. */
     fun submitFrame(payload: ByteArray, timestampUs: Long) {
-        lastIngestPtsUs = timestampUs
         decoder?.submitFrame(payload, timestampUs)
     }
 
