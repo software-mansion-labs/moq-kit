@@ -21,7 +21,6 @@ import MoQKitFFI
 /// run on `enqueueQueue`.
 final class VideoRenderer: @unchecked Sendable {
     let layer: AVSampleBufferDisplayLayer
-    let timebase: CMTimebase
 
     // MARK: - Pending-track swap state machine
 
@@ -42,6 +41,7 @@ final class VideoRenderer: @unchecked Sendable {
 
     private let enqueueQueue: DispatchQueue
     private let mediaTimebase: MediaTimebase
+    private let timestampAligner: MediaTimestampAligner
     private let isTimebaseOwner: Bool
     private var timebaseStarted: Bool
     private let metrics: PlaybackMetricsAccumulator
@@ -59,21 +59,22 @@ final class VideoRenderer: @unchecked Sendable {
 
     init(
         mediaTimebase: MediaTimebase,
+        timestampAligner: MediaTimestampAligner,
         isTimebaseOwner: Bool,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
         metrics: PlaybackMetricsAccumulator
     ) {
         self.layer = layer
-        self.timebase = mediaTimebase.cmTimebase
         self.mediaTimebase = mediaTimebase
+        self.timestampAligner = timestampAligner
         self.isTimebaseOwner = isTimebaseOwner
         self.metrics = metrics
         self.activeTrack = track
         self.enqueueQueue = DispatchQueue(
             label: "com.swmansion.MoQKit.VideoEnqueue", qos: .userInteractive)
 
-        layer.controlTimebase = mediaTimebase.cmTimebase
+        mediaTimebase.configure(displayLayer: layer)
         self.timebaseStarted = !isTimebaseOwner
     }
 
@@ -147,7 +148,6 @@ final class VideoRenderer: @unchecked Sendable {
 
     private func armVideoEnqueue() {
         let queue = self.enqueueQueue
-        let videoTimebase = self.timebase
         let isOwner = self.isTimebaseOwner
         let metricsRef = self.metrics
 
@@ -233,7 +233,7 @@ final class VideoRenderer: @unchecked Sendable {
                     }
 
                     // Otherwise: schedule a deferred stall check.
-                    let currentTime = CMTimebaseGetTime(videoTimebase)
+                    let currentTime = self.mediaTimebase.currentTime()
                     if self.lastEnqueuedPTS.isValid && currentTime < self.lastEnqueuedPTS {
                         let remaining = CMTimeSubtract(self.lastEnqueuedPTS, currentTime)
                         let delaySec = CMTimeGetSeconds(remaining)
@@ -278,8 +278,8 @@ final class VideoRenderer: @unchecked Sendable {
         pendingTrack = nil
         newTrack.setOnDataAvailable(makeDataAvailableCallback())
         // Current rendition switching assumes all video tracks share one timestamp domain.
-        // If future renditions do not, MediaTimebase needs per-video-track offset state or
-        // a reset/recompute when the pending track becomes active.
+        // If future renditions do not, MediaTimestampAligner needs per-video-track live
+        // edges or a reset/recompute when the pending track becomes active.
         KitLogger.player.debug("VideoRenderer: swapped to pending track")
         onTrackActivated?()
         onTrackActivated = nil
@@ -305,23 +305,24 @@ final class VideoRenderer: @unchecked Sendable {
         sourceTimestampUs: UInt64
     ) -> (sampleBuffer: CMSampleBuffer, presentationTime: CMTime) {
         let sourceTime = CMTime(value: CMTimeValue(sourceTimestampUs), timescale: 1_000_000)
-        guard let correction = mediaTimebase.videoPtsCorrection(
-            forSourceTimestampUs: sourceTimestampUs,
-            thresholdUs: ptsCorrectionThresholdUs)
-        else {
+        guard let offset = timestampAligner.videoOffset(threshold: ptsCorrectionThresholdUs) else {
             return (sampleBuffer, sourceTime)
         }
+        let correctedTimestampUs = timestampAligner.audioTime(
+            videoTime: sourceTimestampUs,
+            threshold: ptsCorrectionThresholdUs)
+        guard correctedTimestampUs != sourceTimestampUs else { return (sampleBuffer, sourceTime) }
 
         guard let retimed = Self.copySampleBuffer(
             sampleBuffer,
-            shiftingTimingByUs: correction.offsetUs)
+            shiftingTimingByUs: offset)
         else {
             return (sampleBuffer, sourceTime)
         }
 
         return (
             retimed,
-            CMTime(value: CMTimeValue(correction.correctedTimestampUs), timescale: 1_000_000)
+            CMTime(value: CMTimeValue(correctedTimestampUs), timescale: 1_000_000)
         )
     }
 
