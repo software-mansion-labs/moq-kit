@@ -21,6 +21,12 @@ public struct MediaFrame: Sendable {
         self.timestampUs = raw.timestampUs
         self.keyframe = raw.keyframe
     }
+
+    init(payload: Data, timestampUs: UInt64, keyframe: Bool) {
+        self.payload = payload
+        self.timestampUs = timestampUs
+        self.keyframe = keyframe
+    }
 }
 
 // MARK: - Track State

@@ -55,3 +55,23 @@ final class MediaTimestampAligner: @unchecked Sendable {
         return abs(value) > threshold
     }
 }
+
+extension MediaTimestampAligner: MediaFrameObserver {
+    func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind) {
+        switch kind {
+        case .audio:
+            audioLiveEdge.recordTimestamp(frame.timestampUs)
+        case .video:
+            videoLiveEdge.recordTimestamp(frame.timestampUs)
+        }
+    }
+
+    func onFrameDiscontinuity(kind: MediaFrameKind, gapUs: UInt64) {
+        switch kind {
+        case .audio:
+            audioLiveEdge.reset()
+        case .video:
+            videoLiveEdge.reset()
+        }
+    }
+}

@@ -19,7 +19,7 @@ final class AudioRenderer: @unchecked Sendable {
     private let engine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
     private let ringState: RingState
-    private let metrics: PlaybackMetricsAccumulator
+    private let metrics: PlaybackStatsTracker
     private var volume: Float
 
     init(
@@ -27,7 +27,7 @@ final class AudioRenderer: @unchecked Sendable {
         mediaTimebase: MediaTimebase,
         targetLatencyMs: Int,
         initialVolume: Float = 1.0,
-        metrics: PlaybackMetricsAccumulator
+        metrics: PlaybackStatsTracker
     ) throws {
         // Create a temporary decoder only to discover the output format for AVAudioEngine setup.
         let formatDecoder = try AudioDecoder(config: config)
@@ -165,13 +165,13 @@ final class AudioRenderer: @unchecked Sendable {
 private final class RingState: @unchecked Sendable {
     private var ringBuffer: AudioRingBuffer
     private let lock: UnsafeMutablePointer<os_unfair_lock>
-    private let metrics: PlaybackMetricsAccumulator
+    private let metrics: PlaybackStatsTracker
 
     let channels: Int
     /// Approximate number of samples per decoded frame (set once from first decode).
     var decodeFrameSize: Int = 1024
 
-    init(rate: Int, channels: Int, latencyMs: Double, metrics: PlaybackMetricsAccumulator) {
+    init(rate: Int, channels: Int, latencyMs: Double, metrics: PlaybackStatsTracker) {
         self.channels = channels
         self.metrics = metrics
         self.ringBuffer = AudioRingBuffer(rate: rate, channels: channels, latencyMs: latencyMs)

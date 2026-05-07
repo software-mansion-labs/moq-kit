@@ -44,7 +44,7 @@ final class VideoRenderer: @unchecked Sendable {
     private let timestampAligner: MediaTimestampAligner
     private let isTimebaseOwner: Bool
     private var timebaseStarted: Bool
-    private let metrics: PlaybackMetricsAccumulator
+    private let metrics: PlaybackStatsTracker
     private var lastEnqueuedPTSus: UInt64 = 0
     private var lastEnqueuedPTS: CMTime = .invalid
     private var pendingStallCheck: DispatchWorkItem?
@@ -63,7 +63,7 @@ final class VideoRenderer: @unchecked Sendable {
         isTimebaseOwner: Bool,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
-        metrics: PlaybackMetricsAccumulator
+        metrics: PlaybackStatsTracker
     ) {
         self.layer = layer
         self.mediaTimebase = mediaTimebase

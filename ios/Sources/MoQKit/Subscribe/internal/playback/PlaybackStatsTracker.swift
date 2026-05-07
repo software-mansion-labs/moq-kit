@@ -1,11 +1,55 @@
 import Foundation
 
-/// Thread-safe accumulator for playback quality metrics.
+/// Thread-safe tracker for playback quality metrics and received-frame diagnostics.
 ///
-/// All write methods are real-time safe (no allocation, `os_unfair_lock` only).
-/// One `snapshot()` method reads all fields under the lock and returns `PlaybackStats`.
-final class PlaybackMetricsAccumulator: @unchecked Sendable {
+/// Write methods are safe to call from playback ingest, render, and audio callback threads.
+/// `snapshot()` reads all tracked fields under the lock and returns `PlaybackStats`.
+final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
+    private struct FrameArrivalState {
+        var lastWallNs: UInt64?
+        var lastPtsUs: UInt64?
+        var highestPtsUs: UInt64?
+
+        var frameTimestamps: [UInt64] = []
+        var intervalsWindow: [(ns: UInt64, ms: Double)] = []
+        var intervalMsTotal: Double = 0
+
+        var arrivalGapCount: UInt64 = 0
+        var burstCount: UInt64 = 0
+        var outOfOrderCount: UInt64 = 0
+        var maxOutOfOrderDeltaMs: Double = 0
+        var discontinuityCount: UInt64 = 0
+        var maxDiscontinuityGapMs: Double = 0
+
+        var hasData: Bool {
+            !frameTimestamps.isEmpty || arrivalGapCount > 0 || burstCount > 0
+                || outOfOrderCount > 0 || discontinuityCount > 0
+        }
+
+        mutating func resetAll() {
+            lastWallNs = nil
+            lastPtsUs = nil
+            highestPtsUs = nil
+            frameTimestamps.removeAll()
+            intervalsWindow.removeAll()
+            intervalMsTotal = 0
+            arrivalGapCount = 0
+            burstCount = 0
+            outOfOrderCount = 0
+            maxOutOfOrderDeltaMs = 0
+            discontinuityCount = 0
+            maxDiscontinuityGapMs = 0
+        }
+
+        mutating func resetTimingBaseline() {
+            lastWallNs = nil
+            lastPtsUs = nil
+            highestPtsUs = nil
+        }
+    }
+
     private let lock: UnsafeMutablePointer<os_unfair_lock>
+    private let clock: @Sendable () -> UInt64
 
     // TTFF
     private var playStartNs: UInt64 = 0
@@ -30,24 +74,31 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
     private var videoPlayStartNs: UInt64 = 0
     private var videoIsPlaying: Bool = false
 
-    // Bitrate — audio (1-sec rolling window)
+    // Bitrate — audio/video (1-sec rolling window)
     private var audioBytesWindow: [(ns: UInt64, bytes: Int)] = []
     private var audioBytesTotal: Int = 0
-
-    // Bitrate — video (1-sec rolling window)
     private var videoBytesWindow: [(ns: UInt64, bytes: Int)] = []
     private var videoBytesTotal: Int = 0
 
-    // FPS — video (1-sec rolling window)
+    // FPS — displayed video (1-sec rolling window)
     private var videoFrameTimestamps: [UInt64] = []
+
+    // Received-frame arrival diagnostics
+    private var audioArrival = FrameArrivalState()
+    private var videoArrival = FrameArrivalState()
 
     // Dropped frames
     private var audioFramesDropped: UInt64 = 0
     private var videoFramesDropped: UInt64 = 0
 
-    private static let windowNs: UInt64 = 1_000_000_000  // 1 second
+    private static let windowNs: UInt64 = 1_000_000_000
+    private static let minWindowSpanNs: UInt64 = 100_000_000
+    private static let arrivalGapFactor: Double = 2.0
+    private static let burstFactor: Double = 0.3
+    private static let discontinuityThresholdUs: UInt64 = 2_000_000
 
-    init() {
+    init(clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
+        self.clock = clock
         self.lock = .allocate(capacity: 1)
         self.lock.initialize(to: os_unfair_lock())
     }
@@ -57,43 +108,68 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
         lock.deallocate()
     }
 
+    // MARK: - MediaFrameObserver
+
+    func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind) {
+        let now = clock()
+
+        os_unfair_lock_lock(lock)
+        switch kind {
+        case .audio:
+            if firstAudioFrameNs == 0 {
+                firstAudioFrameNs = now
+            }
+            audioBytesWindow.append((ns: now, bytes: frame.payload.count))
+            audioBytesTotal += frame.payload.count
+            pruneWindow(entries: &audioBytesWindow, total: &audioBytesTotal, now: now)
+            recordArrival(frame: frame, now: now, state: &audioArrival)
+
+        case .video:
+            if firstVideoFrameNs == 0 {
+                firstVideoFrameNs = now
+            }
+            videoBytesWindow.append((ns: now, bytes: frame.payload.count))
+            videoBytesTotal += frame.payload.count
+            pruneWindow(entries: &videoBytesWindow, total: &videoBytesTotal, now: now)
+            recordArrival(frame: frame, now: now, state: &videoArrival)
+        }
+        os_unfair_lock_unlock(lock)
+    }
+
+    func onFrameDiscontinuity(kind: MediaFrameKind, gapUs: UInt64) {
+        os_unfair_lock_lock(lock)
+        let gapMs = Double(gapUs) / 1_000.0
+        switch kind {
+        case .audio:
+            audioArrival.discontinuityCount += 1
+            audioArrival.maxDiscontinuityGapMs = max(audioArrival.maxDiscontinuityGapMs, gapMs)
+            audioArrival.resetTimingBaseline()
+        case .video:
+            videoArrival.discontinuityCount += 1
+            videoArrival.maxDiscontinuityGapMs = max(videoArrival.maxDiscontinuityGapMs, gapMs)
+            videoArrival.resetTimingBaseline()
+        }
+        os_unfair_lock_unlock(lock)
+    }
+
     // MARK: - TTFF
 
     func markPlayStart() {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = clock()
         os_unfair_lock_lock(lock)
         playStartNs = now
-        os_unfair_lock_unlock(lock)
-    }
-
-    func markFirstAudioFrame() {
-        let now = DispatchTime.now().uptimeNanoseconds
-        os_unfair_lock_lock(lock)
-        if firstAudioFrameNs == 0 {
-            firstAudioFrameNs = now
-        }
-        os_unfair_lock_unlock(lock)
-    }
-
-    func markFirstVideoFrame() {
-        let now = DispatchTime.now().uptimeNanoseconds
-        os_unfair_lock_lock(lock)
-        if firstVideoFrameNs == 0 {
-            firstVideoFrameNs = now
-        }
         os_unfair_lock_unlock(lock)
     }
 
     // MARK: - Stalls
 
     func audioStallBegan() {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = clock()
         os_unfair_lock_lock(lock)
         if !audioIsStalled {
             audioIsStalled = true
             audioStallCount += 1
             audioStallStartNs = now
-            // Accumulate play time up to now
             if audioIsPlaying {
                 audioPlayTimeNs += now - audioPlayStartNs
                 audioIsPlaying = false
@@ -103,16 +179,14 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
     }
 
     func audioStallEnded() {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = clock()
         os_unfair_lock_lock(lock)
         if audioIsStalled {
             audioIsStalled = false
             audioStallTotalNs += now - audioStallStartNs
-            // Resume play time tracking
             audioIsPlaying = true
             audioPlayStartNs = now
         } else if !audioIsPlaying {
-            // First time playing (no prior stall)
             audioIsPlaying = true
             audioPlayStartNs = now
         }
@@ -120,7 +194,7 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
     }
 
     func videoStallBegan() {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = clock()
         os_unfair_lock_lock(lock)
         if !videoIsStalled {
             videoIsStalled = true
@@ -135,7 +209,7 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
     }
 
     func videoStallEnded() {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = clock()
         os_unfair_lock_lock(lock)
         if videoIsStalled {
             videoIsStalled = false
@@ -149,30 +223,10 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
         os_unfair_lock_unlock(lock)
     }
 
-    // MARK: - Bitrate
-
-    func recordAudioBytes(_ count: Int) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        os_unfair_lock_lock(lock)
-        audioBytesWindow.append((ns: now, bytes: count))
-        audioBytesTotal += count
-        pruneWindow(entries: &audioBytesWindow, total: &audioBytesTotal, now: now)
-        os_unfair_lock_unlock(lock)
-    }
-
-    func recordVideoBytes(_ count: Int) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        os_unfair_lock_lock(lock)
-        videoBytesWindow.append((ns: now, bytes: count))
-        videoBytesTotal += count
-        pruneWindow(entries: &videoBytesWindow, total: &videoBytesTotal, now: now)
-        os_unfair_lock_unlock(lock)
-    }
-
     // MARK: - FPS
 
     func recordVideoFrameDisplayed() {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = clock()
         os_unfair_lock_lock(lock)
         videoFrameTimestamps.append(now)
         pruneTimestamps(entries: &videoFrameTimestamps, now: now)
@@ -200,11 +254,9 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
         audioLatencyMs: Double?, videoLatencyMs: Double?,
         audioRingBufferMs: Double?, videoJitterBufferMs: Double?
     ) -> PlaybackStats {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = clock()
         os_unfair_lock_lock(lock)
 
-        // TTFF — guard against UInt64 underflow if a frame callback fires before
-        // markPlayStart() (e.g. immediately after reset() during pause/play).
         let ttfAudio: Double? =
             (playStartNs > 0 && firstAudioFrameNs >= playStartNs)
             ? Double(firstAudioFrameNs - playStartNs) / 1_000_000.0 : nil
@@ -212,7 +264,6 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
             (playStartNs > 0 && firstVideoFrameNs >= playStartNs)
             ? Double(firstVideoFrameNs - playStartNs) / 1_000_000.0 : nil
 
-        // Audio stalls
         let aStalls: StallStats? =
             audioStallCount > 0 || audioIsPlaying || audioIsStalled
             ? makeStallStats(
@@ -222,7 +273,6 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
                 playStartNs: audioPlayStartNs, now: now)
             : nil
 
-        // Video stalls
         let vStalls: StallStats? =
             videoStallCount > 0 || videoIsPlaying || videoIsStalled
             ? makeStallStats(
@@ -232,18 +282,15 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
                 playStartNs: videoPlayStartNs, now: now)
             : nil
 
-        // Bitrate
         let aBitrate = computeBitrateKbps(
             entries: audioBytesWindow, total: audioBytesTotal, now: now)
         let vBitrate = computeBitrateKbps(
             entries: videoBytesWindow, total: videoBytesTotal, now: now)
-
-        // FPS
         let fps = computeFps(entries: videoFrameTimestamps, now: now)
-
-        // Dropped
         let aDrop = audioFramesDropped
         let vDrop = videoFramesDropped
+        let audioArrivalStats = makeFrameArrivalStats(audioArrival, now: now)
+        let videoArrivalStats = makeFrameArrivalStats(videoArrival, now: now)
 
         os_unfair_lock_unlock(lock)
 
@@ -260,7 +307,9 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
             audioFramesDropped: aDrop > 0 ? aDrop : nil,
             videoFramesDropped: vDrop > 0 ? vDrop : nil,
             audioRingBufferMs: audioRingBufferMs,
-            videoJitterBufferMs: videoJitterBufferMs
+            videoJitterBufferMs: videoJitterBufferMs,
+            audioArrival: audioArrivalStats,
+            videoArrival: videoArrivalStats
         )
     }
 
@@ -293,6 +342,8 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
         videoBytesWindow.removeAll()
         videoBytesTotal = 0
         videoFrameTimestamps.removeAll()
+        audioArrival.resetAll()
+        videoArrival.resetAll()
 
         audioFramesDropped = 0
         videoFramesDropped = 0
@@ -300,6 +351,47 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
     }
 
     // MARK: - Private helpers (called under lock)
+
+    private func recordArrival(
+        frame: MediaFrame,
+        now: UInt64,
+        state: inout FrameArrivalState
+    ) {
+        state.frameTimestamps.append(now)
+        pruneTimestamps(entries: &state.frameTimestamps, now: now)
+        pruneArrivalIntervals(state: &state, now: now)
+
+        if let highest = state.highestPtsUs, frame.timestampUs < highest {
+            state.outOfOrderCount += 1
+            let deltaMs = Double(highest - frame.timestampUs) / 1_000.0
+            state.maxOutOfOrderDeltaMs = max(state.maxOutOfOrderDeltaMs, deltaMs)
+        }
+        state.highestPtsUs = max(state.highestPtsUs ?? 0, frame.timestampUs)
+
+        if let previousWallNs = state.lastWallNs, let previousPtsUs = state.lastPtsUs {
+            let isOutOfOrder = frame.timestampUs < previousPtsUs
+            let ptsDeltaUs = isOutOfOrder ? 0 : frame.timestampUs - previousPtsUs
+
+            if !isOutOfOrder && ptsDeltaUs <= Self.discontinuityThresholdUs {
+                let wallDeltaMs = Double(now - previousWallNs) / 1_000_000.0
+                state.intervalsWindow.append((ns: now, ms: wallDeltaMs))
+                state.intervalMsTotal += wallDeltaMs
+                pruneArrivalIntervals(state: &state, now: now)
+
+                let ptsDeltaMs = Double(ptsDeltaUs) / 1_000.0
+                if ptsDeltaMs > 0 {
+                    if wallDeltaMs > ptsDeltaMs * Self.arrivalGapFactor {
+                        state.arrivalGapCount += 1
+                    } else if wallDeltaMs < ptsDeltaMs * Self.burstFactor {
+                        state.burstCount += 1
+                    }
+                }
+            }
+        }
+
+        state.lastWallNs = now
+        state.lastPtsUs = frame.timestampUs
+    }
 
     private func pruneWindow(
         entries: inout [(ns: UInt64, bytes: Int)], total: inout Int, now: UInt64
@@ -318,12 +410,20 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
         }
     }
 
+    private func pruneArrivalIntervals(state: inout FrameArrivalState, now: UInt64) {
+        let cutoff = now >= Self.windowNs ? now - Self.windowNs : 0
+        while let first = state.intervalsWindow.first, first.ns < cutoff {
+            state.intervalMsTotal -= first.ms
+            state.intervalsWindow.removeFirst()
+        }
+    }
+
     private func computeBitrateKbps(entries: [(ns: UInt64, bytes: Int)], total: Int, now: UInt64)
         -> Double?
     {
         guard let first = entries.first else { return nil }
         let spanNs = now - first.ns
-        guard spanNs > 100_000_000 else { return nil }  // need at least 100ms of data
+        guard spanNs > Self.minWindowSpanNs else { return nil }
         let spanSec = Double(spanNs) / 1_000_000_000.0
         return Double(total) * 8.0 / 1000.0 / spanSec
     }
@@ -331,9 +431,33 @@ final class PlaybackMetricsAccumulator: @unchecked Sendable {
     private func computeFps(entries: [UInt64], now: UInt64) -> Double? {
         guard entries.count >= 2, let first = entries.first else { return nil }
         let spanNs = now - first
-        guard spanNs > 100_000_000 else { return nil }
+        guard spanNs > Self.minWindowSpanNs else { return nil }
         let spanSec = Double(spanNs) / 1_000_000_000.0
         return Double(entries.count) / spanSec
+    }
+
+    private func makeFrameArrivalStats(_ state: FrameArrivalState, now: UInt64)
+        -> FrameArrivalStats?
+    {
+        guard state.hasData else { return nil }
+        let intervalCount = state.intervalsWindow.count
+        let averageInterarrivalMs =
+            intervalCount > 0 ? state.intervalMsTotal / Double(intervalCount) : nil
+        let maxInterarrivalMs = state.intervalsWindow.map(\.ms).max()
+
+        return FrameArrivalStats(
+            receivedFramesPerSecond: computeFps(entries: state.frameTimestamps, now: now),
+            averageInterarrivalMs: averageInterarrivalMs,
+            maxInterarrivalMs: maxInterarrivalMs,
+            arrivalGapCount: state.arrivalGapCount,
+            burstCount: state.burstCount,
+            outOfOrderCount: state.outOfOrderCount,
+            maxOutOfOrderDeltaMs: state.maxOutOfOrderDeltaMs > 0
+                ? state.maxOutOfOrderDeltaMs : nil,
+            discontinuityCount: state.discontinuityCount,
+            maxDiscontinuityGapMs: state.maxDiscontinuityGapMs > 0
+                ? state.maxDiscontinuityGapMs : nil
+        )
     }
 
     private func makeStallStats(

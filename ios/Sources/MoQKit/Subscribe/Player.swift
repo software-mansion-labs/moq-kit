@@ -46,6 +46,10 @@ public struct PlaybackStats: Sendable {
     public let audioRingBufferMs: Double?
     /// Current video jitter buffer fill level in milliseconds. `nil` when no video track is active.
     public let videoJitterBufferMs: Double?
+    /// Audio frame arrival diagnostics. `nil` before audio frames arrive.
+    public let audioArrival: FrameArrivalStats?
+    /// Video frame arrival diagnostics. `nil` before video frames arrive.
+    public let videoArrival: FrameArrivalStats?
 }
 
 /// Stall statistics for a single track since playback started.
@@ -56,6 +60,28 @@ public struct StallStats: Sendable {
     public let totalDurationMs: Double
     /// Fraction of playback time spent stalling: `totalDurationMs / totalPlaybackDurationMs`.
     public let rebufferingRatio: Double
+}
+
+/// Arrival timing diagnostics for one received media stream.
+public struct FrameArrivalStats: Sendable {
+    /// Received compressed frames per second over the recent rolling window.
+    public let receivedFramesPerSecond: Double?
+    /// Average wall-clock interval between received frames over the recent rolling window.
+    public let averageInterarrivalMs: Double?
+    /// Maximum wall-clock interval between received frames over the recent rolling window.
+    public let maxInterarrivalMs: Double?
+    /// Number of intervals where wall-clock arrival lagged PTS spacing by the gap threshold.
+    public let arrivalGapCount: UInt64
+    /// Number of intervals where frames arrived much faster than their PTS spacing.
+    public let burstCount: UInt64
+    /// Number of frames whose timestamp was lower than the highest timestamp previously seen.
+    public let outOfOrderCount: UInt64
+    /// Largest timestamp regression observed for an out-of-order frame.
+    public let maxOutOfOrderDeltaMs: Double?
+    /// Number of player-detected timestamp discontinuities.
+    public let discontinuityCount: UInt64
+    /// Largest player-detected timestamp discontinuity.
+    public let maxDiscontinuityGapMs: Double?
 }
 
 // MARK: - PlayerEvent
@@ -137,8 +163,6 @@ public final class Player {
     private var audioTask: Task<Void, Never>?
     private var coordinatorTask: Task<Void, Never>?
 
-    nonisolated(unsafe) private var audioTracer: PacketTimingTracer?
-    nonisolated(unsafe) private var videoTracer: PacketTimingTracer?
     nonisolated(unsafe) private var mediaTimebaseForStats: MediaTimebase?
     nonisolated(unsafe) private var mediaTimestampAlignerForStats: MediaTimestampAligner?
     nonisolated(unsafe) private var audioRendererForStats: AudioRenderer?
@@ -146,7 +170,8 @@ public final class Player {
     nonisolated(unsafe) private var hasVideoSelection = false
     nonisolated(unsafe) private var hasAudioSelection = false
 
-    private let accumulator = PlaybackMetricsAccumulator()
+    private let statsTracker = PlaybackStatsTracker()
+    private var frameObserver: (any MediaFrameObserver)?
 
     private enum Mode {
         case audioVideo
@@ -270,7 +295,7 @@ public final class Player {
         } else {
             videoLatencyMs = nil
         }
-        return accumulator.snapshot(
+        return statsTracker.snapshot(
             audioLatencyMs: audioLatencyMs,
             videoLatencyMs: videoLatencyMs,
             audioRingBufferMs: hasAudioTrack ? audioRendererForStats?.bufferFillMs : nil,
@@ -297,21 +322,13 @@ public final class Player {
         self.mediaTimebaseForStats = mediaTimebase
         self.mediaTimestampAlignerForStats = mediaTimestampAligner
 
-        if hasAudioTrack {
-            audioTracer = PacketTimingTracer(kind: .audio) { report in
-                KitLogger.player.debug("\(report)")
-            }
-        }
-        if hasVideoTrack {
-            videoTracer = PacketTimingTracer(kind: .video) { report in
-                KitLogger.player.debug("\(report)")
-            }
-        }
+        self.frameObserver = CompositeMediaFrameObserver([statsTracker, mediaTimestampAligner])
 
-        accumulator.markPlayStart()
+        statsTracker.markPlayStart()
 
         try setupAudioRenderer(mediaTimebase: mediaTimebase)
-        try setupVideoRenderer(mediaTimebase: mediaTimebase, timestampAligner: mediaTimestampAligner)
+        try setupVideoRenderer(
+            mediaTimebase: mediaTimebase, timestampAligner: mediaTimestampAligner)
 
         startIngestTasks()
     }
@@ -447,27 +464,23 @@ public final class Player {
         videoRenderer?.stop()
         videoRenderer?.flush()
 
-        audioTracer?.reset()
-        videoTracer?.reset()
-
         videoSubscription?.close()
         audioSubscription?.close()
         videoSubscription = nil
         audioSubscription = nil
         mediaTimebase = nil
         mediaTimestampAligner = nil
+        frameObserver = nil
         mediaTimebaseForStats = nil
         mediaTimestampAlignerForStats = nil
 
         if !hasVideoSelection {
             videoRenderer = nil
             videoRendererTrack = nil
-            videoTracer = nil
             videoRendererForStats = nil
         }
         if !hasAudioSelection {
             audioRenderer = nil
-            audioTracer = nil
             audioRendererForStats = nil
         }
 
@@ -475,11 +488,9 @@ public final class Player {
             audioRenderer = nil
             videoRenderer = nil
             videoRendererTrack = nil
-            audioTracer = nil
-            videoTracer = nil
             audioRendererForStats = nil
             videoRendererForStats = nil
-            accumulator.reset()
+            statsTracker.reset()
 
             eventsContinuation.finish()
         }
@@ -516,12 +527,8 @@ public final class Player {
         let oldSub = videoSubscription
         let continuation = eventsContinuation
 
-        guard let mediaTimestampAligner else {
-            throw SessionError.invalidConfiguration("Missing media timestamp aligner")
-        }
-
-        let newTracer = PacketTimingTracer(kind: .video) { report in
-            KitLogger.player.debug("\(report)")
+        guard let frameObserver else {
+            throw SessionError.invalidConfiguration("Missing playback frame observer")
         }
 
         renderer.setPendingTrack(newRendererTrack) {
@@ -530,14 +537,12 @@ public final class Player {
             continuation.yield(.trackSwitched(.video))
         }
 
-        videoTracer = newTracer
         videoSubscription = newSub
         videoRendererTrack = newRendererTrack
         videoTask = startVideoIngestTask(
             subscription: newSub,
             track: newRendererTrack,
-            tracer: newTracer,
-            timestampAligner: mediaTimestampAligner,
+            frameObserver: frameObserver,
             isSwitch: true
         )
 
@@ -557,11 +562,15 @@ public final class Player {
         let oldTask = audioTask
         let oldSub = audioSubscription
 
+        guard let frameObserver else {
+            throw SessionError.invalidConfiguration("Missing playback frame observer")
+        }
+
         audioSubscription = newSub
         audioTask = startAudioIngestTask(
             subscription: newSub,
             config: track.rawConfig,
-            timestampAligner: mediaTimestampAligner,
+            frameObserver: frameObserver,
             isSwitch: true
         )
 
@@ -585,7 +594,7 @@ public final class Player {
             mediaTimebase: mediaTimebase,
             targetLatencyMs: Int(targetBufferingMs),
             initialVolume: storedAudioVolume,
-            metrics: accumulator
+            metrics: statsTracker
         )
         try renderer.start()
         self.audioRenderer = renderer
@@ -607,7 +616,7 @@ public final class Player {
             isTimebaseOwner: mode == .videoOnly,
             track: track,
             layer: videoLayer,
-            metrics: accumulator
+            metrics: statsTracker
         )
         renderer.start()
         self.videoRendererTrack = track
@@ -616,21 +625,24 @@ public final class Player {
     }
 
     private func startIngestTasks() {
-        if let aTrack = audioSubscription, let aConfig = selectedAudioTrack?.rawConfig {
+        if let aTrack = audioSubscription,
+            let aConfig = selectedAudioTrack?.rawConfig,
+            let frameObserver
+        {
             audioTask = startAudioIngestTask(
                 subscription: aTrack,
                 config: aConfig,
-                timestampAligner: mediaTimestampAligner,
+                frameObserver: frameObserver,
                 isSwitch: false)
         }
 
         if let vTrack = videoSubscription,
             let rendererTrack = videoRendererTrack,
-            let mediaTimestampAligner
+            let frameObserver
         {
             videoTask = startVideoIngestTask(
                 subscription: vTrack, track: rendererTrack,
-                tracer: videoTracer, timestampAligner: mediaTimestampAligner, isSwitch: false)
+                frameObserver: frameObserver, isSwitch: false)
         }
 
         restartCoordinator()
@@ -641,12 +653,10 @@ public final class Player {
     private func startVideoIngestTask(
         subscription: MediaTrack,
         track: VideoRendererTrack,
-        tracer: PacketTimingTracer?,
-        timestampAligner: MediaTimestampAligner,
+        frameObserver: any MediaFrameObserver,
         isSwitch: Bool
     ) -> Task<Void, Never> {
         let continuation = eventsContinuation
-        let metrics = self.accumulator
 
         return Task.detached {
             var lastPtsUs: UInt64 = 0
@@ -663,14 +673,13 @@ public final class Player {
                     keyframe: frame.keyframe
                 ) {
                     KitLogger.player.debug("Video discontinuity detected")
-                    tracer?.reset()
-                    timestampAligner.videoLiveEdge.reset()
+                    frameObserver.onFrameDiscontinuity(
+                        kind: .video,
+                        gapUs: Self.timestampGapUs(currentUs: frame.timestampUs, lastUs: lastPtsUs))
                 }
                 lastPtsUs = frame.timestampUs
 
-                timestampAligner.videoLiveEdge.recordTimestamp(frame.timestampUs)
-                metrics.recordVideoBytes(frame.payload.count)
-                tracer?.record(ptsUs: frame.timestampUs)
+                frameObserver.onMediaFrame(frame, kind: .video)
 
                 track.insert(
                     payload: frame.payload,
@@ -679,11 +688,9 @@ public final class Player {
 
                 if firstFrame && !isSwitch {
                     firstFrame = false
-                    metrics.markFirstVideoFrame()
                     continuation.yield(.trackPlaying(.video))
                 } else if firstFrame {
                     firstFrame = false
-                    metrics.markFirstVideoFrame()
                 }
             }
             if !Task.isCancelled {
@@ -695,12 +702,10 @@ public final class Player {
     private func startAudioIngestTask(
         subscription: MediaTrack,
         config: MoqAudio,
-        timestampAligner: MediaTimestampAligner?,
+        frameObserver: any MediaFrameObserver,
         isSwitch: Bool
     ) -> Task<Void, Never> {
         let continuation = eventsContinuation
-        let audioTracer = self.audioTracer
-        let metrics = self.accumulator
         guard let renderer = self.audioRenderer else {
             KitLogger.player.error("startAudioIngestTask called without an active AudioRenderer")
             return Task.detached {}
@@ -728,20 +733,20 @@ public final class Player {
                     ) {
                         KitLogger.player.debug("Audio discontinuity detected, flushing")
                         renderer.flush()
-                        audioTracer?.reset()
-                        timestampAligner?.audioLiveEdge.reset()
+                        frameObserver.onFrameDiscontinuity(
+                            kind: .audio,
+                            gapUs: Self.timestampGapUs(
+                                currentUs: frame.timestampUs, lastUs: lastPtsUs))
                     }
                     lastPtsUs = frame.timestampUs
 
-                    timestampAligner?.audioLiveEdge.recordTimestamp(frame.timestampUs)
-                    metrics.recordAudioBytes(frame.payload.count)
-                    audioTracer?.record(ptsUs: frame.timestampUs)
+                    frameObserver.onMediaFrame(frame, kind: .audio)
+
                     let pcm = try decoder.decode(payload: frame.payload)
                     renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
 
                     if firstFrame {
                         firstFrame = false
-                        metrics.markFirstAudioFrame()
                         let event: PlayerEvent =
                             isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
                         continuation.yield(event)
@@ -778,11 +783,11 @@ public final class Player {
         currentUs: UInt64, lastUs: UInt64, keyframe: Bool
     ) -> Bool {
         guard keyframe && lastUs > 0 else { return false }
-        let diff =
-            currentUs > lastUs
-            ? currentUs - lastUs
-            : lastUs - currentUs
-        return diff > 500_000
+        return timestampGapUs(currentUs: currentUs, lastUs: lastUs) > 500_000
+    }
+
+    private nonisolated static func timestampGapUs(currentUs: UInt64, lastUs: UInt64) -> UInt64 {
+        currentUs > lastUs ? currentUs - lastUs : lastUs - currentUs
     }
 
     private nonisolated static func clampedVolume(_ volume: Float) -> Float {
