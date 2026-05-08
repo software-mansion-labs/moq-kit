@@ -6,8 +6,7 @@ import MoQKitFFI
 
 /// A snapshot of playback quality metrics, sampled over the most recent one-second window.
 ///
-/// Obtain the current snapshot via ``Player/stats``, which is safe to call from any
-/// thread or actor without holding the main actor.
+/// Obtain the current snapshot via ``Player/stats``.
 public struct PlaybackStats: Sendable {
     /// Estimated end-to-end audio latency in milliseconds (wall-clock delay from sender to speaker).
     /// `nil` when no audio track is active.
@@ -50,6 +49,26 @@ public struct PlaybackStats: Sendable {
     public let audioArrival: FrameArrivalStats?
     /// Video frame arrival diagnostics. `nil` before video frames arrive.
     public let videoArrival: FrameArrivalStats?
+}
+
+extension PlaybackStats {
+    static let empty = PlaybackStats(
+        audioLatencyMs: nil,
+        videoLatencyMs: nil,
+        audioStalls: nil,
+        videoStalls: nil,
+        audioBitrateKbps: nil,
+        videoBitrateKbps: nil,
+        timeToFirstAudioFrameMs: nil,
+        timeToFirstVideoFrameMs: nil,
+        videoFps: nil,
+        audioFramesDropped: nil,
+        videoFramesDropped: nil,
+        audioRingBufferMs: nil,
+        videoJitterBufferMs: nil,
+        audioArrival: nil,
+        videoArrival: nil
+    )
 }
 
 /// Stall statistics for a single track since playback started.
@@ -148,53 +167,13 @@ public final class Player {
     private var targetBufferingMs: UInt64
     private var storedAudioVolume: Float
     private let eventsContinuation: AsyncStream<PlayerEvent>.Continuation
-    private nonisolated static let ptsCorrectionThresholdUs: Int64 = 2_000_000
 
-    private var audioRenderer: AudioRenderer?
-    private var videoRenderer: VideoRenderer?
-    private var videoRendererTrack: VideoRendererTrack?
-    private var mediaTimebase: MediaTimebase?
-    private var mediaTimestampAligner: MediaTimestampAligner?
+    private var playbackPipeline: PlaybackPipeline?
+    private var lastStats: PlaybackStats = .empty
 
-    private var videoSubscription: MediaTrack?
-    private var audioSubscription: MediaTrack?
+    private var hasVideoTrack: Bool { selectedVideoTrack != nil }
 
-    private var videoTask: Task<Void, Never>?
-    private var audioTask: Task<Void, Never>?
-    private var coordinatorTask: Task<Void, Never>?
-
-    nonisolated(unsafe) private var mediaTimebaseForStats: MediaTimebase?
-    nonisolated(unsafe) private var mediaTimestampAlignerForStats: MediaTimestampAligner?
-    nonisolated(unsafe) private var audioRendererForStats: AudioRenderer?
-    nonisolated(unsafe) private var videoRendererForStats: VideoRenderer?
-    nonisolated(unsafe) private var hasVideoSelection = false
-    nonisolated(unsafe) private var hasAudioSelection = false
-
-    private let statsTracker = PlaybackStatsTracker()
-    private var frameObserver: (any MediaFrameObserver)?
-
-    private enum Mode {
-        case audioVideo
-        case audioOnly
-        case videoOnly
-    }
-
-    private nonisolated var hasVideoTrack: Bool {
-        hasVideoSelection
-    }
-    private nonisolated var hasAudioTrack: Bool {
-        hasAudioSelection
-    }
-
-    private var mode: Mode {
-        if hasVideoTrack && hasAudioTrack {
-            return .audioVideo
-        }
-        if hasAudioTrack {
-            return .audioOnly
-        }
-        return .videoOnly
-    }
+    private var hasAudioTrack: Bool { selectedAudioTrack != nil }
 
     /// Creates a player for the given catalog and selected track names.
     ///
@@ -225,8 +204,6 @@ public final class Player {
         self.catalog = catalog
         self.selectedVideoTrack = selection.videoTrack
         self.selectedAudioTrack = selection.audioTrack
-        self.hasVideoSelection = selection.videoTrack != nil
-        self.hasAudioSelection = selection.audioTrack != nil
         self.targetBufferingMs = targetBufferingMs
         self.storedAudioVolume = Self.clampedVolume(volume)
         self.videoLayer = AVSampleBufferDisplayLayer()
@@ -248,7 +225,7 @@ public final class Player {
     public func setVolume(_ volume: Float) {
         let clamped = Self.clampedVolume(volume)
         storedAudioVolume = clamped
-        audioRenderer?.setVolume(clamped)
+        playbackPipeline?.setVolume(clamped)
     }
 
     /// Adjusts the target playout delay without interrupting playback.
@@ -260,47 +237,19 @@ public final class Player {
     /// - Parameter ms: New target buffering depth in milliseconds.
     public func updateTargetLatency(ms: UInt64) {
         targetBufferingMs = ms
-        audioRenderer?.updateTargetLatency(ms: Int(ms))
-        videoRendererTrack?.updateTargetBuffering(ms: ms)
+        playbackPipeline?.updateTargetLatency(ms: ms)
     }
 
     /// A snapshot of current playback quality metrics.
     ///
-    /// Safe to call from any thread or actor — does not require the main actor.
+    /// Follows ``Player`` main-actor isolation.
     /// Values are sampled over the most recent one-second window. See ``PlaybackStats``
     /// for field-level documentation.
-    public nonisolated var stats: PlaybackStats {
-        let mediaTimebase = mediaTimebaseForStats
-        let timestampAligner = mediaTimestampAlignerForStats
-        let audioLatencyMs =
-            hasAudioTrack
-            ? Self.latencyMs(
-                liveTime: timestampAligner?.audioLiveEdge.estimatedLivePTS(),
-                currentTimeUs: mediaTimebase?.currentTimeUs)
-            : nil
-        let videoLatencyMs: Double?
-        if hasVideoTrack,
-            let timestampAligner,
-            let mediaTimebase,
-            let videoTime = timestampAligner.videoLiveEdge.estimatedLivePTS(),
-            videoTime >= 0,
-            !hasAudioTrack || timestampAligner.audioLiveEdge.estimatedLivePTS() != nil
-        {
-            let audioTime = timestampAligner.audioTime(
-                videoTime: UInt64(videoTime),
-                threshold: Self.ptsCorrectionThresholdUs)
-            videoLatencyMs = Self.latencyMs(
-                liveTime: Int64(audioTime),
-                currentTimeUs: mediaTimebase.currentTimeUs)
-        } else {
-            videoLatencyMs = nil
-        }
-        return statsTracker.snapshot(
-            audioLatencyMs: audioLatencyMs,
-            videoLatencyMs: videoLatencyMs,
-            audioRingBufferMs: hasAudioTrack ? audioRendererForStats?.bufferFillMs : nil,
-            videoJitterBufferMs: hasVideoTrack ? videoRendererForStats?.bufferFillMs : nil
-        )
+    public var stats: PlaybackStats {
+        guard let playbackPipeline else { return lastStats }
+        let stats = playbackPipeline.getStats()
+        lastStats = stats
+        return stats
     }
 
     /// Subscribes to the selected tracks and begins decoding and rendering.
@@ -310,27 +259,11 @@ public final class Player {
     ///
     /// - Throws: ``SessionError`` if a track subscription or renderer initialisation fails.
     public func play() async throws {
-        guard videoTask == nil && audioTask == nil else { return }
+        guard playbackPipeline == nil else { return }
 
         try validateSelectedTracks()
-        try subscribe()
 
-        let mediaTimebase = try Self.createMediaTimebase()
-        let mediaTimestampAligner = MediaTimestampAligner()
-        self.mediaTimebase = mediaTimebase
-        self.mediaTimestampAligner = mediaTimestampAligner
-        self.mediaTimebaseForStats = mediaTimebase
-        self.mediaTimestampAlignerForStats = mediaTimestampAligner
-
-        self.frameObserver = CompositeMediaFrameObserver([statsTracker, mediaTimestampAligner])
-
-        statsTracker.markPlayStart()
-
-        try setupAudioRenderer(mediaTimebase: mediaTimebase)
-        try setupVideoRenderer(
-            mediaTimebase: mediaTimebase, timestampAligner: mediaTimestampAligner)
-
-        startIngestTasks()
+        playbackPipeline = try makePlaybackPipeline()
     }
 
     /// Pauses playback and cancels all track subscriptions.
@@ -339,12 +272,14 @@ public final class Player {
     /// ``play()`` again — it will re-subscribe to the tracks and restart rendering from the
     /// current live position.
     public func pause() async {
+        let hadVideoTrack = hasVideoTrack
+        let hadAudioTrack = hasAudioTrack
         teardown(permanent: false)
 
-        if hasVideoTrack {
+        if hadVideoTrack {
             eventsContinuation.yield(.trackPaused(.video))
         }
-        if hasAudioTrack {
+        if hadAudioTrack {
             eventsContinuation.yield(.trackPaused(.audio))
         }
     }
@@ -383,21 +318,22 @@ public final class Player {
 
         let wasVideoEnabled = selectedVideoTrack != nil
 
-        guard videoTask != nil else {
+        guard let playbackPipeline else {
             selectedVideoTrack = newTrack
-            hasVideoSelection = newTrack != nil
             return
         }
 
-        if wasVideoEnabled, let newTrack, let renderer = videoRenderer, !renderer.hasPendingTrack {
-            try switchActiveVideoTrack(to: newTrack, renderer: renderer)
-            selectedVideoTrack = newTrack
-            hasVideoSelection = true
-            return
+        if wasVideoEnabled, let newTrack {
+            switch try playbackPipeline.switchVideo(to: newTrack) {
+            case .handled:
+                selectedVideoTrack = newTrack
+                return
+            case .restartRequired:
+                break
+            }
         }
 
         selectedVideoTrack = newTrack
-        hasVideoSelection = newTrack != nil
         try await restartPlaybackForSelectionChange()
     }
 
@@ -425,72 +361,41 @@ public final class Player {
 
         let wasAudioEnabled = selectedAudioTrack != nil
 
-        guard audioTask != nil else {
+        guard let playbackPipeline else {
             selectedAudioTrack = newTrack
-            hasAudioSelection = newTrack != nil
             return
         }
 
         if wasAudioEnabled, let newTrack {
-            try switchActiveAudioTrack(to: newTrack)
-            selectedAudioTrack = newTrack
-            hasAudioSelection = true
-            return
+            switch try playbackPipeline.switchAudio(to: newTrack) {
+            case .handled:
+                selectedAudioTrack = newTrack
+                return
+            case .restartRequired:
+                break
+            }
         }
 
         selectedAudioTrack = newTrack
-        hasAudioSelection = newTrack != nil
         try await restartPlaybackForSelectionChange()
     }
 
     deinit {
-        videoTask?.cancel()
-        audioTask?.cancel()
-        coordinatorTask?.cancel()
+        playbackPipeline?.stop()
         eventsContinuation.finish()
     }
 
     // MARK: - Private: teardown
 
     private func teardown(permanent: Bool) {
-        videoTask?.cancel()
-        audioTask?.cancel()
-        coordinatorTask?.cancel()
-        videoTask = nil
-        audioTask = nil
-        coordinatorTask = nil
-
-        audioRenderer?.stop()
-        videoRenderer?.stop()
-        videoRenderer?.flush()
-
-        videoSubscription?.close()
-        audioSubscription?.close()
-        videoSubscription = nil
-        audioSubscription = nil
-        mediaTimebase = nil
-        mediaTimestampAligner = nil
-        frameObserver = nil
-        mediaTimebaseForStats = nil
-        mediaTimestampAlignerForStats = nil
-
-        if !hasVideoSelection {
-            videoRenderer = nil
-            videoRendererTrack = nil
-            videoRendererForStats = nil
+        if let playbackPipeline {
+            lastStats = playbackPipeline.getStats()
         }
-        if !hasAudioSelection {
-            audioRenderer = nil
-            audioRendererForStats = nil
-        }
+        playbackPipeline?.stop()
+        playbackPipeline = nil
 
         if permanent {
-            audioRenderer = nil
-            videoRenderer = nil
-            videoRendererTrack = nil
-            audioRendererForStats = nil
-            videoRendererForStats = nil
-            statsTracker.reset()
+            lastStats = .empty
 
             eventsContinuation.finish()
         }
@@ -501,307 +406,28 @@ public final class Player {
         try await play()
     }
 
-    private func switchActiveVideoTrack(
-        to track: VideoTrackInfo,
-        renderer: VideoRenderer
-    ) throws {
-        KitLogger.player.debug("Switching video track to \(track.name)")
-
-        let newSub = try MediaTrack(
-            broadcast: catalog.broadcast,
-            name: track.name,
-            container: track.rawConfig.container,
-            maxLatencyMs: targetBufferingMs
-        )
-
-        KitLogger.player.debug(
-            "[Switch] Video track: \(track.name), codec=\(track.config.codec), config=\(track.config.debugDescription), container=\(track.rawConfig.container)"
-        )
-
-        let newRendererTrack = try VideoRendererTrack(
-            config: track.rawConfig,
-            targetBufferingMs: targetBufferingMs
-        )
-
-        let oldTask = videoTask
-        let oldSub = videoSubscription
-        let continuation = eventsContinuation
-
-        guard let frameObserver else {
-            throw SessionError.invalidConfiguration("Missing playback frame observer")
-        }
-
-        renderer.setPendingTrack(newRendererTrack) {
-            oldTask?.cancel()
-            oldSub?.close()
-            continuation.yield(.trackSwitched(.video))
-        }
-
-        videoSubscription = newSub
-        videoRendererTrack = newRendererTrack
-        videoTask = startVideoIngestTask(
-            subscription: newSub,
-            track: newRendererTrack,
-            frameObserver: frameObserver,
-            isSwitch: true
-        )
-
-        restartCoordinator()
-    }
-
-    private func switchActiveAudioTrack(to track: AudioTrackInfo) throws {
-        KitLogger.player.debug("Switching audio track to \(track.name)")
-
-        let newSub = try MediaTrack(
-            broadcast: catalog.broadcast,
-            name: track.name,
-            container: track.rawConfig.container,
-            maxLatencyMs: targetBufferingMs
-        )
-
-        let oldTask = audioTask
-        let oldSub = audioSubscription
-
-        guard let frameObserver else {
-            throw SessionError.invalidConfiguration("Missing playback frame observer")
-        }
-
-        audioSubscription = newSub
-        audioTask = startAudioIngestTask(
-            subscription: newSub,
-            config: track.rawConfig,
-            frameObserver: frameObserver,
-            isSwitch: true
-        )
-
-        oldTask?.cancel()
-        oldSub?.close()
-
-        restartCoordinator()
-    }
-
     // MARK: - Private: play() helpers
 
-    private nonisolated static func createMediaTimebase() throws -> MediaTimebase {
-        try MediaTimebase()
-    }
-
-    private func setupAudioRenderer(mediaTimebase: MediaTimebase) throws {
-        guard let aInfo = selectedAudioTrack else { return }
-
-        let renderer = try AudioRenderer(
-            config: aInfo.rawConfig,
-            mediaTimebase: mediaTimebase,
-            targetLatencyMs: Int(targetBufferingMs),
-            initialVolume: storedAudioVolume,
-            metrics: statsTracker
+    private func makePlaybackPipeline() throws -> PlaybackPipeline {
+        guard hasVideoTrack || hasAudioTrack else {
+            throw SessionError.noTracksSelected
+        }
+        return try PlaybackPipeline(
+            catalog: catalog,
+            videoTrack: selectedVideoTrack,
+            audioTrack: selectedAudioTrack,
+            targetBufferingMs: targetBufferingMs,
+            volume: storedAudioVolume,
+            videoLayer: videoLayer,
+            eventContinuation: eventsContinuation
         )
-        try renderer.start()
-        self.audioRenderer = renderer
-        self.audioRendererForStats = renderer
-    }
-
-    private func setupVideoRenderer(
-        mediaTimebase: MediaTimebase,
-        timestampAligner: MediaTimestampAligner
-    ) throws {
-        guard let vInfo = selectedVideoTrack else { return }
-
-        let track = try VideoRendererTrack(
-            config: vInfo.rawConfig, targetBufferingMs: targetBufferingMs)
-
-        let renderer = VideoRenderer(
-            mediaTimebase: mediaTimebase,
-            timestampAligner: timestampAligner,
-            isTimebaseOwner: mode == .videoOnly,
-            track: track,
-            layer: videoLayer,
-            metrics: statsTracker
-        )
-        renderer.start()
-        self.videoRendererTrack = track
-        self.videoRenderer = renderer
-        self.videoRendererForStats = renderer
-    }
-
-    private func startIngestTasks() {
-        if let aTrack = audioSubscription,
-            let aConfig = selectedAudioTrack?.rawConfig,
-            let frameObserver
-        {
-            audioTask = startAudioIngestTask(
-                subscription: aTrack,
-                config: aConfig,
-                frameObserver: frameObserver,
-                isSwitch: false)
-        }
-
-        if let vTrack = videoSubscription,
-            let rendererTrack = videoRendererTrack,
-            let frameObserver
-        {
-            videoTask = startVideoIngestTask(
-                subscription: vTrack, track: rendererTrack,
-                frameObserver: frameObserver, isSwitch: false)
-        }
-
-        restartCoordinator()
-    }
-
-    // MARK: - Private: per-track ingest tasks
-
-    private func startVideoIngestTask(
-        subscription: MediaTrack,
-        track: VideoRendererTrack,
-        frameObserver: any MediaFrameObserver,
-        isSwitch: Bool
-    ) -> Task<Void, Never> {
-        let continuation = eventsContinuation
-
-        return Task.detached {
-            var lastPtsUs: UInt64 = 0
-            var firstFrame = true
-
-            defer {
-                KitLogger.player.debug("Exited reading task")
-            }
-
-            for await frame in subscription.frames {
-                if Task.isCancelled { break }
-                if Self.isDiscontinuity(
-                    currentUs: frame.timestampUs, lastUs: lastPtsUs,
-                    keyframe: frame.keyframe
-                ) {
-                    KitLogger.player.debug("Video discontinuity detected")
-                    frameObserver.onFrameDiscontinuity(
-                        kind: .video,
-                        gapUs: Self.timestampGapUs(currentUs: frame.timestampUs, lastUs: lastPtsUs))
-                }
-                lastPtsUs = frame.timestampUs
-
-                frameObserver.onMediaFrame(frame, kind: .video)
-
-                track.insert(
-                    payload: frame.payload,
-                    timestampUs: frame.timestampUs,
-                    keyframe: frame.keyframe)
-
-                if firstFrame && !isSwitch {
-                    firstFrame = false
-                    continuation.yield(.trackPlaying(.video))
-                } else if firstFrame {
-                    firstFrame = false
-                }
-            }
-            if !Task.isCancelled {
-                continuation.yield(.trackStopped(.video))
-            }
-        }
-    }
-
-    private func startAudioIngestTask(
-        subscription: MediaTrack,
-        config: MoqAudio,
-        frameObserver: any MediaFrameObserver,
-        isSwitch: Bool
-    ) -> Task<Void, Never> {
-        let continuation = eventsContinuation
-        guard let renderer = self.audioRenderer else {
-            KitLogger.player.error("startAudioIngestTask called without an active AudioRenderer")
-            return Task.detached {}
-        }
-
-        return Task.detached {
-            let decoder: AudioDecoder
-            do {
-                decoder = try AudioDecoder(config: config)
-            } catch {
-                KitLogger.player.error("Failed to create AudioDecoder: \(error)")
-                continuation.yield(.error(.audio, error.localizedDescription))
-                return
-            }
-
-            var lastPtsUs: UInt64 = 0
-            var firstFrame = true
-
-            for await frame in subscription.frames {
-                if Task.isCancelled { break }
-                do {
-                    if Self.isDiscontinuity(
-                        currentUs: frame.timestampUs, lastUs: lastPtsUs,
-                        keyframe: frame.keyframe
-                    ) {
-                        KitLogger.player.debug("Audio discontinuity detected, flushing")
-                        renderer.flush()
-                        frameObserver.onFrameDiscontinuity(
-                            kind: .audio,
-                            gapUs: Self.timestampGapUs(
-                                currentUs: frame.timestampUs, lastUs: lastPtsUs))
-                    }
-                    lastPtsUs = frame.timestampUs
-
-                    frameObserver.onMediaFrame(frame, kind: .audio)
-
-                    let pcm = try decoder.decode(payload: frame.payload)
-                    renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
-
-                    if firstFrame {
-                        firstFrame = false
-                        let event: PlayerEvent =
-                            isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
-                        continuation.yield(event)
-                    }
-                } catch {
-                    KitLogger.player.error("Audio decode error: \(error)")
-                    continuation.yield(.error(.audio, error.localizedDescription))
-                }
-            }
-            if !Task.isCancelled {
-                continuation.yield(.trackStopped(.audio))
-            }
-        }
-    }
-
-    private func restartCoordinator() {
-        coordinatorTask?.cancel()
-        let vTask = videoTask
-        let aTask = audioTask
-        let continuation = eventsContinuation
-        coordinatorTask = Task.detached {
-            await vTask?.value
-            await aTask?.value
-            guard !Task.isCancelled else { return }
-            continuation.yield(.allTracksStopped)
-            continuation.finish()
-        }
     }
 
     // MARK: - Private: helpers
 
-    /// Detects a PTS discontinuity: keyframe with >500ms jump from the last timestamp.
-    private nonisolated static func isDiscontinuity(
-        currentUs: UInt64, lastUs: UInt64, keyframe: Bool
-    ) -> Bool {
-        guard keyframe && lastUs > 0 else { return false }
-        return timestampGapUs(currentUs: currentUs, lastUs: lastUs) > 500_000
-    }
-
-    private nonisolated static func timestampGapUs(currentUs: UInt64, lastUs: UInt64) -> UInt64 {
-        currentUs > lastUs ? currentUs - lastUs : lastUs - currentUs
-    }
-
     private nonisolated static func clampedVolume(_ volume: Float) -> Float {
         guard !volume.isNaN else { return 0 }
         return min(max(volume, 0), 1)
-    }
-
-    private nonisolated static func latencyMs(liveTime: Int64?, currentTimeUs: UInt64?) -> Double? {
-        guard let liveTime, let currentTimeUs, currentTimeUs <= UInt64(Int64.max) else {
-            return nil
-        }
-        let result = liveTime.subtractingReportingOverflow(Int64(currentTimeUs))
-        guard !result.overflow else { return nil }
-        return Double(max(0, result.partialValue)) / 1_000.0
     }
 
     private func validateSelectedTracks() throws {
@@ -860,56 +486,5 @@ public final class Player {
             )
         }
         return track
-    }
-
-    private func subscribe() throws {
-        videoSubscription = nil
-        audioSubscription = nil
-
-        var firstError: Error?
-
-        if let vInfo = selectedVideoTrack {
-            KitLogger.player.debug(
-                "Video track: \(vInfo.name), codec=\(vInfo.config.codec), config=\(vInfo.config.debugDescription), container=\(vInfo.rawConfig.container)"
-            )
-            do {
-                videoSubscription = try MediaTrack(
-                    broadcast: catalog.broadcast,
-                    name: vInfo.name,
-                    container: vInfo.rawConfig.container,
-                    maxLatencyMs: targetBufferingMs
-                )
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-                KitLogger.player.error("Failed to subscribe to video track \(vInfo.name): \(error)")
-                eventsContinuation.yield(.error(.video, error.localizedDescription))
-            }
-        }
-
-        if let aInfo = selectedAudioTrack {
-            KitLogger.player.debug(
-                "Audio track: \(aInfo.name), config = \(aInfo.config.debugDescription), container=\(aInfo.rawConfig.container)"
-            )
-            do {
-                audioSubscription = try MediaTrack(
-                    broadcast: catalog.broadcast,
-                    name: aInfo.name,
-                    container: aInfo.rawConfig.container,
-                    maxLatencyMs: targetBufferingMs
-                )
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-                KitLogger.player.error("Failed to subscribe to audio track \(aInfo.name): \(error)")
-                eventsContinuation.yield(.error(.audio, error.localizedDescription))
-            }
-        }
-
-        if videoSubscription == nil && audioSubscription == nil, let firstError {
-            throw firstError
-        }
     }
 }

@@ -1,32 +1,22 @@
-import CoreMedia
 import Foundation
 
 /// Tracks the estimated live edge for one media stream from compressed-frame arrivals.
 final class MediaLiveEdge: @unchecked Sendable {
     private let lock = NSLock()
-    private let wallClockProvider: @Sendable () -> Int64
+    private let wallClock: any PlaybackWallClock
     private var maxOffset: Int64?
 
     convenience init() {
-        let hostClock = CMClockGetHostTimeClock()
-        self.init {
-            let hostTime = CMClockGetTime(hostClock)
-            let wallTime = CMTimeConvertScale(
-                hostTime,
-                timescale: 1_000_000,
-                method: .roundHalfAwayFromZero
-            )
-            return wallTime.value
-        }
+        self.init(wallClock: HostPlaybackWallClock())
     }
 
-    init(wallClockProvider: @escaping @Sendable () -> Int64) {
-        self.wallClockProvider = wallClockProvider
+    init(wallClock: any PlaybackWallClock) {
+        self.wallClock = wallClock
     }
 
     func recordTimestamp(_ timestamp: UInt64) {
         guard let signedTimestamp = Self.signedTimestamp(timestamp) else { return }
-        let result = signedTimestamp.subtractingReportingOverflow(wallClockProvider())
+        let result = signedTimestamp.subtractingReportingOverflow(wallClock.now(in: .us))
         guard !result.overflow else { return }
         let offset = result.partialValue
 
@@ -47,7 +37,7 @@ final class MediaLiveEdge: @unchecked Sendable {
         lock.unlock()
 
         guard let offset else { return nil }
-        let result = wallClockProvider().addingReportingOverflow(offset)
+        let result = wallClock.now(in: .us).addingReportingOverflow(offset)
         guard !result.overflow else { return nil }
         return result.partialValue
     }

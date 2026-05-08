@@ -4,32 +4,32 @@ import XCTest
 
 final class MediaLiveEdgeTests: XCTestCase {
     func testEstimatedTimeUsesMaxObservedOffset() {
-        let wallClock = WallClock(value: 1_000)
-        let liveEdge = MediaLiveEdge { wallClock.value }
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000)
+        let liveEdge = MediaLiveEdge(wallClock: wallClock)
 
         liveEdge.recordTimestamp(5_000)
-        wallClock.value = 2_000
+        wallClock.setMicroseconds(2_000)
         liveEdge.recordTimestamp(5_500)
-        wallClock.value = 10_000
+        wallClock.setMicroseconds(10_000)
 
         XCTAssertEqual(liveEdge.estimatedLivePTS(), 14_000)
     }
 
     func testLowerOffsetDoesNotMoveLiveEdgeBackward() {
-        let wallClock = WallClock(value: 1_000)
-        let liveEdge = MediaLiveEdge { wallClock.value }
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000)
+        let liveEdge = MediaLiveEdge(wallClock: wallClock)
 
         liveEdge.recordTimestamp(10_000)
-        wallClock.value = 2_000
+        wallClock.setMicroseconds(2_000)
         liveEdge.recordTimestamp(9_000)
-        wallClock.value = 5_000
+        wallClock.setMicroseconds(5_000)
 
         XCTAssertEqual(liveEdge.estimatedLivePTS(), 14_000)
     }
 
     func testResetClearsLiveEdge() {
-        let wallClock = WallClock(value: 1_000)
-        let liveEdge = MediaLiveEdge { wallClock.value }
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000)
+        let liveEdge = MediaLiveEdge(wallClock: wallClock)
 
         liveEdge.recordTimestamp(5_000)
         liveEdge.reset()
@@ -38,8 +38,8 @@ final class MediaLiveEdgeTests: XCTestCase {
     }
 
     func testInvalidTimestampIsIgnored() {
-        let wallClock = WallClock(value: 1_000)
-        let liveEdge = MediaLiveEdge { wallClock.value }
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000)
+        let liveEdge = MediaLiveEdge(wallClock: wallClock)
 
         liveEdge.recordTimestamp(UInt64(Int64.max) + 1)
 
@@ -49,7 +49,7 @@ final class MediaLiveEdgeTests: XCTestCase {
 
 final class MediaTimestampAlignerTests: XCTestCase {
     func testVideoOffsetRequiresAudioAndVideoLiveEdges() {
-        let wallClock = WallClock(value: 1_000_000)
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000_000)
         let aligner = makeMediaTimestampAligner(wallClock: wallClock)
 
         XCTAssertNil(aligner.videoOffset(threshold: 2_000_000))
@@ -62,7 +62,7 @@ final class MediaTimestampAlignerTests: XCTestCase {
     }
 
     func testAlignedTimestampsReturnNoOpCorrection() {
-        let wallClock = WallClock(value: 1_000_000)
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000_000)
         let aligner = makeMediaTimestampAligner(wallClock: wallClock)
 
         aligner.audioLiveEdge.recordTimestamp(5_000_000)
@@ -74,7 +74,7 @@ final class MediaTimestampAlignerTests: XCTestCase {
     }
 
     func testDriftedVideoTimeMapsIntoAudioTime() {
-        let wallClock = WallClock(value: 1_000_000)
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000_000)
         let aligner = makeMediaTimestampAligner(wallClock: wallClock)
 
         aligner.audioLiveEdge.recordTimestamp(6_000_000)
@@ -86,7 +86,7 @@ final class MediaTimestampAlignerTests: XCTestCase {
     }
 
     func testDriftedAudioTimeMapsBackIntoVideoTime() {
-        let wallClock = WallClock(value: 1_000_000)
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000_000)
         let aligner = makeMediaTimestampAligner(wallClock: wallClock)
 
         aligner.audioLiveEdge.recordTimestamp(3_000_000)
@@ -98,7 +98,7 @@ final class MediaTimestampAlignerTests: XCTestCase {
     }
 
     func testResetClearsAffectedTrackOffset() {
-        let wallClock = WallClock(value: 1_000_000)
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000_000)
         let aligner = makeMediaTimestampAligner(wallClock: wallClock)
 
         aligner.audioLiveEdge.recordTimestamp(6_000_000)
@@ -109,9 +109,9 @@ final class MediaTimestampAlignerTests: XCTestCase {
     }
 }
 
-final class MediaTimebaseTests: XCTestCase {
+final class AudioDrivenClockTests: XCTestCase {
     func testSetTimeUpdatesCurrentTime() throws {
-        let timebase = try makeMediaTimebase()
+        let timebase = try makeAudioDrivenClock()
 
         timebase.setTimeUs(123_456)
 
@@ -121,21 +121,59 @@ final class MediaTimebaseTests: XCTestCase {
     }
 }
 
-private final class WallClock: @unchecked Sendable {
-    var value: Int64
+final class JitterBufferTests: XCTestCase {
+    func testTargetPlaybackPTSUsesEstimatedLiveEdgeMinusTargetBuffering() {
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000)
+        let buffer = JitterBuffer<Int>(targetBufferingUs: 1_000, wallClock: wallClock)
 
-    init(value: Int64) {
-        self.value = value
+        buffer.insert(item: 1, timestampUs: 10_000)
+        wallClock.setMicroseconds(2_000)
+        buffer.insert(item: 2, timestampUs: 11_000)
+        wallClock.setMicroseconds(2_500)
+
+        XCTAssertEqual(buffer.state, .playing)
+        XCTAssertEqual(buffer.estimatedLivePTS(), 11_500)
+        XCTAssertEqual(buffer.targetPlaybackPTS(), 10_500)
+        XCTAssertEqual(buffer.frontFrameIntervalUs, 1_000)
+
+        let (entry, playable) = buffer.dequeue()
+        XCTAssertEqual(entry?.timestampUs, 10_000)
+        XCTAssertFalse(playable)
+    }
+
+    func testUpdatingTargetBufferingCanStartBufferedMedia() {
+        let wallClock = TestPlaybackWallClock(nowUs: 0)
+        let buffer = JitterBuffer<Int>(targetBufferingUs: 2_000, wallClock: wallClock)
+
+        buffer.insert(item: 1, timestampUs: 1_000)
+        buffer.insert(item: 2, timestampUs: 2_000)
+
+        XCTAssertEqual(buffer.state, .buffering)
+        XCTAssertTrue(buffer.updateTargetBuffering(us: 1_000))
+        XCTAssertEqual(buffer.state, .playing)
+    }
+
+    func testEstimatedLiveEdgeKeepsMaximumObservedOffset() {
+        let wallClock = TestPlaybackWallClock(nowUs: 1_000)
+        let buffer = JitterBuffer<Int>(targetBufferingUs: 1_000, wallClock: wallClock)
+
+        buffer.insert(item: 1, timestampUs: 10_000)
+        wallClock.setMicroseconds(2_000)
+        buffer.insert(item: 2, timestampUs: 9_000)
+        wallClock.setMicroseconds(5_000)
+
+        XCTAssertEqual(buffer.estimatedLivePTS(), 14_000)
+        XCTAssertEqual(buffer.targetPlaybackPTS(), 13_000)
     }
 }
 
-private func makeMediaTimestampAligner(wallClock: WallClock) -> MediaTimestampAligner {
+private func makeMediaTimestampAligner(wallClock: TestPlaybackWallClock) -> MediaTimestampAligner {
     MediaTimestampAligner(
-        audioLiveEdge: MediaLiveEdge { wallClock.value },
-        videoLiveEdge: MediaLiveEdge { wallClock.value }
+        audioLiveEdge: MediaLiveEdge(wallClock: wallClock),
+        videoLiveEdge: MediaLiveEdge(wallClock: wallClock)
     )
 }
 
-private func makeMediaTimebase() throws -> MediaTimebase {
-    try MediaTimebase()
+private func makeAudioDrivenClock() throws -> AudioDrivenClock {
+    try AudioDrivenClock()
 }

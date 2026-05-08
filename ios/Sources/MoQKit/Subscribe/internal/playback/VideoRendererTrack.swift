@@ -117,7 +117,8 @@ final class VideoRendererTrack: @unchecked Sendable {
         lock.withLock { onDataAvailable = callback }
     }
 
-    func updateTargetBuffering(ms: UInt64) {
+    @discardableResult
+    func updateTargetBuffering(ms: UInt64) -> Bool {
         lock.withLock { buffer.updateTargetBuffering(us: ms * 1_000) }
     }
 
@@ -133,5 +134,21 @@ final class VideoRendererTrack: @unchecked Sendable {
 
     var depthMs: Double {
         lock.withLock { buffer.depthMs }
+    }
+
+    var targetBufferingUs: UInt64 {
+        lock.withLock { buffer.targetBuffering }
+    }
+
+    func estimatedLivePTS() -> Int64? {
+        lock.withLock { buffer.estimatedLivePTS() }
+    }
+
+    func targetPlaybackPTS() -> UInt64? {
+        lock.withLock { buffer.targetPlaybackPTS() }
+    }
+
+    var frontFrameIntervalUs: UInt64? {
+        lock.withLock { buffer.frontFrameIntervalUs }
     }
 }

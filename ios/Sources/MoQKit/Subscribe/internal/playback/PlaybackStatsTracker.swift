@@ -3,7 +3,7 @@ import Foundation
 /// Thread-safe tracker for playback quality metrics and received-frame diagnostics.
 ///
 /// Write methods are safe to call from playback ingest, render, and audio callback threads.
-/// `snapshot()` reads all tracked fields under the lock and returns `PlaybackStats`.
+/// `getStats()` reads all tracked fields under the lock and returns `PlaybackStats`.
 final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private struct FrameArrivalState {
         var lastWallNs: UInt64?
@@ -49,7 +49,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     }
 
     private let lock: UnsafeMutablePointer<os_unfair_lock>
-    private let clock: @Sendable () -> UInt64
+    private let wallClock: any PlaybackWallClock
 
     // TTFF
     private var playStartNs: UInt64 = 0
@@ -97,8 +97,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private static let burstFactor: Double = 0.3
     private static let discontinuityThresholdUs: UInt64 = 2_000_000
 
-    init(clock: @escaping @Sendable () -> UInt64 = { DispatchTime.now().uptimeNanoseconds }) {
-        self.clock = clock
+    init(wallClock: any PlaybackWallClock = HostPlaybackWallClock()) {
+        self.wallClock = wallClock
         self.lock = .allocate(capacity: 1)
         self.lock.initialize(to: os_unfair_lock())
     }
@@ -111,9 +111,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     // MARK: - MediaFrameObserver
 
     func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind) {
-        let now = clock()
-
         os_unfair_lock_lock(lock)
+        let now = nowNs()
         switch kind {
         case .audio:
             if firstAudioFrameNs == 0 {
@@ -155,8 +154,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     // MARK: - TTFF
 
     func markPlayStart() {
-        let now = clock()
         os_unfair_lock_lock(lock)
+        let now = nowNs()
         playStartNs = now
         os_unfair_lock_unlock(lock)
     }
@@ -164,14 +163,16 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     // MARK: - Stalls
 
     func audioStallBegan() {
-        let now = clock()
         os_unfair_lock_lock(lock)
+        let now = nowNs()
         if !audioIsStalled {
             audioIsStalled = true
             audioStallCount += 1
             audioStallStartNs = now
             if audioIsPlaying {
-                audioPlayTimeNs += now - audioPlayStartNs
+                if let elapsedNs = Self.elapsedNs(from: audioPlayStartNs, to: now) {
+                    audioPlayTimeNs = Self.addingClamped(audioPlayTimeNs, elapsedNs)
+                }
                 audioIsPlaying = false
             }
         }
@@ -179,11 +180,13 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     }
 
     func audioStallEnded() {
-        let now = clock()
         os_unfair_lock_lock(lock)
+        let now = nowNs()
         if audioIsStalled {
             audioIsStalled = false
-            audioStallTotalNs += now - audioStallStartNs
+            if let elapsedNs = Self.elapsedNs(from: audioStallStartNs, to: now) {
+                audioStallTotalNs = Self.addingClamped(audioStallTotalNs, elapsedNs)
+            }
             audioIsPlaying = true
             audioPlayStartNs = now
         } else if !audioIsPlaying {
@@ -194,14 +197,16 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     }
 
     func videoStallBegan() {
-        let now = clock()
         os_unfair_lock_lock(lock)
+        let now = nowNs()
         if !videoIsStalled {
             videoIsStalled = true
             videoStallCount += 1
             videoStallStartNs = now
             if videoIsPlaying {
-                videoPlayTimeNs += now - videoPlayStartNs
+                if let elapsedNs = Self.elapsedNs(from: videoPlayStartNs, to: now) {
+                    videoPlayTimeNs = Self.addingClamped(videoPlayTimeNs, elapsedNs)
+                }
                 videoIsPlaying = false
             }
         }
@@ -209,11 +214,13 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     }
 
     func videoStallEnded() {
-        let now = clock()
         os_unfair_lock_lock(lock)
+        let now = nowNs()
         if videoIsStalled {
             videoIsStalled = false
-            videoStallTotalNs += now - videoStallStartNs
+            if let elapsedNs = Self.elapsedNs(from: videoStallStartNs, to: now) {
+                videoStallTotalNs = Self.addingClamped(videoStallTotalNs, elapsedNs)
+            }
             videoIsPlaying = true
             videoPlayStartNs = now
         } else if !videoIsPlaying {
@@ -226,8 +233,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     // MARK: - FPS
 
     func recordVideoFrameDisplayed() {
-        let now = clock()
         os_unfair_lock_lock(lock)
+        let now = nowNs()
         videoFrameTimestamps.append(now)
         pruneTimestamps(entries: &videoFrameTimestamps, now: now)
         os_unfair_lock_unlock(lock)
@@ -248,14 +255,14 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         os_unfair_lock_unlock(lock)
     }
 
-    // MARK: - Snapshot
+    // MARK: - Stats
 
-    func snapshot(
+    func getStats(
         audioLatencyMs: Double?, videoLatencyMs: Double?,
         audioRingBufferMs: Double?, videoJitterBufferMs: Double?
     ) -> PlaybackStats {
-        let now = clock()
         os_unfair_lock_lock(lock)
+        let now = nowNs()
 
         let ttfAudio: Double? =
             (playStartNs > 0 && firstAudioFrameNs >= playStartNs)
@@ -372,8 +379,11 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
             let isOutOfOrder = frame.timestampUs < previousPtsUs
             let ptsDeltaUs = isOutOfOrder ? 0 : frame.timestampUs - previousPtsUs
 
-            if !isOutOfOrder && ptsDeltaUs <= Self.discontinuityThresholdUs {
-                let wallDeltaMs = Double(now - previousWallNs) / 1_000_000.0
+            if !isOutOfOrder,
+                ptsDeltaUs <= Self.discontinuityThresholdUs,
+                let wallDeltaNs = Self.elapsedNs(from: previousWallNs, to: now)
+            {
+                let wallDeltaMs = Double(wallDeltaNs) / 1_000_000.0
                 state.intervalsWindow.append((ns: now, ms: wallDeltaMs))
                 state.intervalMsTotal += wallDeltaMs
                 pruneArrivalIntervals(state: &state, now: now)
@@ -422,7 +432,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         -> Double?
     {
         guard let first = entries.first else { return nil }
-        let spanNs = now - first.ns
+        guard let spanNs = Self.elapsedNs(from: first.ns, to: now) else { return nil }
         guard spanNs > Self.minWindowSpanNs else { return nil }
         let spanSec = Double(spanNs) / 1_000_000_000.0
         return Double(total) * 8.0 / 1000.0 / spanSec
@@ -430,7 +440,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     private func computeFps(entries: [UInt64], now: UInt64) -> Double? {
         guard entries.count >= 2, let first = entries.first else { return nil }
-        let spanNs = now - first
+        guard let spanNs = Self.elapsedNs(from: first, to: now) else { return nil }
         guard spanNs > Self.minWindowSpanNs else { return nil }
         let spanSec = Double(spanNs) / 1_000_000_000.0
         return Double(entries.count) / spanSec
@@ -467,16 +477,30 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         playStartNs: UInt64, now: UInt64
     ) -> StallStats {
         var totalStallNs = stallTotalNs
-        if isStalled {
-            totalStallNs += now - stallStartNs
+        if isStalled, let elapsedNs = Self.elapsedNs(from: stallStartNs, to: now) {
+            totalStallNs = Self.addingClamped(totalStallNs, elapsedNs)
         }
         var totalPlayNs = playTimeNs
-        if isPlaying {
-            totalPlayNs += now - playStartNs
+        if isPlaying, let elapsedNs = Self.elapsedNs(from: playStartNs, to: now) {
+            totalPlayNs = Self.addingClamped(totalPlayNs, elapsedNs)
         }
         let totalMs = Double(totalStallNs) / 1_000_000.0
-        let totalTime = Double(totalPlayNs + totalStallNs)
+        let totalTime = Double(Self.addingClamped(totalPlayNs, totalStallNs))
         let ratio = totalTime > 0 ? Double(totalStallNs) / totalTime : 0
         return StallStats(count: count, totalDurationMs: totalMs, rebufferingRatio: ratio)
+    }
+
+    private static func elapsedNs(from start: UInt64, to end: UInt64) -> UInt64? {
+        let elapsed = end.subtractingReportingOverflow(start)
+        return elapsed.overflow ? nil : elapsed.partialValue
+    }
+
+    private static func addingClamped(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let sum = lhs.addingReportingOverflow(rhs)
+        return sum.overflow ? UInt64.max : sum.partialValue
+    }
+
+    private func nowNs() -> UInt64 {
+        UInt64(max(0, wallClock.now(in: .ns)))
     }
 }

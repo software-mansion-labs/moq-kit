@@ -4,9 +4,9 @@ import CoreMedia
 
 // MARK: - AudioRenderer
 
-/// Audio playback pipeline: ring buffer, AVAudioEngine, and external CMTimebase.
+/// Audio playback pipeline: ring buffer, AVAudioEngine, and external `AudioDrivenClock`.
 ///
-/// Always acts as the master clock — the render callback drives the shared timebase
+/// Always acts as the master clock — the render callback drives the shared clock
 /// by setting its time to the current ring buffer read position and toggling its rate
 /// between 0 (underflow) and 1 (playing).
 ///
@@ -14,7 +14,7 @@ import CoreMedia
 /// while the render callback reads from the audio thread. Both paths are serialized
 /// via `os_unfair_lock`.
 final class AudioRenderer: @unchecked Sendable {
-    let mediaTimebase: MediaTimebase
+    let clock: AudioDrivenClock
 
     private let engine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
@@ -24,14 +24,14 @@ final class AudioRenderer: @unchecked Sendable {
 
     init(
         config: MoqAudio,
-        mediaTimebase: MediaTimebase,
+        clock: AudioDrivenClock,
         targetLatencyMs: Int,
         initialVolume: Float = 1.0,
         metrics: PlaybackStatsTracker
     ) throws {
         // Create a temporary decoder only to discover the output format for AVAudioEngine setup.
         let formatDecoder = try AudioDecoder(config: config)
-        self.mediaTimebase = mediaTimebase
+        self.clock = clock
         self.metrics = metrics
         self.volume = Self.clampedVolume(initialVolume)
 
@@ -44,7 +44,7 @@ final class AudioRenderer: @unchecked Sendable {
         self.ringState = ringState
 
         let bytesPerSample = MemoryLayout<Float32>.size
-        var timebaseStarted = false
+        var clockStarted = false
 
         // Pre-allocate read output buffers (resized per callback as needed)
         var readOutput: [[Float32]] = (0..<channelCount).map { _ in
@@ -84,19 +84,19 @@ final class AudioRenderer: @unchecked Sendable {
             }
 
             if framesRead > 0 {
-                mediaTimebase.setTimeUs(ts)
+                clock.setTimeUs(ts)
 
-                // Start timebase on first real audio data
-                if !timebaseStarted {
-                    timebaseStarted = true
-                    mediaTimebase.setRate(1.0)
+                // Start clock on first real audio data
+                if !clockStarted {
+                    clockStarted = true
+                    clock.setRate(1.0)
                     metricsRef.audioStallEnded()
                 }
             } else {
-                // Full underflow: pause timebase to prevent drift
-                if timebaseStarted {
-                    timebaseStarted = false
-                    mediaTimebase.setRate(0)
+                // Full underflow: pause clock to prevent drift
+                if clockStarted {
+                    clockStarted = false
+                    clock.setRate(0)
                     metricsRef.audioStallBegan()
                 }
             }
