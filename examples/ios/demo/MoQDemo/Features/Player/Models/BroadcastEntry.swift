@@ -1,5 +1,11 @@
 import AVFoundation
 import MoQKit
+import os
+
+private let broadcastEntryLogger = Logger(
+    subsystem: "com.swmansion.MoQDemo",
+    category: "broadcast-entry"
+)
 
 @MainActor
 final class BroadcastEntry: ObservableObject, Identifiable {
@@ -55,6 +61,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     func attach(player: Player) {
+        broadcastEntryLogger.debug(
+            "Attaching player path=\(self.broadcastPath), video=\(self.selectedVideoTrackName ?? "none"), audio=\(self.selectedAudioTrackName ?? "none")"
+        )
         self.player = player
         observeEvents(of: player.events)
     }
@@ -91,11 +100,14 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         }
     }
 
-    func stop() async {
+    func stop(reason: String = "entry stop requested") async {
+        broadcastEntryLogger.debug(
+            "Stopping broadcast entry path=\(self.broadcastPath), reason=\(reason), hasPlayer=\(self.player != nil), isPlaying=\(self.isPlaying), isPaused=\(self.isPaused), offline=\(self.offline)"
+        )
         eventTask?.cancel()
         eventTask = nil
         stopStatsPolling()
-        await player?.stopAll()
+        await player?.stopAll(reason: reason)
         player = nil
         isPlaying = false
     }
@@ -104,6 +116,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         eventTask?.cancel()
         eventTask = Task {
             for await event in events {
+                broadcastEntryLogger.debug(
+                    "Player event path=\(self.broadcastPath), event=\(Self.eventLogDescription(event))"
+                )
                 switch event {
                 case .trackPlaying:
                     isPlaying = true
@@ -121,6 +136,23 @@ final class BroadcastEntry: ObservableObject, Identifiable {
                     break
                 }
             }
+        }
+    }
+
+    private static func eventLogDescription(_ event: PlayerEvent) -> String {
+        switch event {
+        case .trackPlaying(let kind):
+            return "trackPlaying(\(kind.rawValue))"
+        case .trackPaused(let kind):
+            return "trackPaused(\(kind.rawValue))"
+        case .trackStopped(let kind):
+            return "trackStopped(\(kind.rawValue))"
+        case .allTracksStopped:
+            return "allTracksStopped"
+        case .error(let kind, let message):
+            return "error(\(kind.rawValue), \(message))"
+        case .trackSwitched(let kind):
+            return "trackSwitched(\(kind.rawValue))"
         }
     }
 

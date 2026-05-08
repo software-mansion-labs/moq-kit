@@ -59,6 +59,8 @@ final class VideoRenderer: @unchecked Sendable {
     private var lastKnownClockTimeUs: UInt64 = 0
     private var pendingStallCheck: DispatchWorkItem?
     private var pendingDrainWakeup: DispatchWorkItem?
+    private var hasLoggedFirstEnqueue = false
+    private var hasLoggedNoActiveFrame = false
 
     /// Frames older than this relative to the active PTS are discarded from the pending
     /// buffer while scanning for a cut-in keyframe (500 ms).
@@ -99,12 +101,17 @@ final class VideoRenderer: @unchecked Sendable {
         let queue = self.enqueueQueue
         activeTrack.setOnDataAvailable(makeDataAvailableCallback())
         queue.async { self.armVideoEnqueue() }
-        KitLogger.player.debug("VideoRenderer started")
+        KitLogger.player.debug(
+            "VideoRenderer started clock=\(self.timing.isVideoDriven ? "video-driven" : "audio-driven")"
+        )
     }
 
     /// Stops requesting media data, removes track callbacks, pauses the clock if owned.
     func stop() {
         syncOnEnqueueQueue {
+            KitLogger.player.debug(
+                "VideoRenderer stopping clock=\(self.timing.isVideoDriven ? "video-driven" : "audio-driven"), timelineStarted=\(self.timelineStarted), bufferFillMs=\(self.activeTrack.depthMs), hasPendingTrack=\(self.pendingTrack != nil)"
+            )
             activeTrack.setOnDataAvailable(nil)
             pendingTrack?.setOnDataAvailable(nil)
             pendingTrack = nil
@@ -124,12 +131,16 @@ final class VideoRenderer: @unchecked Sendable {
             pendingDrainWakeup = nil
             lastEnqueuedPTS = .invalid
             lastKnownClockTimeUs = 0
+            hasLoggedFirstEnqueue = false
+            hasLoggedNoActiveFrame = false
         }
     }
 
     /// Flushes the active track's jitter buffer and removes the displayed image.
     func flush() {
         syncOnEnqueueQueue {
+            KitLogger.player.debug(
+                "VideoRenderer flushing active track, bufferFillMs=\(self.activeTrack.depthMs)")
             activeTrack.flush()
             layer.flushAndRemoveImage()
             pendingStallCheck?.cancel()
@@ -137,6 +148,7 @@ final class VideoRenderer: @unchecked Sendable {
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
             lastEnqueuedPTS = .invalid
+            hasLoggedNoActiveFrame = false
         }
     }
 
@@ -145,6 +157,7 @@ final class VideoRenderer: @unchecked Sendable {
     /// `onActivated` is called on `enqueueQueue` at the moment of the swap.
     func setPendingTrack(_ track: VideoRendererTrack, onActivated: @escaping () -> Void) {
         enqueueQueue.async {
+            KitLogger.player.debug("VideoRenderer installed pending track for seamless switch")
             // Discard any previous pending track without firing its callback.
             self.pendingTrack?.setOnDataAvailable(nil)
             track.setBufferState(.pending)
@@ -274,7 +287,8 @@ final class VideoRenderer: @unchecked Sendable {
         guard let keyframePts = pending.firstKeyframePts else { return }
 
         let gap = Int64(sourcePlayheadUs) - Int64(keyframePts)
-        pendingPhase = gap > flushThresholdUs
+        pendingPhase =
+            gap > flushThresholdUs
             ? .flushAndSwap
             : .cuttingIn(keyframePts: keyframePts)
     }
@@ -316,6 +330,13 @@ final class VideoRenderer: @unchecked Sendable {
 
         layer.enqueue(displaySample.sampleBuffer)
         lastEnqueuedPTS = displaySample.presentationTime
+        hasLoggedNoActiveFrame = false
+        if !hasLoggedFirstEnqueue {
+            hasLoggedFirstEnqueue = true
+            KitLogger.player.debug(
+                "VideoRenderer enqueued first frame sourceTimestampUs=\(entry.timestampUs), presentationTimeUs=\(MediaClockTime.timestampUs(from: displaySample.presentationTime)), playable=\(playable), bufferFillMs=\(self.activeTrack.depthMs)"
+            )
+        }
         return true
     }
 
@@ -323,8 +344,9 @@ final class VideoRenderer: @unchecked Sendable {
         guard activeTrack.state == JitterBuffer<VideoRendererSample>.State.playing else {
             return false
         }
-        guard let sourceStartUs = activeTrack.targetPlaybackPTS()
-            ?? activeTrack.peekFront()?.timestampUs
+        guard
+            let sourceStartUs = activeTrack.targetPlaybackPTS()
+                ?? activeTrack.peekFront()?.timestampUs
         else {
             return false
         }
@@ -333,6 +355,9 @@ final class VideoRenderer: @unchecked Sendable {
         timelineStarted = true
         lastKnownClockTimeUs = startUs
         timing.setRate(1.0, timeUs: startUs)
+        KitLogger.player.debug(
+            "VideoRenderer started video-driven clock sourceStartUs=\(sourceStartUs), displayStartUs=\(startUs), bufferFillMs=\(self.activeTrack.depthMs)"
+        )
         return true
     }
 
@@ -356,6 +381,9 @@ final class VideoRenderer: @unchecked Sendable {
 
     private func handleNoActiveFrame() {
         layer.stopRequestingMediaData()
+        if !hasLoggedNoActiveFrame {
+            hasLoggedNoActiveFrame = true
+        }
 
         // Emergency swap: active drained completely but pending has a keyframe.
         if let pending = pendingTrack,
@@ -384,7 +412,8 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     private func scheduleDrainWakeup(_ delay: RenderDelay) {
-        let wakeAtUs = delay.frontDisplayTimeUs > delay.renderLeadUs
+        let wakeAtUs =
+            delay.frontDisplayTimeUs > delay.renderLeadUs
             ? delay.frontDisplayTimeUs - delay.renderLeadUs
             : 0
         let delayUs = wakeAtUs > delay.playheadUs ? wakeAtUs - delay.playheadUs : 0
@@ -494,9 +523,10 @@ final class VideoRenderer: @unchecked Sendable {
             threshold: ptsCorrectionThresholdUs)
         guard correctedTimestampUs != sourceTimestampUs else { return (sampleBuffer, sourceTime) }
 
-        guard let retimed = Self.copySampleBuffer(
-            sampleBuffer,
-            shiftingTimingByUs: offset)
+        guard
+            let retimed = Self.copySampleBuffer(
+                sampleBuffer,
+                shiftingTimingByUs: offset)
         else {
             return (sampleBuffer, sourceTime)
         }

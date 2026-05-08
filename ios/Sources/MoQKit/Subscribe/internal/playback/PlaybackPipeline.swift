@@ -33,6 +33,8 @@ final class PlaybackPipeline {
     private let clock: any MediaClock
     private let audioRenderer: AudioRenderer?
     private let videoRenderer: VideoRenderer?
+    private var videoTrackName: String?
+    private var audioTrackName: String?
 
     private var audioSubscription: MediaTrack?
     private var videoSubscription: MediaTrack?
@@ -74,6 +76,8 @@ final class PlaybackPipeline {
         self.frameObserver = frameObserver
         self.audioSubscription = subscriptions.audio
         self.videoSubscription = subscriptions.video
+        self.videoTrackName = videoTrack?.name
+        self.audioTrackName = audioTrack?.name
 
         let audioClock: AudioDrivenClock? = audioTrack != nil ? try AudioDrivenClock() : nil
         let clock: any MediaClock = audioClock ?? VideoDrivenClock()
@@ -121,6 +125,7 @@ final class PlaybackPipeline {
            let audioTrack
         {
             self.audioTask = Self.makeAudioIngestTask(
+                trackName: audioTrack.name,
                 subscription: audioSub,
                 renderer: audioRenderer,
                 config: audioTrack.rawConfig,
@@ -132,6 +137,7 @@ final class PlaybackPipeline {
 
         if let videoSub = subscriptions.video, let rendererTrack {
             self.videoTask = Self.makeVideoIngestTask(
+                trackName: videoTrack?.name ?? "unknown",
                 subscription: videoSub,
                 track: rendererTrack,
                 frameObserver: frameObserver,
@@ -212,7 +218,9 @@ final class PlaybackPipeline {
         }
 
         videoSubscription = newSub
+        videoTrackName = track.name
         videoTask = Self.makeVideoIngestTask(
+            trackName: track.name,
             subscription: newSub,
             track: newRendererTrack,
             frameObserver: frameObserver,
@@ -238,7 +246,9 @@ final class PlaybackPipeline {
         let oldSub = audioSubscription
 
         audioSubscription = newSub
+        audioTrackName = track.name
         audioTask = Self.makeAudioIngestTask(
+            trackName: track.name,
             subscription: newSub,
             renderer: audioRenderer,
             config: track.rawConfig,
@@ -253,7 +263,10 @@ final class PlaybackPipeline {
         return .handled
     }
 
-    func stop() {
+    func stop(reason: String = "pipeline stop requested") {
+        KitLogger.player.debug(
+            "Stopping playback pipeline reason=\(reason), videoTrack=\(self.videoTrackName ?? "none"), audioTrack=\(self.audioTrackName ?? "none"), hasVideoTask=\(self.videoTask != nil), hasAudioTask=\(self.audioTask != nil), hasPendingVideoCleanup=\(self.pendingVideoCleanup != nil)"
+        )
         coordinatorTask?.cancel()
         audioTask?.cancel()
         videoTask?.cancel()
@@ -281,6 +294,8 @@ final class PlaybackPipeline {
     private func restartCoordinator() {
         coordinatorTask?.cancel()
         coordinatorTask = Self.makeCoordinatorTask(
+            videoTrackName: videoTrackName,
+            audioTrackName: audioTrackName,
             videoTask: videoTask,
             audioTask: audioTask,
             continuation: eventContinuation
@@ -426,6 +441,7 @@ extension PlaybackPipeline {
 
 extension PlaybackPipeline {
     fileprivate static func makeVideoIngestTask(
+        trackName: String,
         subscription: MediaTrack,
         track: VideoRendererTrack,
         frameObserver: any MediaFrameObserver,
@@ -437,7 +453,7 @@ extension PlaybackPipeline {
             var firstFrame = true
 
             defer {
-                KitLogger.player.debug("Exited video reading task")
+                KitLogger.player.debug("Exited video reading task track=\(trackName), cancelled=\(Task.isCancelled)")
             }
 
             for await frame in subscription.frames {
@@ -458,18 +474,23 @@ extension PlaybackPipeline {
 
                 if firstFrame {
                     firstFrame = false
+                    KitLogger.player.debug(
+                        "First video frame received track=\(trackName), timestampUs=\(frame.timestampUs), keyframe=\(frame.keyframe), bytes=\(frame.payload.count), isSwitch=\(isSwitch)"
+                    )
                     if !isSwitch {
                         continuation.yield(.trackPlaying(.video))
                     }
                 }
             }
             if !Task.isCancelled {
+                KitLogger.player.debug("Video track stream ended track=\(trackName)")
                 continuation.yield(.trackStopped(.video))
             }
         }
     }
 
     fileprivate static func makeAudioIngestTask(
+        trackName: String,
         subscription: MediaTrack,
         renderer: AudioRenderer,
         config: MoqAudio,
@@ -490,6 +511,10 @@ extension PlaybackPipeline {
             var lastPtsUs: UInt64? = nil
             var firstFrame = true
 
+            defer {
+                KitLogger.player.debug("Exited audio reading task track=\(trackName), cancelled=\(Task.isCancelled)")
+            }
+
             for await frame in subscription.frames {
                 if Task.isCancelled { break }
                 do {
@@ -508,6 +533,9 @@ extension PlaybackPipeline {
 
                     if firstFrame {
                         firstFrame = false
+                        KitLogger.player.debug(
+                            "First audio frame decoded track=\(trackName), timestampUs=\(frame.timestampUs), bytes=\(frame.payload.count), isSwitch=\(isSwitch)"
+                        )
                         let event: PlayerEvent =
                             isSwitch ? .trackSwitched(.audio) : .trackPlaying(.audio)
                         continuation.yield(event)
@@ -518,12 +546,15 @@ extension PlaybackPipeline {
                 }
             }
             if !Task.isCancelled {
+                KitLogger.player.debug("Audio track stream ended track=\(trackName)")
                 continuation.yield(.trackStopped(.audio))
             }
         }
     }
 
     fileprivate static func makeCoordinatorTask(
+        videoTrackName: String?,
+        audioTrackName: String?,
         videoTask: Task<Void, Never>?,
         audioTask: Task<Void, Never>?,
         continuation: AsyncStream<PlayerEvent>.Continuation
@@ -532,6 +563,9 @@ extension PlaybackPipeline {
             await videoTask?.value
             await audioTask?.value
             guard !Task.isCancelled else { return }
+            KitLogger.player.debug(
+                "Playback coordinator observed all track tasks ended; videoTrack=\(videoTrackName ?? "none"), audioTrack=\(audioTrackName ?? "none")"
+            )
             continuation.yield(.allTracksStopped)
             continuation.finish()
         }

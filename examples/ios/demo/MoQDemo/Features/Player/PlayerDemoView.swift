@@ -26,7 +26,9 @@ struct PlayerDemoView: View {
                     onConnect: {
                         player.connect(url: relayURL, prefix: broadcastPath)
                     },
-                    onStop: player.stop
+                    onStop: {
+                        player.stop(reason: "stop button tapped")
+                    }
                 )
 
                 SessionPlayerView(viewModel: player)
@@ -39,7 +41,7 @@ struct PlayerDemoView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    player.stop()
+                    player.stop(reason: "back button tapped")
                     dismiss()
                 } label: {
                     Label("Back", systemImage: "chevron.left")

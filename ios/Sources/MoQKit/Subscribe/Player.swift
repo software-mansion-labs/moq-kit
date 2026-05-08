@@ -259,10 +259,14 @@ public final class Player {
     ///
     /// - Throws: ``SessionError`` if a track subscription or renderer initialisation fails.
     public func play() async throws {
-        guard playbackPipeline == nil else { return }
+        guard playbackPipeline == nil else {
+            KitLogger.player.debug("Ignoring play() because playback pipeline is already active for \(self.playbackLogDescription)")
+            return
+        }
 
         try validateSelectedTracks()
 
+        KitLogger.player.debug("Starting real-time player for \(self.playbackLogDescription), targetBufferingMs=\(self.targetBufferingMs)")
         playbackPipeline = try makePlaybackPipeline()
     }
 
@@ -274,7 +278,8 @@ public final class Player {
     public func pause() async {
         let hadVideoTrack = hasVideoTrack
         let hadAudioTrack = hasAudioTrack
-        teardown(permanent: false)
+        KitLogger.player.debug("Pausing real-time player for \(self.playbackLogDescription)")
+        teardown(permanent: false, reason: "pause()")
 
         if hadVideoTrack {
             eventsContinuation.yield(.trackPaused(.video))
@@ -288,9 +293,9 @@ public final class Player {
     ///
     /// The ``events`` stream completes after this call. The player cannot be reused — create a
     /// new ``Player`` instance to start playback again.
-    public func stopAll() async {
-        KitLogger.player.debug("Stopping real-time player")
-        teardown(permanent: true)
+    public func stopAll(reason: String = "caller requested stopAll") async {
+        KitLogger.player.debug("Stopping real-time player for \(self.playbackLogDescription), reason=\(reason)")
+        teardown(permanent: true, reason: reason)
     }
 
     /// Switches to a different video rendition seamlessly.
@@ -381,17 +386,20 @@ public final class Player {
     }
 
     deinit {
-        playbackPipeline?.stop()
+        KitLogger.player.debug("Player deinit; stopping any active playback pipeline")
+        playbackPipeline?.stop(reason: "Player deinit")
         eventsContinuation.finish()
     }
 
     // MARK: - Private: teardown
 
-    private func teardown(permanent: Bool) {
+    private func teardown(permanent: Bool, reason: String) {
         if let playbackPipeline {
             lastStats = playbackPipeline.getStats()
+        } else {
+            KitLogger.player.debug("Player teardown requested with no active pipeline for \(self.playbackLogDescription), permanent=\(permanent), reason=\(reason)")
         }
-        playbackPipeline?.stop()
+        playbackPipeline?.stop(reason: "Player teardown permanent=\(permanent), reason=\(reason)")
         playbackPipeline = nil
 
         if permanent {
@@ -402,7 +410,7 @@ public final class Player {
     }
 
     private func restartPlaybackForSelectionChange() async throws {
-        teardown(permanent: false)
+        teardown(permanent: false, reason: "track selection changed")
         try await play()
     }
 
@@ -428,6 +436,10 @@ public final class Player {
     private nonisolated static func clampedVolume(_ volume: Float) -> Float {
         guard !volume.isNaN else { return 0 }
         return min(max(volume, 0), 1)
+    }
+
+    private var playbackLogDescription: String {
+        "catalog=\(catalog.path), video=\(selectedVideoTrack?.name ?? "none"), audio=\(selectedAudioTrack?.name ?? "none")"
     }
 
     private func validateSelectedTracks() throws {
