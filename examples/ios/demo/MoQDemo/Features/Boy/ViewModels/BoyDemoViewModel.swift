@@ -303,6 +303,7 @@ final class BoyDemoViewModel: ObservableObject {
         let entry = BroadcastEntry(
             catalog: catalog,
             initialVideoTrackName: selectedTracks.videoTrackName,
+            initialAudioTrackName: selectedTracks.audioTrackName,
             initialLatencyMs: UInt64(targetLatencyMs)
         )
         currentEntry = entry

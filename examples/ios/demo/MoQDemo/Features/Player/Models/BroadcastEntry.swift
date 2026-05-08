@@ -7,6 +7,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     let broadcastPath: String
 
     @Published var selectedVideoTrackName: String?
+    @Published var selectedAudioTrackName: String?
     @Published var catalog: Catalog
     @Published var player: Player?
     @Published var offline = false
@@ -21,7 +22,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     var hasAudio: Bool {
-        !catalog.playableAudioTracks.isEmpty
+        selectedAudioTrack != nil
     }
 
     private var eventTask: Task<Void, Never>?
@@ -34,10 +35,21 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         return catalog.playableVideoTracks.first(where: { $0.name == selectedVideoTrackName })
     }
 
-    init(catalog: Catalog, initialVideoTrackName: String?, initialLatencyMs: UInt64) {
+    var selectedAudioTrack: AudioTrackInfo? {
+        guard let selectedAudioTrackName else { return nil }
+        return catalog.playableAudioTracks.first(where: { $0.name == selectedAudioTrackName })
+    }
+
+    init(
+        catalog: Catalog,
+        initialVideoTrackName: String?,
+        initialAudioTrackName: String?,
+        initialLatencyMs: UInt64
+    ) {
         self.id = catalog.path
         self.broadcastPath = catalog.path
         self.selectedVideoTrackName = initialVideoTrackName
+        self.selectedAudioTrackName = initialAudioTrackName
         self.catalog = catalog
         self.targetLatencyMs = Double(initialLatencyMs)
     }
@@ -52,6 +64,10 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         pendingVideoTrackName = trackName
         Task { try? await player?.switchTrack(to: trackName) }
     }
+
+    // TODO: expose audio-track switching parity with switchVideoTrack — wire through
+    // `player?.switchAudioTrack(to:)` and update `selectedAudioTrackName` on
+    // `.trackSwitched(.audio)`. The field is currently set once in `init`.
 
     func updateTargetLatency(ms: UInt64) {
         targetLatencyMs = Double(ms)

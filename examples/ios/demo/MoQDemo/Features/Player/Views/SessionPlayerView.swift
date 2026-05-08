@@ -106,7 +106,7 @@ private struct BroadcastPlayerView: View {
                                 InfoPill(text: "\(size.width)×\(size.height)")
                             }
                         }
-                        if let audio = entry.catalog.playableAudioTracks.first {
+                        if let audio = entry.selectedAudioTrack {
                             InfoPill(text: "\(audio.config.codec) \(audio.config.sampleRate) Hz")
                         }
                         Spacer()

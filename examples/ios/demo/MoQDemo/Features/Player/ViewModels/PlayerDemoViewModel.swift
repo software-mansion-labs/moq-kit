@@ -132,6 +132,7 @@ final class PlayerDemoViewModel: ObservableObject {
         let entry = BroadcastEntry(
             catalog: catalog,
             initialVideoTrackName: selectedTracks.videoTrackName,
+            initialAudioTrackName: selectedTracks.audioTrackName,
             initialLatencyMs: targetLatencyMs
         )
         broadcasts.append(entry)
