@@ -90,9 +90,7 @@ internal class VideoRendererTrack(
         } else null)
     }
 
-    fun updateTargetBuffering(us: Long) {
-        buffer.updateTargetBuffering(us)
-    }
+    fun updateTargetBuffering(us: Long): Boolean = buffer.updateTargetBuffering(us)
 
     fun flush() {
         buffer.flush()
@@ -101,6 +99,8 @@ internal class VideoRendererTrack(
     val state: JitterBuffer.State get() = buffer.state
     val depthMs: Double get() = buffer.depthMs
     fun estimatedPlaybackTimeUs(): Long = buffer.estimatedPlaybackTimeUs()
+    fun targetPlaybackPTS(): Long? = buffer.targetPlaybackPTS()
+    val frontFrameIntervalUs: Long? get() = buffer.frontFrameIntervalUs
     val isProcessorReady: Boolean get() = processor.isReady
     fun getFormat(): MediaFormat? = processor.getFormat()
 }

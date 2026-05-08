@@ -3,32 +3,22 @@ package com.swmansion.moqkit.subscribe
 import android.util.Log
 import android.view.Surface
 import com.swmansion.moqkit.UnsupportedCodecException
-import com.swmansion.moqkit.subscribe.internal.subscribeTrack
-import com.swmansion.moqkit.subscribe.internal.playback.AudioRenderer
-import com.swmansion.moqkit.subscribe.internal.playback.CompositeMediaFrameObserver
-import com.swmansion.moqkit.subscribe.internal.playback.MediaFrameKind
-import com.swmansion.moqkit.subscribe.internal.playback.MediaTimestampAligner
-import com.swmansion.moqkit.subscribe.internal.playback.MediaTimebase
+import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipeline
+import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipelineSwitchOutcome
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackStatsTracker
-import com.swmansion.moqkit.subscribe.internal.playback.VideoRenderer
-import com.swmansion.moqkit.subscribe.internal.playback.VideoRendererTrack
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.launch
 
 private const val TAG = "Player"
-private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
 
 /**
- * Real-time audio+video player with fine-grained latency control.
+ * Real-time audio/video player with fine-grained latency control.
  *
  * Uses MediaCodec (async) for decoding, AudioTrack (MODE_STREAM) for audio output,
- * and a Surface-configured MediaCodec for video output — bypassing ExoPlayer for lower latency.
+ * and a Surface-configured MediaCodec for video output.
  *
  * ### Typical usage
  * ```kotlin
@@ -41,19 +31,9 @@ private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
  * )
  * player.setSurface(surfaceView.holder.surface)
  * player.play()
- * // … later …
+ * // later:
  * player.close()
  * ```
- *
- * @param catalog The catalog that describes the tracks available in the broadcast.
- * @param videoTrackName The selected video track name from [Catalog.videoTracks], or `null`
- *   to disable video playback. Unknown names throw [IllegalArgumentException].
- * @param audioTrackName The selected audio track name from [Catalog.audioTracks], or `null`
- *   to disable audio playback. Unknown names throw [IllegalArgumentException].
- * @param targetLatencyMs Target end-to-end playback latency in milliseconds. Lower values
- *   reduce delay at the cost of increased risk of stalls. Defaults to 100 ms.
- * @param parentScope Coroutine scope whose lifetime bounds the player's internal coroutines.
- * @param volume Initial audio volume, clamped to the 0.0-1.0 range.
  */
 class Player(
     private val catalog: Catalog,
@@ -73,6 +53,8 @@ class Player(
         data class TrackPaused(val kind: String) : Event()
         /** A track's incoming data stream ended. [kind] is `"audio"` or `"video"`. */
         data class TrackStopped(val kind: String) : Event()
+        /** A switched-in rendition became active. [kind] is `"audio"` or `"video"`. */
+        data class TrackSwitched(val kind: String) : Event()
         /** An unrecoverable error occurred on a track. */
         data class Error(val kind: String, val message: String) : Event()
         /** All active tracks have stopped (stream ended or [stop] called). */
@@ -80,25 +62,19 @@ class Player(
     }
 
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
-    private val statsTracker = PlaybackStatsTracker()
-    private val mediaTimebase = MediaTimebase()
-    private val mediaTimestampAligner = MediaTimestampAligner()
-    private val frameObserver = CompositeMediaFrameObserver(listOf(statsTracker, mediaTimestampAligner))
-
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
+
     val events: SharedFlow<Event> = _events
 
     private val broadcastOwner: BroadcastOwner
+    private val statsTracker = PlaybackStatsTracker()
     private var selectedVideoTrack: VideoTrackInfo?
     private var selectedAudioTrack: AudioTrackInfo?
     private var targetLatencyMs = targetLatencyMs
     private var storedAudioVolume = volume.coerceIn(0f, 1f)
-
-    private var audioRenderer: AudioRenderer? = null
-    private var videoRenderer: VideoRenderer? = null
-    private var audioIngestJob: Job? = null
-    private var videoIngestJob: Job? = null
     private var surface: Surface? = null
+    private var playbackPipeline: PlaybackPipeline? = null
+    private var lastStats: PlaybackStats = emptyStats()
     private var playing = false
     private var closed = false
 
@@ -115,7 +91,7 @@ class Player(
 
     /** Current playback time in microseconds. */
     val currentTimeUs: Long
-        get() = mediaTimebase.currentTimeUs
+        get() = playbackPipeline?.currentTimeUs ?: 0L
 
     /** Current audio output volume, clamped to the 0.0-1.0 range. */
     val audioVolume: Float
@@ -124,78 +100,38 @@ class Player(
     /** Snapshot of current playback metrics. */
     val stats: PlaybackStats
         get() {
-            val audioLatencyMs = if (selectedAudioTrack != null) {
-                latencyMs(mediaTimestampAligner.audioLiveEdge.estimatedLivePTS())
-            } else null
-            val videoLatencyMs = if (selectedVideoTrack != null) {
-                val videoTime = mediaTimestampAligner.videoLiveEdge.estimatedLivePTS()
-                if (videoTime != null &&
-                    (selectedAudioTrack == null || mediaTimestampAligner.audioLiveEdge.estimatedLivePTS() != null)
-                ) {
-                    latencyMs(
-                        mediaTimestampAligner.audioTime(
-                            videoTime = videoTime,
-                            threshold = PTS_CORRECTION_THRESHOLD_US,
-                        ),
-                    )
-                } else null
-            } else null
-
-            return statsTracker.snapshot(
-                audioLatencyMs = audioLatencyMs,
-                videoLatencyMs = videoLatencyMs,
-                audioRingBufferMs = if (selectedAudioTrack != null) audioRenderer?.bufferFillMs else null,
-                videoJitterBufferMs = if (selectedVideoTrack != null) videoRenderer?.bufferFillMs else null,
-                videoDecodeStatsEnabled = selectedVideoTrack != null && videoRenderer != null,
-            )
+            val snapshot = playbackPipeline?.snapshotStats() ?: lastStats
+            lastStats = snapshot
+            return snapshot
         }
 
     /**
      * Set, swap, or clear the video output surface.
-     * If [play] was already called and a surface becomes available, starts the video pipeline.
-     * If a different surface is provided while video is running, attempts an in-place swap and
-     * falls back to restarting video on the new surface if the codec rejects the change.
-     * If surface becomes null, stops the active video renderer.
      */
     fun setSurface(surface: Surface?) {
-        val previousSurface = this.surface
         this.surface = surface
-
-        when {
-            surface == null -> {
-                if (videoRenderer != null) {
-                    stopVideo()
-                }
-            }
-
-            videoRenderer == null -> {
-                if (playing && selectedVideoTrack != null) {
-                    startVideo(surface)
-                }
-            }
-
-            previousSurface !== surface -> swapVideoSurface(surface)
-        }
+        playbackPipeline?.setSurface(surface)
     }
 
     /**
-     * Starts audio (and video, if a surface is set) playback.
+     * Starts audio and video playback.
      *
-     * Safe to call if a surface has not yet been provided — video will start automatically
-     * once [setSurface] is called. The first decoded audio or video frame triggers an
-     * [Event.TrackPlaying] event for that media kind.
+     * Safe to call before a surface is available. If video is selected, the video side starts
+     * once [setSurface] receives a non-null surface.
      */
     fun play() {
         check(!closed) { "Player is already closed" }
-        if (playing) {
-            return
-        }
+        if (playing) return
 
         validateSelectedTracks()
         playing = true
         statsTracker.markPlayStart()
-        startAudio()
-        surface?.let { startVideo(it) }
+        playbackPipeline = try {
+            makePlaybackPipeline()
+        } catch (t: Throwable) {
+            playing = false
+            throw t
+        }
     }
 
     /**
@@ -207,28 +143,27 @@ class Player(
     fun switchTrack(trackName: String?) {
         check(!closed) { "Player is already closed" }
         val newTrack = resolveVideoTrack(trackName)
-        if (newTrack?.name == selectedVideoTrack?.name) {
-            return
-        }
+        if (newTrack?.name == selectedVideoTrack?.name) return
         check(newTrack != null || selectedAudioTrack != null) {
             "at least one audio or video track is expected"
         }
         validatePlayable(newTrack)
 
-        val currentTrack = selectedVideoTrack
+        val wasVideoEnabled = selectedVideoTrack != null
+        val pipeline = playbackPipeline
+        if (pipeline != null && wasVideoEnabled && newTrack != null) {
+            when (pipeline.switchVideo(newTrack)) {
+                PlaybackPipelineSwitchOutcome.HANDLED -> {
+                    selectedVideoTrack = newTrack
+                    return
+                }
+
+                PlaybackPipelineSwitchOutcome.RESTART_REQUIRED -> Unit
+            }
+        }
+
         selectedVideoTrack = newTrack
-
-        if (!playing) {
-            return
-        }
-
-        val renderer = videoRenderer
-        if (currentTrack != null && newTrack != null && renderer != null && !renderer.hasPendingTrack) {
-            switchActiveVideoTrack(newTrack, renderer)
-            return
-        }
-
-        restartPlaybackForSelectionChange()
+        if (playing) restartPlaybackForSelectionChange()
     }
 
     /**
@@ -240,67 +175,61 @@ class Player(
     fun switchAudioTrack(trackName: String?) {
         check(!closed) { "Player is already closed" }
         val newTrack = resolveAudioTrack(trackName)
-        if (newTrack?.name == selectedAudioTrack?.name) {
-            return
-        }
+        if (newTrack?.name == selectedAudioTrack?.name) return
         check(selectedVideoTrack != null || newTrack != null) {
             "at least one audio or video track is expected"
         }
         validatePlayable(newTrack)
 
-        val currentTrack = selectedAudioTrack
+        val wasAudioEnabled = selectedAudioTrack != null
+        val pipeline = playbackPipeline
+        if (pipeline != null && wasAudioEnabled && newTrack != null) {
+            when (pipeline.switchAudio(newTrack)) {
+                PlaybackPipelineSwitchOutcome.HANDLED -> {
+                    selectedAudioTrack = newTrack
+                    return
+                }
+
+                PlaybackPipelineSwitchOutcome.RESTART_REQUIRED -> Unit
+            }
+        }
+
         selectedAudioTrack = newTrack
-
-        if (!playing) {
-            return
-        }
-
-        if (currentTrack != null && newTrack != null && audioRenderer != null) {
-            switchActiveAudioTrack(newTrack)
-            return
-        }
-
-        restartPlaybackForSelectionChange()
+        if (playing) restartPlaybackForSelectionChange()
     }
 
     /**
-     * Pauses playback by stopping all decoders and cancelling ingest coroutines.
+     * Pauses playback by stopping decoders and cancelling active subscriptions.
      *
-     * Unlike [close], the player can be resumed by calling [play] again.
+     * The player can be resumed by calling [play] again.
      */
     fun pause() {
         check(!closed) { "Player is already closed" }
-        if (!playing) {
-            return
-        }
+        if (!playing) return
 
+        val hadAudioTrack = selectedAudioTrack != null
+        val hadVideoTrack = selectedVideoTrack != null
         Log.d(TAG, "pause")
         playing = false
-        teardownPlayback(resetAccumulator = false)
+        teardownPlayback(resetStats = false)
 
-        if (selectedAudioTrack != null) {
-            _events.tryEmit(Event.TrackPaused("audio"))
-        }
-        if (selectedVideoTrack != null) {
-            _events.tryEmit(Event.TrackPaused("video"))
-        }
+        if (hadAudioTrack) _events.tryEmit(Event.TrackPaused("audio"))
+        if (hadVideoTrack) _events.tryEmit(Event.TrackPaused("video"))
     }
 
     /**
-     * Stops playback and resets all accumulated metrics.
-     *
-     * Call [play] again to restart from the current selected tracks.
+     * Stops playback and resets accumulated metrics.
      */
     fun stop() {
         check(!closed) { "Player is already closed" }
-        if (!playing && audioRenderer == null && videoRenderer == null) {
-            statsTracker.reset()
+        if (!playing && playbackPipeline == null) {
+            lastStats = emptyStats()
             return
         }
 
         Log.d(TAG, "stop")
         playing = false
-        teardownPlayback(resetAccumulator = true)
+        teardownPlayback(resetStats = true)
     }
 
     /**
@@ -309,8 +238,7 @@ class Player(
     fun updateTargetLatency(ms: Int) {
         check(!closed) { "Player is already closed" }
         targetLatencyMs = ms
-        audioRenderer?.updateTargetLatency(ms)
-        videoRenderer?.updateTargetBuffering(ms)
+        playbackPipeline?.updateTargetLatency(ms)
     }
 
     /**
@@ -320,263 +248,64 @@ class Player(
         check(!closed) { "Player is already closed" }
         val clampedVolume = volume.coerceIn(0f, 1f)
         storedAudioVolume = clampedVolume
-        audioRenderer?.setVolume(clampedVolume)
+        playbackPipeline?.setVolume(clampedVolume)
     }
 
     /**
      * Releases the retained broadcast handle and all playback resources.
-     *
-     * After [close] returns the player cannot be used again.
      */
     override fun close() {
-        if (closed) {
-            return
-        }
+        if (closed) return
 
         closed = true
         playing = false
-        teardownPlayback(resetAccumulator = true)
+        teardownPlayback(resetStats = true)
         scope.cancel()
         broadcastOwner.release()
     }
 
-    private fun startAudio() {
-        val audioInfo = selectedAudioTrack ?: run {
-            Log.d(TAG, "No audio track selected, skipping audio pipeline")
-            return
+    private fun makePlaybackPipeline(): PlaybackPipeline {
+        check(selectedVideoTrack != null || selectedAudioTrack != null) {
+            "at least one audio or video track is expected"
         }
 
-        Log.d(
-            TAG,
-            "startAudio: '${audioInfo.name}' ${audioInfo.config.sampleRate}Hz " +
-                "${audioInfo.config.channelCount}ch, targetLatency=${targetLatencyMs}ms",
-        )
-
-        val renderer = AudioRenderer(
-            config = audioInfo.rawConfig,
+        return PlaybackPipeline(
+            catalog = catalog,
+            broadcastOwner = broadcastOwner,
+            videoTrack = selectedVideoTrack,
+            audioTrack = selectedAudioTrack,
             targetLatencyMs = targetLatencyMs,
-            metrics = statsTracker,
             initialVolume = storedAudioVolume,
-            mediaTimebase = mediaTimebase,
+            initialSurface = surface,
+            scope = scope,
+            statsTracker = statsTracker,
+            emitEvent = { event -> _events.tryEmit(event) },
         )
-        audioRenderer = renderer
-        renderer.start()
-
-        val audioFlow = subscribeTrack(
-            broadcastOwner.consumer(),
-            audioInfo.name,
-            audioInfo.rawConfig.container,
-            targetLatencyMs.toULong(),
-        )
-
-        audioIngestJob = scope.launch {
-            var firstFrame = true
-            var lastPtsUs = 0L
-            try {
-                audioFlow.collect { frame ->
-                    val timestampUs = frame.timestampUs.toLong()
-                    if (isDiscontinuity(timestampUs, lastPtsUs, keyframe = true)) {
-                        Log.d(TAG, "Audio discontinuity detected")
-                        renderer.flush()
-                        frameObserver.onFrameDiscontinuity(
-                            MediaFrameKind.AUDIO,
-                            timestampGapUs(timestampUs, lastPtsUs),
-                        )
-                    }
-                    lastPtsUs = timestampUs
-
-                    frameObserver.onMediaFrame(frame, MediaFrameKind.AUDIO)
-                    renderer.submitFrame(frame.payload, timestampUs)
-
-                    if (firstFrame) {
-                        firstFrame = false
-                        Log.d(TAG, "First audio frame received")
-                        _events.tryEmit(Event.TrackPlaying("audio"))
-                    }
-                }
-
-                _events.tryEmit(Event.TrackStopped("audio"))
-            } catch (_: CancellationException) {
-                Log.d(TAG, "Audio ingest cancelled")
-            } catch (e: Exception) {
-                Log.e(TAG, "Audio ingest error: $e")
-                _events.tryEmit(Event.Error("audio", e.message ?: "Unknown error"))
-            }
-            checkAllStopped()
-        }
-    }
-
-    private fun startVideo(surface: Surface) {
-        val videoInfo = selectedVideoTrack ?: run {
-            Log.d(TAG, "No video track selected, skipping video pipeline")
-            return
-        }
-
-        Log.d(TAG, "Starting video: '${videoInfo.name}' codec=${videoInfo.config.codec}")
-
-        statsTracker.resetVideoDecodeStats(videoInfo.name)
-
-        val track = VideoRendererTrack(
-            trackName = videoInfo.name,
-            config = videoInfo.rawConfig,
-            targetBufferingUs = targetLatencyMs.toLong() * 1000,
-        )
-        val renderer = VideoRenderer(
-            activeTrack = track,
-            outputSurface = surface,
-            timebase = mediaTimebase,
-            timestampAligner = mediaTimestampAligner,
-            metrics = statsTracker,
-            onError = ::handleVideoRendererError,
-        )
-        videoRenderer = renderer
-        renderer.start()
-
-        videoIngestJob = launchVideoIngestJob(videoInfo, track)
-    }
-
-    private fun launchVideoIngestJob(videoInfo: VideoTrackInfo, track: VideoRendererTrack): Job {
-        Log.d(TAG, "Subscribing to video track '${videoInfo.name}'")
-        val videoFlow = subscribeTrack(
-            broadcastOwner.consumer(),
-            videoInfo.name,
-            videoInfo.rawConfig.container,
-            targetLatencyMs.toULong(),
-        )
-
-        return scope.launch {
-            var firstFrame = true
-            var lastPtsUs = 0L
-            try {
-                Log.d(TAG, "Waiting for video frames")
-                videoFlow.collect { frame ->
-                    val timestampUs = frame.timestampUs.toLong()
-                    if (isDiscontinuity(timestampUs, lastPtsUs, frame.keyframe)) {
-                        Log.d(TAG, "Video discontinuity detected")
-                        frameObserver.onFrameDiscontinuity(
-                            MediaFrameKind.VIDEO,
-                            timestampGapUs(timestampUs, lastPtsUs),
-                        )
-                    }
-                    lastPtsUs = timestampUs
-
-                    frameObserver.onMediaFrame(frame, MediaFrameKind.VIDEO)
-                    track.insert(frame.payload, timestampUs, frame.keyframe)
-
-                    if (firstFrame) {
-                        firstFrame = false
-                        Log.d(TAG, "First video frame received")
-                        _events.tryEmit(Event.TrackPlaying("video"))
-                    }
-                }
-
-                _events.tryEmit(Event.TrackStopped("video"))
-            } catch (_: CancellationException) {
-                Log.d(TAG, "Video ingest cancelled")
-            } catch (e: Exception) {
-                Log.e(TAG, "Video ingest error: $e")
-                _events.tryEmit(Event.Error("video", e.message ?: "Unknown error"))
-            }
-            checkAllStopped()
-        }
-    }
-
-    private fun switchActiveVideoTrack(videoInfo: VideoTrackInfo, renderer: VideoRenderer) {
-        Log.d(TAG, "Switching video track to '${videoInfo.name}' codec=${videoInfo.config.codec}")
-
-        val newTrack = VideoRendererTrack(
-            trackName = videoInfo.name,
-            config = videoInfo.rawConfig,
-            targetBufferingUs = targetLatencyMs.toLong() * 1000,
-        )
-        val oldJob = videoIngestJob
-        // TODO: If the pending track never activates, this old job lives until a broader
-        // playback teardown cancels it.
-        renderer.setPendingTrack(newTrack) {
-            oldJob?.cancel()
-        }
-
-        videoIngestJob = launchVideoIngestJob(videoInfo, newTrack)
-    }
-
-    private fun switchActiveAudioTrack(audioInfo: AudioTrackInfo) {
-        Log.d(TAG, "Switching audio track to '${audioInfo.name}' codec=${audioInfo.config.codec}")
-
-        audioIngestJob?.cancel()
-        audioRenderer?.stop()
-        audioRenderer = null
-        startAudio()
     }
 
     private fun restartPlaybackForSelectionChange() {
         Log.d(TAG, "Restarting playback for selection change")
-        teardownPlayback(resetAccumulator = false)
+        teardownPlayback(resetStats = false)
         if (playing) {
             validateSelectedTracks()
-            startAudio()
-            surface?.let { startVideo(it) }
+            playbackPipeline = makePlaybackPipeline()
         }
     }
 
-    private fun swapVideoSurface(surface: Surface) {
-        val renderer = videoRenderer ?: return
-
-        try {
-            renderer.setSurface(surface)
-            Log.d(TAG, "Updated video output surface")
-        } catch (t: Throwable) {
-            Log.w(TAG, "Surface swap failed, restarting video renderer", t)
-            restartVideoForSurfaceChange(surface)
+    private fun teardownPlayback(resetStats: Boolean) {
+        playbackPipeline?.let { pipeline ->
+            lastStats = pipeline.snapshotStats()
+            pipeline.stop()
         }
-    }
-
-    private fun restartVideoForSurfaceChange(surface: Surface) {
-        stopVideo()
-        if (playing && selectedVideoTrack != null) {
-            startVideo(surface)
-        }
-    }
-
-    private fun handleVideoRendererError(error: Throwable) {
-        Log.e(TAG, "Video renderer error", error)
-        stopVideo()
-        _events.tryEmit(Event.Error("video", error.message ?: "Unknown error"))
-        checkAllStopped()
-    }
-
-    private fun stopVideo() {
-        videoIngestJob?.cancel()
-        videoIngestJob = null
-        videoRenderer?.stop()
-        videoRenderer = null
-    }
-
-    private fun teardownPlayback(resetAccumulator: Boolean) {
-        audioIngestJob?.cancel()
-        audioIngestJob = null
-        videoIngestJob?.cancel()
-        videoIngestJob = null
-        audioRenderer?.stop()
-        audioRenderer = null
-        videoRenderer?.stop()
-        videoRenderer = null
-        if (resetAccumulator) {
+        playbackPipeline = null
+        if (resetStats) {
+            lastStats = emptyStats()
             statsTracker.reset()
         }
     }
 
-    private fun checkAllStopped() {
-        val audioDone = audioIngestJob?.isActive != true
-        val videoDone = videoIngestJob?.isActive != true
-        if (audioDone && videoDone) {
-            _events.tryEmit(Event.AllTracksStopped)
-        }
-    }
-
     private fun resolveVideoTrack(trackName: String?): VideoTrackInfo? {
-        if (trackName == null) {
-            return null
-        }
+        if (trackName == null) return null
         return catalog.videoTracks.firstOrNull { it.name == trackName }
             ?: throw IllegalArgumentException(
                 "Unknown video track '$trackName' for catalog ${catalog.path}",
@@ -584,9 +313,7 @@ class Player(
     }
 
     private fun resolveAudioTrack(trackName: String?): AudioTrackInfo? {
-        if (trackName == null) {
-            return null
-        }
+        if (trackName == null) return null
         return catalog.audioTracks.firstOrNull { it.name == trackName }
             ?: throw IllegalArgumentException(
                 "Unknown audio track '$trackName' for catalog ${catalog.path}",
@@ -608,25 +335,22 @@ class Player(
         throw UnsupportedCodecException("Audio track '${track.name}' is not playable: $reason")
     }
 
-    private fun isDiscontinuity(currentUs: Long, lastUs: Long, keyframe: Boolean): Boolean {
-        if (!keyframe || lastUs <= 0L) {
-            return false
-        }
-        return timestampGapUs(currentUs, lastUs) > 500_000L
-    }
-
-    private fun timestampGapUs(currentUs: Long, lastUs: Long): Long =
-        if (currentUs >= lastUs) currentUs - lastUs else lastUs - currentUs
-
-    private fun latencyMs(liveTime: Long?): Double? {
-        val live = liveTime ?: return null
-        val current = mediaTimebase.currentTimeUs
-        if (current <= 0L) return null
-        val latencyUs = try {
-            Math.subtractExact(live, current)
-        } catch (_: ArithmeticException) {
-            return null
-        }
-        return maxOf(0L, latencyUs).toDouble() / 1_000.0
-    }
+    private fun emptyStats(): PlaybackStats = PlaybackStats(
+        audioLatencyMs = null,
+        videoLatencyMs = null,
+        audioStalls = null,
+        videoStalls = null,
+        audioBitrateKbps = null,
+        videoBitrateKbps = null,
+        timeToFirstAudioFrameMs = null,
+        timeToFirstVideoFrameMs = null,
+        videoFps = null,
+        audioFramesDropped = null,
+        videoFramesDropped = null,
+        audioRingBufferMs = null,
+        videoJitterBufferMs = null,
+        videoDecodeStats = null,
+        audioArrival = null,
+        videoArrival = null,
+    )
 }

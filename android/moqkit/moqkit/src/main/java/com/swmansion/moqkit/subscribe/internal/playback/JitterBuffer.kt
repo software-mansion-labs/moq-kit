@@ -12,6 +12,7 @@ private const val TAG = "JitterBuffer"
  */
 internal class JitterBuffer<T>(
     private var targetBufferingUs: Long,
+    private val wallClockUs: () -> Long = { System.nanoTime() / 1000 },
 ) {
     enum class State { BUFFERING, PLAYING, PENDING }
 
@@ -160,6 +161,31 @@ internal class JitterBuffer<T>(
         }
     }
 
+    /**
+     * Estimated live-edge PTS from the maximum sender timestamp to local wall-clock offset.
+     */
+    fun estimatedLivePTS(): Long? {
+        synchronized(lock) {
+            if (maxOffset == Long.MIN_VALUE) return null
+            return try {
+                Math.addExact(wallClockTimeUs(), maxOffset)
+            } catch (_: ArithmeticException) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Current desired playout PTS (`estimatedLivePTS - targetBufferingUs`).
+     */
+    fun targetPlaybackPTS(): Long? {
+        val estimated = estimatedLivePTS() ?: return null
+        return try {
+            Math.subtractExact(estimated, targetBufferingUs).takeIf { it >= 0L }
+        } catch (_: ArithmeticException) {
+            null
+        }
+    }
 
     /**
      * Estimated playback time in microseconds.
@@ -171,10 +197,15 @@ internal class JitterBuffer<T>(
         }
     }
 
-    fun updateTargetBuffering(us: Long) {
-        synchronized(lock) { 
-          targetBufferingUs = us 
-          mode = State.BUFFERING
+    /**
+     * Update target buffering depth.
+     *
+     * Returns true when a buffer that was waiting for enough depth became playable.
+     */
+    fun updateTargetBuffering(us: Long): Boolean {
+        synchronized(lock) {
+            targetBufferingUs = us
+            return updateBufferingStateIfReady()
         }
     }
 
@@ -197,5 +228,22 @@ internal class JitterBuffer<T>(
         else (entries.last().timestampUs - entries.first().timestampUs).toDouble() / 1000.0
     }
 
-    private fun wallClockTimeUs(): Long = System.nanoTime() / 1000
+    val frontFrameIntervalUs: Long? get() = synchronized(lock) {
+        if (entries.size < 2) return@synchronized null
+        val first = entries[0].timestampUs
+        val second = entries[1].timestampUs
+        if (second > first) second - first else null
+    }
+
+    private fun updateBufferingStateIfReady(): Boolean {
+        if (mode != State.BUFFERING || entries.size < 2) return false
+        val oldest = entries.first().timestampUs
+        val newest = entries.last().timestampUs
+        if (newest < oldest || newest - oldest < targetBufferingUs) return false
+        mode = State.PLAYING
+        Log.d(TAG, "Transitioned to PLAYING (${entries.size} frames buffered)")
+        return true
+    }
+
+    private fun wallClockTimeUs(): Long = wallClockUs()
 }

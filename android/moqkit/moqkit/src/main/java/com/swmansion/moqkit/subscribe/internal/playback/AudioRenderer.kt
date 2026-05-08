@@ -22,12 +22,12 @@ internal class AudioRenderer(
     private val targetLatencyMs: Int,
     private val metrics: PlaybackStatsTracker? = null,
     initialVolume: Float = 1f,
-    mediaTimebase: MediaTimebase = MediaTimebase(),
+    clock: AudioDrivenClock = AudioDrivenClock(),
 ) {
     private val sampleRate = config.sampleRate.toInt()
     private val channels = config.channelCount.toInt()
     private val lock = ReentrantLock()
-    internal val timebase = mediaTimebase
+    internal val clock = clock
 
     private var ringBuffer = AudioRingBuffer(
         rate = sampleRate,
@@ -90,11 +90,12 @@ internal class AudioRenderer(
 
         decoder = AudioDecoder(format) { pcmData, frameCount, timestampUs ->
             lock.withLock {
-                // Set timebase base on first decoded frame
-                if (timebase.currentTimeUs == 0L) {
-                    timebase.setCurrentTimeUs(timestampUs)
+                // Seed the audio clock from the first decoded frame.
+                if (clock.currentTimeUs == 0L) {
+                    clock.setCurrentTimeUs(timestampUs)
                 }
-                ringBuffer.write(timestampUs, pcmData, frameCount)
+                val discarded = ringBuffer.write(timestampUs, pcmData, frameCount)
+                metrics?.recordAudioFramesDropped(discarded)
             }
         }
         decoder!!.start()
@@ -124,7 +125,7 @@ internal class AudioRenderer(
                         metrics?.audioStallEnded()
                     }
                     track.write(chunkBuf, 0, framesRead * channels)
-                    timebase.setCurrentTimeUs(ts)
+                    clock.setCurrentTimeUs(ts)
                 } else {
                     if (!wasStalled && everPlayed) {
                         wasStalled = true
@@ -168,7 +169,7 @@ internal class AudioRenderer(
             ringBuffer.reset()
         }
         decoder?.flush()
-        timebase.reset()
+        clock.reset()
     }
 
     fun stop() {
@@ -185,7 +186,18 @@ internal class AudioRenderer(
         } catch (_: Exception) {}
         audioTrack = null
 
-        timebase.reset()
+        clock.reset()
         Log.d(TAG, "AudioRenderer stopped")
+    }
+
+    fun canAcceptConfig(newConfig: MoqAudio): Boolean =
+        config.codec == newConfig.codec &&
+            config.sampleRate == newConfig.sampleRate &&
+            config.channelCount == newConfig.channelCount &&
+            descriptionsMatch(config.description, newConfig.description)
+
+    private fun descriptionsMatch(lhs: ByteArray?, rhs: ByteArray?): Boolean {
+        if (lhs == null || rhs == null) return lhs === rhs
+        return lhs.contentEquals(rhs)
     }
 }

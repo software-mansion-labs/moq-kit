@@ -136,16 +136,80 @@ class MediaTimestampAlignerTest {
     }
 }
 
-class MediaTimebaseTest {
+class MediaClockTest {
     @Test
-    fun currentTimeCanBeSetAndReset() {
-        val timebase = MediaTimebase()
+    fun audioDrivenClockCurrentTimeCanBeSetAndReset() {
+        val clock = AudioDrivenClock()
 
-        timebase.setCurrentTimeUs(19_000L)
-        assertEquals(19_000L, timebase.currentTimeUs)
+        clock.setCurrentTimeUs(19_000L)
+        assertEquals(19_000L, clock.currentTimeUs)
 
-        timebase.reset()
-        assertEquals(0L, timebase.currentTimeUs)
+        clock.reset()
+        assertEquals(0L, clock.currentTimeUs)
+    }
+
+    @Test
+    fun videoDrivenClockAdvancesOnlyWhenRunning() {
+        var wallClock = 1_000L
+        val clock = VideoDrivenClock { wallClock }
+
+        clock.setRate(1.0, timeUs = 10_000L)
+        wallClock = 1_500L
+        assertEquals(10_500L, clock.currentTimeUs)
+
+        clock.setRate(0.0)
+        wallClock = 3_000L
+        assertEquals(10_500L, clock.currentTimeUs)
+    }
+}
+
+class JitterBufferTest {
+    @Test
+    fun targetPlaybackPtsUsesEstimatedLiveEdgeMinusTargetBuffering() {
+        var wallClock = 1_000L
+        val buffer = JitterBuffer<Int>(
+            targetBufferingUs = 1_000L,
+            wallClockUs = { wallClock },
+        )
+
+        buffer.insert(item = 1, timestampUs = 10_000L)
+        wallClock = 2_000L
+        buffer.insert(item = 2, timestampUs = 11_000L)
+        wallClock = 2_500L
+
+        assertEquals(JitterBuffer.State.PLAYING, buffer.state)
+        assertEquals(11_500L, buffer.estimatedLivePTS())
+        assertEquals(10_500L, buffer.targetPlaybackPTS())
+        assertEquals(1_000L, buffer.frontFrameIntervalUs)
+    }
+
+    @Test
+    fun updatingTargetBufferingCanStartBufferedVideo() {
+        var wallClock = 0L
+        val buffer = JitterBuffer<Int>(
+            targetBufferingUs = 2_000L,
+            wallClockUs = { wallClock },
+        )
+
+        buffer.insert(item = 1, timestampUs = 1_000L)
+        wallClock = 100L
+        buffer.insert(item = 2, timestampUs = 2_000L)
+
+        assertEquals(JitterBuffer.State.BUFFERING, buffer.state)
+        assertEquals(true, buffer.updateTargetBuffering(1_000L))
+        assertEquals(JitterBuffer.State.PLAYING, buffer.state)
+    }
+
+    @Test
+    fun updatingTargetBufferingKeepsPlayingVideoPlayable() {
+        val buffer = JitterBuffer<Int>(targetBufferingUs = 1_000L)
+
+        buffer.insert(item = 1, timestampUs = 1_000L)
+        buffer.insert(item = 2, timestampUs = 2_000L)
+
+        assertEquals(JitterBuffer.State.PLAYING, buffer.state)
+        assertEquals(false, buffer.updateTargetBuffering(5_000L))
+        assertEquals(JitterBuffer.State.PLAYING, buffer.state)
     }
 }
 

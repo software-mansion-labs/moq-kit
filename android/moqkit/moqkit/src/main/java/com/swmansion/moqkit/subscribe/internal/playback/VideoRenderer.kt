@@ -34,7 +34,7 @@ private const val TAG = "VideoRenderer"
 internal class VideoRenderer(
     @Volatile private var activeTrack: VideoRendererTrack,
     @Volatile private var outputSurface: Surface,
-    private val timebase: MediaTimebase? = null,
+    private val clock: MediaClock? = null,
     private val timestampAligner: MediaTimestampAligner? = null,
     private val metrics: PlaybackStatsTracker? = null,
     private val onError: (Throwable) -> Unit = {},
@@ -83,6 +83,8 @@ internal class VideoRenderer(
      *  to avoid showing duplicate frames from the overlap between old and new rendition. */
     private var noDisplayBeforePts: Long = Long.MIN_VALUE
     private var awaitingKeyframeTimeout: Runnable? = null
+    private var timelineStarted = clock?.isVideoDriven != true
+    private var lastKnownClockTimeUs: Long = 0L
 
     /** CSD bytes to queue as BUFFER_FLAG_CODEC_CONFIG before feeding the new rendition's
      *  first frame, so the decoder can handle adaptive resolution changes. */
@@ -97,6 +99,7 @@ internal class VideoRenderer(
         private const val FLUSH_THRESHOLD_US = 2_000_000L
         private const val AWAITING_KEYFRAME_TIMEOUT_MS = 5_000L
         private const val HANDLER_SYNC_TIMEOUT_MS = 2_000L
+        private const val CLOCK_RETARGET_TOLERANCE_US = 20_000L
     }
 
     val bufferFillMs: Double get() = activeTrack.depthMs
@@ -176,6 +179,11 @@ internal class VideoRenderer(
             pendingCsd = null
             pendingTrack = null
             trackSwapPhase = null
+            timelineStarted = clock?.isVideoDriven != true
+            lastKnownClockTimeUs = 0L
+            if (clock?.isVideoDriven == true) {
+                clock.reset()
+            }
             parkedInputBuffers.clear()
             queuedFramesByPts.clear()
             decoder?.release()
@@ -187,7 +195,19 @@ internal class VideoRenderer(
     }
 
     fun updateTargetBuffering(ms: Int) {
-        activeTrack.updateTargetBuffering(ms.toLong() * 1000)
+        postDecoderWork {
+            val targetUs = ms.toLong() * 1_000L
+            val activeBecamePlayable = activeTrack.updateTargetBuffering(targetUs)
+            pendingTrack?.updateTargetBuffering(targetUs)
+            val canDrain = if (clock?.isVideoDriven == true && timelineStarted) {
+                syncClockToTargetLatency()
+            } else {
+                true
+            }
+            if (canDrain && (clock?.isVideoDriven == true || activeBecamePlayable)) {
+                tryFeedDecoder()
+            }
+        }
     }
 
     /**
@@ -242,12 +262,15 @@ internal class VideoRenderer(
 
     private fun tryFeedDecoder() {
         maybeCancelScheduledDraining()
+        if (!prepareClockForDrain()) {
+            return
+        }
         maybePromotePendingTrack()
         maybeApplyPendingCodecData()
 
         // --- Drain active track ---
         while (parkedInputBuffers.isNotEmpty()) {
-            val mediaTimeUs = timebase?.currentTimeUs?.takeIf { it > 0L }
+            val mediaTimeUs = playbackTimeUsForScheduling()
 
             val nextPts = activeTrack.peekNextTimestampUs() ?: run {
                 return
@@ -258,7 +281,11 @@ internal class VideoRenderer(
                 if (aheadUs > MAX_AHEAD_US) {
                     val delayMs = ((aheadUs - MAX_AHEAD_US) / 1000L).coerceIn(1L, 100L)
                     delayedDrainToken = Any()
-                    handler.postDelayed({ tryFeedDecoder() }, delayedDrainToken, delayMs)
+                    handler.postDelayed(
+                        { runDecoderWorkSafely { tryFeedDecoder() } },
+                        delayedDrainToken,
+                        delayMs,
+                    )
                     return
                 }
             }
@@ -347,15 +374,13 @@ internal class VideoRenderer(
     }
 
     private fun maybeApplyPendingCodecData() {
-        val csd = pendingCsd
-        if (csd != null && parkedInputBuffers.isNotEmpty()) {
-            decoder?.let { dec ->
-                val idx = parkedInputBuffers.removeFirst()
-                dec.queueCodecConfig(idx, csd)
-                Log.d(TAG, "Queued CSD config buffer (${csd.size}B) for adaptive switch")
-            }
-            pendingCsd = null
-        }
+        val csd = pendingCsd ?: return
+        if (parkedInputBuffers.isEmpty()) return
+        val dec = decoder ?: return
+        val idx = parkedInputBuffers.removeFirst()
+        dec.queueCodecConfig(idx, csd)
+        Log.d(TAG, "Queued CSD config buffer (${csd.size}B) for adaptive switch")
+        pendingCsd = null
     }
 
     /**
@@ -483,9 +508,9 @@ internal class VideoRenderer(
             return
         }
 
-        val mediaTimeUs = timebase?.currentTimeUs?.takeIf { it > 0L }
+        val mediaTimeUs = playbackTimeUsForScheduling()
 
-        // If frame is too far behind the timebase it means that we can't play it smoothly.
+        // If frame is too far behind the playback clock it means that we can't play it smoothly.
         if (mediaTimeUs != null && displayTimestampUs < mediaTimeUs - LATE_DROP_THRESHOLD_US) {
             dec.releaseOutputBuffer(bufferIndex, false)
             metrics?.recordVideoFrameDropped()
@@ -566,6 +591,83 @@ internal class VideoRenderer(
         pendingTrack?.setOnDataAvailable(null)
         hasPendingTrack = false
         onError(error)
+    }
+
+    private fun prepareClockForDrain(): Boolean {
+        val mediaClock = clock ?: return true
+        if (!mediaClock.isVideoDriven) return true
+        if (timelineStarted) {
+            return syncClockToTargetLatency()
+        }
+        return startVideoClockIfReady(mediaClock)
+    }
+
+    private fun startVideoClockIfReady(mediaClock: MediaClock): Boolean {
+        if (activeTrack.state != JitterBuffer.State.PLAYING) return false
+        val sourceStartUs = activeTrack.targetPlaybackPTS()
+            ?: activeTrack.peekFront()?.first
+            ?: return false
+        val startUs = audioTime(sourceStartUs)
+        timelineStarted = true
+        lastKnownClockTimeUs = startUs
+        mediaClock.setRate(1.0, startUs)
+        Log.d(
+            TAG,
+            "Started video-driven clock sourceStartUs=$sourceStartUs displayStartUs=$startUs " +
+                "bufferFillMs=${activeTrack.depthMs}",
+        )
+        return true
+    }
+
+    private fun syncClockToTargetLatency(): Boolean {
+        val mediaClock = clock ?: return true
+        if (!mediaClock.isVideoDriven) return true
+        val desiredSourceUs = activeTrack.targetPlaybackPTS() ?: return true
+        val desiredPlayheadUs = audioTime(desiredSourceUs)
+        val currentPlayheadUs = currentPlaybackTimeUs()
+
+        return when {
+            desiredPlayheadUs > currentPlayheadUs + CLOCK_RETARGET_TOLERANCE_US -> {
+                lastKnownClockTimeUs = desiredPlayheadUs
+                mediaClock.setRate(1.0, desiredPlayheadUs)
+                true
+            }
+
+            currentPlayheadUs > desiredPlayheadUs + CLOCK_RETARGET_TOLERANCE_US -> {
+                lastKnownClockTimeUs = currentPlayheadUs
+                mediaClock.setRate(0.0)
+                scheduleDrainAfterUs(currentPlayheadUs - desiredPlayheadUs)
+                false
+            }
+
+            else -> {
+                mediaClock.setRate(1.0)
+                true
+            }
+        }
+    }
+
+    private fun playbackTimeUsForScheduling(): Long? {
+        val mediaClock = clock ?: return null
+        if (mediaClock.isVideoDriven) {
+            return if (timelineStarted) currentPlaybackTimeUs() else null
+        }
+        return mediaClock.currentTimeUs.takeIf { it > 0L }
+    }
+
+    private fun currentPlaybackTimeUs(): Long {
+        val clockTimeUs = clock?.currentTimeUs ?: return lastKnownClockTimeUs
+        if (clockTimeUs >= lastKnownClockTimeUs) {
+            lastKnownClockTimeUs = clockTimeUs
+            return clockTimeUs
+        }
+        return lastKnownClockTimeUs
+    }
+
+    private fun scheduleDrainAfterUs(delayUs: Long) {
+        val delayMs = (delayUs / 1_000L).coerceIn(1L, 100L)
+        delayedDrainToken = Any()
+        handler.postDelayed({ runDecoderWorkSafely { tryFeedDecoder() } }, delayedDrainToken, delayMs)
     }
 
     private fun audioTime(videoTime: Long): Long =
