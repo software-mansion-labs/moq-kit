@@ -2,6 +2,12 @@
 
 Native Swift and Kotlin SDKs for publishing and playing low-latency media streams over QUIC.
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+![Platform: iOS](https://img.shields.io/badge/iOS-16%2B-blue.svg)
+![Platform: Android](https://img.shields.io/badge/Android-API%2029%2B-3DDC84.svg)
+[![Swift Package Manager](https://img.shields.io/github/v/tag/software-mansion-labs/moq-kit?label=SPM&sort=semver)](https://github.com/software-mansion-labs/moq-kit/tags)
+[![Maven Central](https://img.shields.io/maven-central/v/com.swmansion.moqkit/moqkit?label=Maven%20Central)](https://central.sonatype.com/artifact/com.swmansion.moqkit/moqkit)
+
 moq-kit gives iOS and Android apps platform-native APIs for Media over QUIC-style live
 streaming: connect to a relay, discover broadcasts, publish camera/microphone/screen
 tracks, play catalog-described streams, and send or receive raw data tracks.
@@ -11,6 +17,77 @@ the UniFFI Rust bindings from Luke Curley's [`moq-dev/moq`](https://github.com/m
 project.
 
 For the repository codemap, layer boundaries, and invariants, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Table of contents
+
+- [Quick Start](#quick-start)
+- [Prerequisites](#prerequisites)
+- [What moq-kit supports](#what-moq-kit-supports)
+- [Protocol](#protocol)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Demo apps](#demo-apps)
+- [Local development](#local-development)
+- [Status](#status)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
+## Quick Start
+
+Get a playing demo stream in two terminals:
+
+1. Clone the repository with submodules (the Rust `vendor/moq` checkout is a submodule):
+
+   ```bash
+   git clone --recurse-submodules https://github.com/software-mansion-labs/moq-kit.git
+   ```
+
+2. Install [`mise`](https://mise.jdx.dev) — the project task runner used for every build
+   and run command.
+
+3. Start a local moq-lite relay in one terminal:
+
+   ```bash
+   mise run relay:run
+   ```
+
+4. Run the iOS or Android demo in another terminal:
+
+   ```bash
+   mise run ios:run --simulator    # or: mise run android:run
+   ```
+
+For SDK integration, jump to [Installation](#installation) and [Usage](#usage). See
+[Prerequisites](#prerequisites) for the toolchains each workflow needs.
+
+## Prerequisites
+
+The repository's `mise.toml` is intentionally minimal and does **not** auto-install
+language toolchains. Install the tools below manually before running the build commands.
+
+Consumers integrating the published Swift Package or Maven Central artifact do not need
+Rust, the Android NDK, or `cargo-ndk` — those are only required when working on moq-kit
+itself or rebuilding the FFI bindings locally.
+
+### All platforms
+
+- [`mise-en-place`](https://mise.jdx.dev) — task runner used for every build and run command.
+- Rust toolchain (`rustup`, stable channel) — required for FFI builds. Skip if you only
+  consume the published packages.
+- Git with submodule support (`vendor/moq` is a submodule).
+
+### iOS development
+
+- Xcode 16+ with Command Line Tools.
+- Deployment target: iOS 16+ / macOS 13+.
+
+### Android development
+
+- Android Studio (Hedgehog or newer).
+- Android SDK with API 35 (`compileSdk`) and platform 29+ (`minSdk`).
+- NDK r27.
+- Java 11+.
+- `cargo-ndk` (`cargo install cargo-ndk`) for cross-compiling Rust to Android targets.
 
 ## Protocol
 
@@ -224,8 +301,8 @@ Native demo paths:
 - [iOS demo](examples/ios/demo/MoQDemo)
 - [Android demo](examples/android/demo/MoQDemo)
 
-The iOS demo also includes an experimental Boy demo with announced games, live playback,
-and viewer controls.
+The iOS demo also includes Luke's experimental [Boy demo](https://moq.dev/blog/moq-boy/)
+with announced games, live playback, and viewer controls.
 
 ## Local development
 
