@@ -40,7 +40,7 @@ class BroadcastEntry(catalog: Catalog) {
 }
 
 class PlayerDemoViewModel(application: Application) : AndroidViewModel(application) {
-    var relayUrl by mutableStateOf("http://192.168.92.140:4443")
+    var relayUrl by mutableStateOf("https://cdn.moq.dev/demo")
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
@@ -233,6 +233,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
 
                     is Player.Event.TrackPaused -> entry.isPaused = true
                     is Player.Event.TrackStopped -> {}
+                    is Player.Event.TrackSwitched -> {}
                     is Player.Event.Error -> {}
                     is Player.Event.AllTracksStopped -> {
                         entry.isPlaying = false
