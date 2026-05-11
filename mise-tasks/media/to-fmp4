@@ -2,23 +2,47 @@
 #MISE description="Convert a source video to CMAF fragmented MP4 for MOQ publishing"
 #USAGE flag "--input <input>" help="Path to the source video file"
 #USAGE flag "--output <output>" default="" help="Output path, defaulting to the input name with .fmp4"
-#USAGE flag "--audio-rate <audio_rate>" default="48000" help="Audio sample rate in Hz"
+#USAGE flag "--audio-rate <audio_rate>" default="" help="Audio sample rate in Hz, defaulting to the source audio sample rate"
 set -euo pipefail
 
 INPUT=$(realpath "$usage_input")
-OUTPUT_MP4="${usage_output:-${INPUT%.*}.mp4}"
 OUTPUT_FMP4="${usage_output:-${INPUT%.*}.fmp4}"
+TRANSCODED_MP4=$(mktemp "${TMPDIR:-/tmp}/moq-to-fmp4.XXXXXX.mp4")
+AUDIO_RATE="${usage_audio_rate:-}"
+
+cleanup() {
+  rm -f "$TRANSCODED_MP4"
+}
+trap cleanup EXIT
+
+if [[ -z "$AUDIO_RATE" ]]; then
+  AUDIO_RATE=$(ffprobe -v error \
+    -select_streams a:0 \
+    -show_entries stream=sample_rate \
+    -of default=noprint_wrappers=1:nokey=1 \
+    "$INPUT")
+fi
+
+if [[ -n "$AUDIO_RATE" && ! "$AUDIO_RATE" =~ ^[0-9]+$ ]]; then
+  echo "Invalid audio sample rate: $AUDIO_RATE" >&2
+  exit 1
+fi
+
+AUDIO_ARGS=(-c:a aac -b:a 128k)
+if [[ -n "$AUDIO_RATE" ]]; then
+  AUDIO_ARGS+=(-ar "$AUDIO_RATE")
+fi
+AUDIO_ARGS+=(-af "aresample=async=1:min_hard_comp=0.010000:first_pts=0")
 
 # We remove '-r' to keep original framerate, but force a 90kHz timescale
 # This is the industry standard for MP4/HLS to prevent playback speed issues.
 ffmpeg -loglevel error -i "$INPUT" \
   -c:v libx264 -preset superfast -bf 0 -g 30 \
-  -c:a aac -b:a 128k -ar "${usage_audio_rate:-48000}" \
-  -af "aresample=async=1:min_hard_comp=0.010000:first_pts=0" \
+  "${AUDIO_ARGS[@]}" \
   -f mp4 \
-  -y "$OUTPUT_MP4"
+  -y "$TRANSCODED_MP4"
 
-ffmpeg -loglevel error -i "$OUTPUT_MP4" \
+ffmpeg -loglevel error -i "$TRANSCODED_MP4" \
   -c:v copy \
   -f mp4 -movflags cmaf+separate_moof+delay_moov+skip_trailer+frag_every_frame \
   -y "$OUTPUT_FMP4"
