@@ -117,13 +117,16 @@ public enum PlayerEvent: Sendable {
     case allTracksStopped
     /// A non-fatal error occurred on the given track. Playback of other tracks continues.
     case error(TrackKind, String)
-    /// The first frame of a switched-in rendition was rendered. Emitted after a successful
-    /// ``Player/switchTrack(to:)-7ugy3`` or ``Player/switchTrack(to:)-3kgck`` call.
+    /// The first frame from a newly selected rendition was rendered after a successful
+    /// track switch.
     case trackSwitched(TrackKind)
 
     /// Identifies which type of media track an event relates to.
     public enum TrackKind: String, Sendable {
-        case video, audio
+        /// Video track events.
+        case video
+        /// Audio track events.
+        case audio
     }
 }
 
@@ -131,8 +134,8 @@ public enum PlayerEvent: Sendable {
 
 /// Adaptive real-time player for MoQ media streams.
 ///
-/// `Player` subscribes to one or two tracks from a ``Catalog`` (one video and/or
-/// one audio track), decodes the incoming frames, and renders them in sync:
+/// `Player` subscribes to one or two tracks from a ``Catalog`` (one video and/or one
+/// audio track), decodes the incoming frames, and renders them in sync:
 ///
 /// - Video frames are rendered into ``videoLayer`` — an `AVSampleBufferDisplayLayer` you can
 ///   embed in any `UIView` or `CALayer` hierarchy.
@@ -140,10 +143,13 @@ public enum PlayerEvent: Sendable {
 ///   default audio output. No additional audio session configuration is required.
 ///
 /// ```swift
+/// let videoTrack = catalog.playableVideoTracks.first?.name
+/// let audioTrack = catalog.playableAudioTracks.first?.name
+///
 /// let player = try Player(
 ///     catalog: catalog,
-///     videoTrackName: catalog.videoTracks.first?.name,
-///     audioTrackName: catalog.audioTracks.first?.name
+///     videoTrackName: videoTrack,
+///     audioTrackName: audioTrack
 /// )
 /// view.layer.addSublayer(player.videoLayer)
 /// try await player.play()
@@ -158,7 +164,8 @@ public final class Player {
     public let videoLayer: AVSampleBufferDisplayLayer
     /// Emits ``PlayerEvent`` values as playback progresses.
     ///
-    /// The stream completes after ``allTracksStopped`` is emitted or after ``stopAll()`` is called.
+    /// The stream completes after ``PlayerEvent/allTracksStopped`` is emitted or after
+    /// ``Player/stopAll(reason:)`` is called.
     public let events: AsyncStream<PlayerEvent>
 
     private let catalog: Catalog
@@ -222,6 +229,8 @@ public final class Player {
     }
 
     /// Sets the per-player audio output volume without affecting other audio on the system.
+    ///
+    /// You can call this before playback starts or while playback is already running.
     public func setVolume(_ volume: Float) {
         let clamped = Self.clampedVolume(volume)
         storedAudioVolume = clamped
@@ -255,7 +264,9 @@ public final class Player {
     /// Subscribes to the selected tracks and begins decoding and rendering.
     ///
     /// Playback events are emitted on ``events``. Call ``pause()`` to temporarily suspend
-    /// rendering without releasing the track subscriptions, or ``stopAll()`` to fully tear down.
+    /// rendering without releasing the track subscriptions, or
+    /// ``Player/stopAll(reason:)`` to fully tear down.
+    /// Calling `play()` while the player is already running is a no-op.
     ///
     /// - Throws: ``SessionError`` if a track subscription or renderer initialisation fails.
     public func play() async throws {
@@ -298,17 +309,13 @@ public final class Player {
         teardown(permanent: true, reason: reason)
     }
 
-    /// Switches to a different video rendition seamlessly.
+    /// Switches to a different video rendition with minimal interruption.
     ///
-    /// The new subscription is started in parallel with the old one. The old track keeps
-    /// feeding the jitter buffer until the new rendition delivers its first frame, at which
-    /// point the old ingest task is cancelled. No flush occurs — the jitter buffer provides
-    /// continuity, and `AVSampleBufferDisplayLayer` handles per-frame format description
-    /// changes natively.
+    /// When both the current and new selections are active video tracks, MoQKit keeps the
+    /// old track alive until the new one starts rendering. Switching video on from `nil`,
+    /// or turning it off, may require a full playback restart and cause a brief gap.
     ///
-    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
-    /// is rendered. Enabling video from `nil` or disabling the current video selection
-    /// falls back to a playback restart and may cause a brief gap.
+    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the new rendition starts rendering.
     ///
     /// - Parameter trackName: A video track name from the current catalog, or `nil`
     ///   to disable video playback.
@@ -342,16 +349,13 @@ public final class Player {
         try await restartPlaybackForSelectionChange()
     }
 
-    /// Switches to a different audio rendition seamlessly.
+    /// Switches to a different audio rendition with minimal interruption.
     ///
-    /// The new ingest task is started immediately; the old one is cancelled right after.
-    /// The ring buffer's timestamp-based write positioning means both decoders briefly
-    /// write identical PCM to the same positions — there is no audible glitch, and no
-    /// ring buffer reset is needed.
+    /// When both the current and new selections are active audio tracks, MoQKit changes
+    /// over in place. Switching audio on from `nil`, or turning it off, may require a full
+    /// playback restart and cause a brief gap.
     ///
-    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the first frame of the new rendition
-    /// is rendered. Enabling audio from `nil` or disabling the current audio selection
-    /// falls back to a playback restart and may cause a brief gap.
+    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the new rendition starts rendering.
     ///
     /// - Parameter trackName: An audio track name from the current catalog, or `nil`
     ///   to disable audio playback.

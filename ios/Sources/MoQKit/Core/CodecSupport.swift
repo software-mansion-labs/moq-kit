@@ -125,6 +125,8 @@ internal enum CodecSupport {
 
 extension VideoEncoderConfig {
     /// Video codecs that can be encoded on the current device with default settings.
+    ///
+    /// Use this to build codec pickers without offering unsupported options.
     public static func supportedCodecs() -> [VideoCodec] {
         VideoCodec.allCases.filter { VideoEncoderConfig(codec: $0).isSupported }
     }
@@ -142,6 +144,8 @@ extension VideoEncoderConfig {
 
 extension AudioEncoderConfig {
     /// Audio codecs that can be encoded on the current device with default settings.
+    ///
+    /// Use this to build codec pickers without offering unsupported options.
     public static func supportedCodecs() -> [AudioCodec] {
         AudioCodec.allCases.filter { AudioEncoderConfig(codec: $0).isSupported }
     }
@@ -183,11 +187,17 @@ extension AudioTrackInfo {
 
 extension Catalog {
     /// Video tracks from this catalog that can be decoded on the current device.
+    ///
+    /// This is the preferred source for playback track pickers and simple “play the first
+    /// supported video track” selection logic.
     public var playableVideoTracks: [VideoTrackInfo] {
         videoTracks.filter(\.isPlayable)
     }
 
     /// Audio tracks from this catalog that can be decoded on the current device.
+    ///
+    /// This is the preferred source for playback track pickers and simple “play the first
+    /// supported audio track” selection logic.
     public var playableAudioTracks: [AudioTrackInfo] {
         audioTracks.filter(\.isPlayable)
     }

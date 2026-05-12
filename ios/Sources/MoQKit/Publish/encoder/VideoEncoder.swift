@@ -317,7 +317,9 @@ struct EncodedVideoFrame {
 
 /// Codec for video encoding.
 public enum VideoCodec: String, Sendable, Hashable, Codable, CaseIterable {
+    /// H.264 / AVC.
     case h264
+    /// H.265 / HEVC.
     case h265
 }
 
@@ -329,17 +331,29 @@ public enum NaluFormat: String, Sendable, Codable {
     case avcc
 }
 
-/// Configuration for the hardware video encoder.
+/// Configuration for MoQKit's hardware video encoder.
 public struct VideoEncoderConfig: Sendable, Codable {
+    /// Video codec to encode.
     public var codec: VideoCodec
+    /// Target coded width in pixels.
     public var width: Int32
+    /// Target coded height in pixels.
     public var height: Int32
+    /// Target bitrate in bits per second.
     public var bitrate: UInt32
+    /// Desired keyframe interval in seconds.
     public var keyframeInterval: Double
+    /// Maximum frame rate in frames per second.
     public var maxFrameRate: Double
+    /// Advanced VideoToolbox profile override. Leave `nil` for MoQKit defaults.
     public var profileLevel: String?
+    /// Output NAL-unit framing format.
     public var naluFormat: NaluFormat
 
+    /// Creates a video encoder configuration.
+    ///
+    /// Defaults are chosen for common mobile live-streaming setups. When `naluFormat` is
+    /// omitted, MoQKit selects the format expected by the current codec.
     public init(
         codec: VideoCodec = .h264,
         width: Int32 = 1920,

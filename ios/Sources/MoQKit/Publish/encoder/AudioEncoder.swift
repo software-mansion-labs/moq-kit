@@ -60,17 +60,24 @@ struct EncodedAudioFrame {
 
 /// Codec for audio encoding.
 public enum AudioCodec: String, Sendable, Hashable, Codable, CaseIterable {
+    /// AAC-LC.
     case aac
+    /// Opus.
     case opus
 }
 
-/// Configuration for the audio encoder.
+/// Configuration for MoQKit's audio encoder.
 public struct AudioEncoderConfig: Sendable, Codable {
+    /// Audio codec to encode.
     public var codec: AudioCodec
+    /// Sample rate in Hz.
     public var sampleRate: Double
+    /// Number of output channels.
     public var channels: UInt32
+    /// Target bitrate in bits per second.
     public var bitrate: UInt32
 
+    /// Creates an audio encoder configuration.
     public init(
         codec: AudioCodec = .opus,
         sampleRate: Double = 48000,

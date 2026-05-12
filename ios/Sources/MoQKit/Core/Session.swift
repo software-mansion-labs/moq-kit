@@ -3,7 +3,7 @@ import MoQKitFFI
 
 // MARK: - SessionError (codec/format related)
 
-/// Errors thrown by ``Session`` and ``Player``.
+/// High-level errors surfaced by relay connection, subscription, and playback setup APIs.
 public enum SessionError: Error, Sendable, Equatable {
     /// The track uses a codec that MoQKit does not support.
     case unsupportedCodec(String)
@@ -52,24 +52,34 @@ public enum SessionState: Sendable, Equatable {
 
 // MARK: - Session
 
-/// Manages a single MoQ relay connection and surfaces available broadcasts.
+/// Manages one MoQ relay connection and the broadcasts attached to it.
 ///
-/// `Session` is the primary entry point for the MoQKit SDK. Create one with a relay
-/// URL and call ``connect()``. To discover live streams, call ``subscribe(prefix:)``
-/// after connecting and observe the returned subscription:
+/// `Session` is the main entry point for MoQKit. Create one with a relay URL, call
+/// ``connect()``, then use the same session to subscribe to broadcasts, publish tracks,
+/// or both. After ``close()`` finishes, create a new session instead of reusing the old
+/// instance.
+///
+/// To discover live streams, call ``subscribe(prefix:)`` after connecting and observe the
+/// returned subscription:
 ///
 /// ```swift
 /// let session = Session(url: "https://relay.example.com/moq")
 /// try await session.connect()
-/// let subscription = try await session.subscribe()
+/// let subscription = try session.subscribe()
 ///
 /// for await broadcast in subscription.broadcasts {
 ///     for await catalog in broadcast.catalogs() {
-///         let player = try Player(
-///             catalog: catalog,
-///             videoTrackName: catalog.videoTracks.first?.name,
-///             audioTrackName: catalog.audioTracks.first?.name
-///         )
+///         let videoTrack = catalog.playableVideoTracks.first?.name
+///         let audioTrack = catalog.playableAudioTracks.first?.name
+///         guard videoTrack != nil || audioTrack != nil else { continue }
+///
+///         let player = try await MainActor.run {
+///             try Player(
+///                 catalog: catalog,
+///                 videoTrackName: videoTrack,
+///                 audioTrackName: audioTrack
+///             )
+///         }
 ///         try await player.play()
 ///     }
 /// }
@@ -80,7 +90,8 @@ public enum SessionState: Sendable, Equatable {
 /// ```swift
 /// let session = Session(url: "https://relay.example.com/moq")
 /// try await session.connect()
-/// try await session.publish(path: "live/my-stream", publisher: publisher)
+/// try session.publish(path: "live/my-stream", publisher: publisher)
+/// try await publisher.start()
 /// ```
 public actor Session {
     /// Emits the current ``SessionState`` and every subsequent state change.
@@ -124,9 +135,10 @@ public actor Session {
     }
 
     /// Establishes the QUIC connection to the relay.
-    ///
-    /// Transitions the session through `.connecting` → `.connected`. To start receiving
-    /// broadcast announcements, call ``subscribe(prefix:)`` after connecting.
+///
+    /// Transitions the session through `.connecting` to `.connected`. After this succeeds,
+    /// you can start watching broadcasts with ``subscribe(prefix:)`` and register
+    /// publishers with ``publish(path:publisher:)``.
     ///
     /// - Throws: ``SessionError/alreadyConnected`` if called while connecting or connected.
     /// - Throws: ``SessionError/alreadyClosed`` if the session has already been closed.
@@ -195,9 +207,10 @@ public actor Session {
     }
 
     /// Starts watching for broadcast announcements on the relay.
-    ///
-    /// Call this after ``connect()`` to begin receiving announced broadcasts under the
-    /// supplied prefix. This is not needed when the session is used only for publishing.
+///
+    /// Call this after ``connect()`` to receive broadcasts whose path starts with `prefix`.
+    /// Keep the returned subscription alive for as long as you want updates, then call
+    /// ``BroadcastSubscription/cancel()`` when that part of your app is done.
     ///
     /// - Parameter prefix: Only broadcasts whose path starts with this string will be surfaced.
     ///   Pass `""` (the default) to receive all broadcasts.
@@ -232,10 +245,10 @@ public actor Session {
         return subscription
     }
 
-    /// Publish a broadcast to the relay at the given path.
-    ///
-    /// The publisher's underlying `MoqBroadcastProducer` is registered with the relay origin.
-    /// Call ``Publisher/start()`` after this to begin sending frames.
+    /// Registers a broadcast publisher at the given relay path.
+///
+    /// This makes the publisher available on the relay, but it does not start your capture
+    /// sources or encoders. Call ``Publisher/start()`` after this to begin sending frames.
     ///
     /// - Parameters:
     ///   - path: The broadcast path on the relay (e.g. `"live/my-stream"`).
@@ -254,9 +267,10 @@ public actor Session {
         activePublishers[path] = publisher
     }
 
-    /// Stop publishing at the given path.
-    ///
-    /// Calls ``Publisher/stop()`` on the publisher and removes it from the session.
+    /// Stops publishing at the given path.
+///
+    /// If a publisher is registered for that path, this calls ``Publisher/stop()`` and
+    /// removes it from the session. Other subscriptions and publish paths continue running.
     public func unpublish(path: String) {
         guard let publisher = activePublishers.removeValue(forKey: path) else { return }
         KitLogger.publish.debug("Unpublishing broadcast at path: \(path)")

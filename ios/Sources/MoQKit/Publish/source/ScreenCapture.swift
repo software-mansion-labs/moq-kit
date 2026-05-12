@@ -1,15 +1,22 @@
 import CoreMedia
 import ReplayKit
 
-/// A passthrough frame source for wiring non-conforming producers
-/// (e.g. ScreenCapture's separate video/audio streams).
+/// Lightweight frame source for manually forwarding sample buffers into a publisher track.
+///
+/// MoQKit uses `FrameRelay` internally for ReplayKit and screen-capture helpers. You can
+/// also use it when your app already receives `CMSampleBuffer` values from another source
+/// and only needs a simple bridge into ``Publisher``.
 public final class FrameRelay: FrameSource, @unchecked Sendable {
+    /// Advanced frame callback used by ``Publisher``.
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
 
+    /// Creates an empty relay with no consumer attached yet.
     public init() {}
 
-    /// Feed a frame to the consumer. Returns `false` if the consumer signaled stop,
-    /// or `true` if no consumer is attached.
+    /// Forwards one sample buffer to the attached consumer.
+    ///
+    /// Returns `false` when the consumer asked the source to stop, or `true` when the
+    /// frame was accepted or no consumer is attached yet.
     @discardableResult
     public func send(_ sampleBuffer: CMSampleBuffer) -> Bool {
         onFrame?(sampleBuffer) ?? true
@@ -23,15 +30,22 @@ public final class FrameRelay: FrameSource, @unchecked Sendable {
 /// stop. For full-device capture across app switches, use ReplayKit Broadcast Upload
 /// Extension flow with ``ReplayKitBroadcastPipeline``.
 public final class ScreenCapture: @unchecked Sendable {
-    /// Frame source for captured video frames.
+    /// Video frames produced by screen capture.
     public let videoSource = FrameRelay()
-    /// Frame source for captured app audio frames.
+    /// App-audio frames produced by screen capture.
+    ///
+    /// Microphone audio is not published here; use ``MicrophoneCapture`` for that.
     public let audioSource = FrameRelay()
 
     private var isRunning = false
 
+    /// Creates an in-app screen capture source.
     public init() {}
 
+    /// Starts in-app screen capture.
+    ///
+    /// This captures screen video plus app audio from `RPScreenRecorder`. It is best for
+    /// “share this app” style flows. Use ReplayKit Broadcast Upload for full-device capture.
     public func start() async throws {
         let recorder = RPScreenRecorder.shared()
         guard recorder.isAvailable else {
@@ -59,6 +73,7 @@ public final class ScreenCapture: @unchecked Sendable {
         isRunning = true
     }
 
+    /// Stops screen capture and detaches the video and audio relays.
     public func stop() async {
         guard isRunning else { return }
         isRunning = false

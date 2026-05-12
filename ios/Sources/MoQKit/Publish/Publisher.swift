@@ -18,8 +18,11 @@ public enum PublisherState: Sendable, Equatable {
 
 /// Events emitted by ``Publisher`` as tracks start, stop, or encounter errors.
 public enum PublisherEvent: Sendable {
+    /// A track started producing publishable output. Associated value: track name.
     case trackStarted(String)
+    /// A track stopped publishing. Associated value: track name.
     case trackStopped(String)
+    /// A track failed. Associated values: track name, human-readable error message.
     case error(String, String)
 }
 
@@ -41,14 +44,20 @@ public enum PublishedTrackState: Sendable {
 
 /// Codec information associated with a published track.
 public enum TrackCodecInfo: Sendable {
+    /// Video codec plus basic format information.
     case video(codec: VideoCodec, width: Int32, height: Int32, frameRate: Double)
+    /// Audio codec plus sample-rate information.
     case audio(codec: AudioCodec, sampleRate: Double)
+    /// App-defined object/data track.
     case data
 }
 
 // MARK: - PublishedTrack
 
-/// A handle for controlling an individual track's lifecycle.
+/// Handle returned when you add a track to a publisher.
+///
+/// Use `PublishedTrack` to observe per-track state or stop one track without stopping
+/// the entire publisher.
 public final class PublishedTrack: @unchecked Sendable {
     /// The track name.
     public let name: String
@@ -70,7 +79,10 @@ public final class PublishedTrack: @unchecked Sendable {
         stateContinuation.yield(.idle)
     }
 
-    /// Stop this individual track. Other tracks continue.
+    /// Stops this track only.
+    ///
+    /// Other tracks continue publishing. If this was the last active track, the publisher
+    /// transitions to ``PublisherState/stopped``.
     public func stop() {
         guard currentState != .stopped else { return }
         stopAction?()
@@ -135,11 +147,15 @@ private final class DataTrack {
 
 // MARK: - Publisher
 
-/// Orchestrates the encode → publish pipeline for a MoQ broadcast.
+/// Orchestrates publishing one MoQ broadcast.
 ///
-/// Create capture sources, then hand them to the publisher via ``addVideoTrack``
-/// and ``addAudioTrack``. Call ``start()`` to bind sources to encoders and begin
-/// publishing.
+/// Typical setup is:
+///
+/// 1. Start any capture sources your app owns, such as ``CameraCapture`` or
+///    ``MicrophoneCapture``.
+/// 2. Create a publisher and add one or more video, audio, or data tracks.
+/// 3. Register the publisher with ``Session/publish(path:publisher:)``.
+/// 4. Call ``start()`` to begin encoding and sending frames.
 ///
 /// ```swift
 /// let camera = CameraCapture(camera: Camera(position: .back, width: 1920, height: 1080))
@@ -147,13 +163,16 @@ private final class DataTrack {
 ///
 /// let publisher = try Publisher()
 /// let video = publisher.addVideoTrack(name: "video", source: camera)
-/// try await session.publish(path: "live/stream", publisher: publisher)
+/// try session.publish(path: "live/stream", publisher: publisher)
 /// try await publisher.start()
 /// ```
+///
+/// A `Publisher` is single-use. After ``stop()`` completes, create a new instance for the
+/// next broadcast.
 public final class Publisher {
-    /// Emits ``PublisherState`` as the publisher transitions through its lifecycle.
+    /// Emits ``PublisherState`` values for the lifetime of the publisher.
     public let state: AsyncStream<PublisherState>
-    /// Emits ``PublisherEvent`` values as tracks start, stop, or encounter errors.
+    /// Emits ``PublisherEvent`` values as tracks start, stop, or fail.
     public let events: AsyncStream<PublisherEvent>
 
     /// The underlying FFI broadcast producer.
@@ -190,9 +209,10 @@ public final class Publisher {
         stateContinuation.yield(.idle)
     }
 
-    /// Add a video track with an external frame source.
+    /// Adds a video track backed by a frame source.
     ///
-    /// The encoder is created and bound to the source when ``start()`` is called.
+    /// The publisher creates and attaches the encoder when ``start()`` is called. Starting
+    /// the capture source itself remains the app's responsibility.
     /// - Parameters:
     ///   - name: Track name in the broadcast catalog. Defaults to `"video"`.
     ///   - source: A frame source that produces video sample buffers.
@@ -213,8 +233,9 @@ public final class Publisher {
         return track
     }
 
-    /// Add an audio track with an external frame source.
+    /// Adds an audio track backed by a frame source.
     ///
+    /// Starting the capture source itself remains the app's responsibility.
     /// - Parameters:
     ///   - name: Track name in the broadcast catalog. Defaults to `"audio"`.
     ///   - source: A frame source that produces audio sample buffers.
@@ -233,11 +254,11 @@ public final class Publisher {
         return track
     }
 
-    /// Add an object track for publishing raw binary data directly.
+    /// Adds a data track for app-defined binary payloads.
     ///
     /// - Parameters:
     ///   - name: Track name in the broadcast catalog. Defaults to `"data"`.
-    ///   - source: An emitter the caller uses to push objects onto the track.
+    ///   - source: Emitter the app uses to push objects after ``start()`` succeeds.
     /// - Returns: A handle to control the track independently.
     @discardableResult
     public func addDataTrack(
@@ -249,11 +270,11 @@ public final class Publisher {
         return track
     }
 
-    /// Start all encoders and bind them to their frame sources.
+    /// Starts publishing all registered tracks.
     ///
-    /// Both video and audio tracks create their `MoqMediaProducer` lazily on the
-    /// first encoded frame that carries init data (parameter sets for video,
-    /// codec config for audio).
+    /// Call ``Session/publish(path:publisher:)`` before this method. `start()` does not
+    /// start `CameraCapture`, `MicrophoneCapture`, or any custom source for you; it only
+    /// binds those sources to encoders and the relay-facing producers.
     public func start() async throws {
         guard currentState == .idle else {
             throw SessionError.invalidConfiguration("Publisher already started")
@@ -283,7 +304,9 @@ public final class Publisher {
         transition(to: .publishing)
     }
 
-    /// Stop all tracks and finalize the broadcast.
+    /// Stops all tracks and finalizes the broadcast.
+    ///
+    /// After calling this, the publisher cannot be started again.
     public func stop() {
         guard currentState == .publishing || currentState == .idle else { return }
         KitLogger.publish.debug("Stopping publisher")

@@ -160,6 +160,13 @@ Add the Swift package and depend on the `MoQKit` product:
 The Swift package imports a prebuilt `moqFFI` XCFramework binary target. For local
 development, rebuild that binary with `mise run ios:ffi`.
 
+The iOS SDK does not add permissions, entitlements, or audio-session configuration for
+you. Camera publishing requires `NSCameraUsageDescription`. Microphone publishing requires
+`NSMicrophoneUsageDescription`, and your app is responsible for configuring
+`AVAudioSession` before starting `MicrophoneCapture`. ReplayKit Broadcast Upload
+integrations also need a Broadcast Upload Extension target plus an App Group shared by the
+host app and the extension.
+
 ### Android
 
 Add Maven Central and the Android artifact:
@@ -198,20 +205,26 @@ import MoQKit
 let session = Session(url: "http://localhost:4443/anon")
 try await session.connect()
 
-let subscription = try await session.subscribe(prefix: "live")
+let subscription = try session.subscribe(prefix: "live")
 
 for await broadcast in subscription.broadcasts {
     for await catalog in broadcast.catalogs() {
+        let videoTrack = catalog.playableVideoTracks.first?.name
+        let audioTrack = catalog.playableAudioTracks.first?.name
+        guard videoTrack != nil || audioTrack != nil else { continue }
+
         let player = try await MainActor.run {
             try Player(
                 catalog: catalog,
-                videoTrackName: catalog.videoTracks.first?.name,
-                audioTrackName: catalog.audioTracks.first?.name,
+                videoTrackName: videoTrack,
+                audioTrackName: audioTrack,
                 targetBufferingMs: 100
             )
         }
 
         try await player.play()
+
+        // Keep a strong reference to the player for as long as playback should continue.
     }
 }
 ```
@@ -219,7 +232,16 @@ for await broadcast in subscription.broadcasts {
 ### Publish camera and microphone in Swift
 
 ```swift
+import AVFoundation
 import MoQKit
+
+let audioSession = AVAudioSession.sharedInstance()
+try audioSession.setCategory(
+    .playAndRecord,
+    mode: .videoRecording,
+    options: [.defaultToSpeaker, .allowBluetoothHFP]
+)
+try audioSession.setActive(true)
 
 let session = Session(url: "http://localhost:4443/anon")
 try await session.connect()
@@ -234,8 +256,14 @@ let publisher = try Publisher()
 publisher.addVideoTrack(name: "camera", source: camera)
 publisher.addAudioTrack(name: "mic", source: microphone)
 
-try await session.publish(path: "live/ios", publisher: publisher)
+try session.publish(path: "live/ios", publisher: publisher)
 try await publisher.start()
+
+// When the broadcast ends:
+// publisher.stop()
+// camera.stop()
+// microphone.stop()
+// await session.close()
 ```
 
 ### Play a broadcast in Kotlin
@@ -305,10 +333,16 @@ lifecycleScope.launch {
 ```
 
 Use `VideoEncoderConfig.isSupported`, `AudioEncoderConfig.isSupported`, and the
-`supportedCodecs()` helpers before offering codec choices in UI. For app-defined messages
-or telemetry, add a `DataTrackEmitter` with `Publisher.addDataTrack` and read it with
-`Broadcast.subscribeTrack`. For screen capture setup, follow the Android demo because the
-MediaProjection permission and foreground-service wiring is app-owned.
+`supportedCodecs()` helpers before offering codec choices in UI. Use
+`Catalog.playableVideoTracks` and `Catalog.playableAudioTracks` when selecting tracks for
+playback. For app-defined messages or telemetry, add a `DataTrackEmitter` with
+`Publisher.addDataTrack` and read it with `Broadcast.subscribeTrack`.
+
+On iOS, camera and microphone publishing are app-owned integrations: your app handles the
+privacy usage strings and `AVAudioSession` setup. For screen publishing, use
+`ScreenCapture` when in-app capture is enough, and use the ReplayKit Broadcast Upload flow
+for full-device capture that survives app switches. The iOS demo shows the App Group and
+extension wiring for that path.
 
 For complete app-shaped code, use the native demos.
 

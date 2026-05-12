@@ -5,7 +5,9 @@ import MoQKitFFI
 
 /// A pair of pixel dimensions used to describe video resolution or display ratio.
 public struct VideoSize: Sendable, Equatable {
+    /// Width in pixels.
     public let width: UInt32
+    /// Height in pixels.
     public let height: UInt32
 }
 
@@ -68,7 +70,7 @@ extension AudioTrackConfig: CustomDebugStringConvertible {
 
 // MARK: - Track Info Types
 
-/// A type that describes a single media track within a broadcast.
+/// Shared surface for media-track descriptions exposed by a catalog.
 ///
 /// Concrete types are ``VideoTrackInfo`` and ``AudioTrackInfo``.
 public protocol TrackInfo: Sendable {
@@ -108,11 +110,11 @@ public struct AudioTrackInfo: TrackInfo, Sendable {
     }
 }
 
-/// Describes the tracks available in a live broadcast at a given relay path.
+/// Describes the tracks currently advertised for a live broadcast.
 ///
-/// Each `Catalog` update represents the latest playable track metadata for a broadcast.
-/// Pass a catalog into ``Player/init(catalog:videoTrackName:audioTrackName:targetBufferingMs:)``
-/// to begin playback.
+/// Each value emitted by ``Broadcast/catalogs()`` replaces the previous metadata for the
+/// same broadcast path. Use ``Catalog/playableVideoTracks`` and
+/// ``Catalog/playableAudioTracks`` when you want tracks that the current device can play.
 public struct Catalog: Sendable {
     /// The relay path that identifies this broadcast (e.g. `"live/game1"`).
     public let path: String
@@ -135,7 +137,10 @@ public struct Catalog: Sendable {
     }
 }
 
-/// A live broadcast announcement surfaced by a ``BroadcastSubscription``.
+/// Live broadcast surfaced by a ``BroadcastSubscription``.
+///
+/// Use ``catalogs()`` for media-track metadata, or ``subscribeTrack(name:delivery:)`` for
+/// raw MoQ object tracks such as chat, telemetry, or app-defined messages.
 public struct Broadcast: Sendable {
     /// The relay path that identifies this broadcast (e.g. `"live/game1"`).
     public let path: String
@@ -162,7 +167,11 @@ public struct Broadcast: Sendable {
         try TrackSubscription(broadcast: consumer, name: name, delivery: delivery)
     }
 
-    /// Streams catalog updates for this broadcast until the catalog track ends.
+    /// Streams catalog updates for this broadcast.
+    ///
+    /// Each element contains the latest track metadata the publisher has advertised for
+    /// this broadcast path. The stream finishes when the catalog track ends or the
+    /// underlying subscription is cancelled.
     public func catalogs() -> AsyncStream<Catalog> {
         AsyncStream { continuation in
             let catalogConsumer: MoqCatalogConsumer
@@ -201,7 +210,10 @@ public struct Broadcast: Sendable {
     }
 }
 
-/// A prefix-based subscription created by ``Session/subscribe(prefix:)``.
+/// Prefix-based broadcast announcement subscription created by ``Session/subscribe(prefix:)``.
+///
+/// Keep the subscription alive while your screen or feature wants live announcements, then
+/// call ``cancel()`` to stop observing and free the prefix for reuse.
 public final class BroadcastSubscription: @unchecked Sendable {
     /// The prefix used when subscribing to relay announcements.
     public let prefix: String

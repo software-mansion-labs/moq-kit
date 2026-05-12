@@ -1,13 +1,15 @@
 import Foundation
 import MoQKitFFI
 
-/// Push-based source for publishing raw binary objects on an object track.
+/// Push-based source for publishing app-defined binary messages on an object track.
 ///
-/// Hold a reference to the emitter and call ``send(_:)`` to publish objects.
+/// Create one emitter per published data track, hand it to ``Publisher/addDataTrack(name:source:)``,
+/// then keep a reference and call ``send(_:)`` whenever your app has a new payload.
 public final class DataTrackEmitter: @unchecked Sendable {
     private var producer: MoqTrackProducer?
     private var stopped = false
 
+    /// Creates an emitter that can be attached to a published data track.
     public init() {}
 
     internal func attach(_ producer: MoqTrackProducer) {
@@ -19,7 +21,9 @@ public final class DataTrackEmitter: @unchecked Sendable {
         producer = nil
     }
 
-    /// Publish a single object. No-op if the track hasn't started or has stopped.
+    /// Publishes one object on the track.
+    ///
+    /// If the track has not started yet, or has already stopped, this is a no-op.
     public func send(_ data: Data) throws {
         guard !stopped, let producer else { return }
         try producer.writeFrame(payload: data)

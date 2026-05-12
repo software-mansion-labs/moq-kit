@@ -6,6 +6,7 @@ import MoQKitFFI
 /// Use the per-component `Logger` instances for structured logging. Call
 /// `setNativeLogLevel(_:)` once at startup to configure the Rust log output.
 public enum KitLogger {
+    /// The shared logging subsystem used by MoQKit's `Logger` categories.
     public static let subsystem = "com.swmansion.MoQKit"
 
     static let session = Logger(subsystem: subsystem, category: "session")
@@ -17,8 +18,10 @@ public enum KitLogger {
 
     private static let initLock = OSAllocatedUnfairLock(initialState: false)
 
-    /// Configures the native (Rust) log level. Only the first call takes effect;
-    /// subsequent calls are silently ignored.
+    /// Configures the native Rust log level.
+    ///
+    /// Only the first call takes effect; later calls are ignored so the log pipeline
+    /// stays consistent for the lifetime of the process.
     ///
     /// Must be called before any other MoQKit API to capture early Rust logs.
     /// - Parameter level: One of `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`.

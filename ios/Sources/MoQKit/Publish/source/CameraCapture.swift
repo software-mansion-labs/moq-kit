@@ -2,7 +2,10 @@ import AVFoundation
 
 /// Camera position for video capture.
 public enum CameraPosition: Sendable {
-    case front, back
+    /// Front-facing camera, when available.
+    case front
+    /// Rear-facing camera, when available.
+    case back
 
     var position: AVCaptureDevice.Position {
         switch self {
@@ -14,9 +17,13 @@ public enum CameraPosition: Sendable {
 
 /// Video capture orientation.
 public enum VideoOrientation: Sendable {
+    /// Portrait orientation with the device upright.
     case portrait
+    /// Portrait orientation with the device upside down.
     case portraitUpsideDown
+    /// Landscape with the device rotated to the right.
     case landscapeRight
+    /// Landscape with the device rotated to the left.
     case landscapeLeft
 
     var avOrientation: AVCaptureVideoOrientation {
@@ -33,13 +40,18 @@ public enum VideoOrientation: Sendable {
     }
 }
 
-/// Camera device identity and capture configuration.
+/// Camera device selection and preferred capture settings.
 public struct Camera: Sendable {
+    /// Which camera to use.
     public let position: CameraPosition
+    /// Preferred coded frame width in pixels.
     public let width: Int32
+    /// Preferred coded frame height in pixels.
     public let height: Int32
+    /// Preferred orientation for captured frames.
     public let orientation: VideoOrientation
 
+    /// Creates a camera configuration for ``CameraCapture``.
     public init(
         position: CameraPosition = .back,
         width: Int32 = 720,
@@ -53,21 +65,34 @@ public struct Camera: Sendable {
     }
 }
 
-/// Wraps `AVCaptureSession` to capture video frames from a camera device.
+/// Built-in camera capture source for publishing video.
+///
+/// `CameraCapture` owns an `AVCaptureSession` and forwards frames into a publisher track.
+/// You can also reuse its ``captureSession`` for a local preview UI. Your app must include
+/// `NSCameraUsageDescription` and should call ``start()`` before expecting frames to reach
+/// a publisher.
 public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
+    /// The underlying capture session, exposed for preview UI or advanced camera setup.
     public let captureSession = AVCaptureSession()
     private let queue = DispatchQueue(label: "com.swmansion.MoQKit.CameraCapture")
+    /// Advanced frame callback used by ``Publisher``.
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
 
+    /// The currently configured camera settings.
     public private(set) var camera: Camera
     private var currentInput: AVCaptureDeviceInput?
     private var currentOutput: AVCaptureVideoDataOutput?
 
+    /// Creates a camera capture source with the requested device and format preferences.
     public init(camera: Camera = Camera()) {
         self.camera = camera
         super.init()
     }
 
+    /// Starts the capture session.
+    ///
+    /// The session is configured on an internal queue. After this succeeds, frames begin
+    /// arriving through ``FrameSource/onFrame`` when a publisher track is attached.
     public func start() async throws {
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, Error>) in
@@ -125,6 +150,7 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
         }
     }
 
+    /// Stops camera capture and detaches any active frame consumer.
     public func stop() {
         queue.async { [self] in
             self.captureSession.stopRunning()
@@ -132,7 +158,10 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
         onFrame = nil
     }
 
-    /// Switch camera device and/or configuration while the session is running.
+    /// Switches to a different camera device or capture configuration while running.
+    ///
+    /// Use this for front/back camera changes or resolution/orientation updates without
+    /// recreating the capture source.
     public func `switch`(to newCamera: Camera) throws {
         try queue.sync {
             guard let oldInput = currentInput else {
@@ -185,6 +214,9 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
 }
 
 extension CameraCapture: AVCaptureVideoDataOutputSampleBufferDelegate {
+    /// AVFoundation delegate callback used internally to forward captured frames.
+    ///
+    /// Apps normally do not call this directly.
     public func captureOutput(
         _ output: AVCaptureOutput,
         didOutput sampleBuffer: CMSampleBuffer,

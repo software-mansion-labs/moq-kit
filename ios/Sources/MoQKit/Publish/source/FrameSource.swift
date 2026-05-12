@@ -1,12 +1,14 @@
 import CoreMedia
 
-/// A source that produces CMSampleBuffer frames.
+/// Advanced protocol for custom capture sources that feed `CMSampleBuffer` values into ``Publisher``.
 ///
-/// Conforming types deliver frames to a consumer via the ``onFrame`` callback.
-/// The callback returns `Bool`: `true` to continue, `false` to signal the source
-/// should shut down.
+/// Most apps can use built-in sources such as ``CameraCapture``, ``MicrophoneCapture``,
+/// and ``ScreenCapture``. Conform to `FrameSource` when you already have your own capture
+/// pipeline and want to plug it into MoQKit publishing.
 public protocol FrameSource: AnyObject, Sendable {
-    /// Set by the consumer. Called for each captured frame.
-    /// Return `false` to signal the source to stop.
+    /// Callback installed by the publisher when the track starts.
+    ///
+    /// Call this for every captured sample buffer. Return `false` from the callback means
+    /// the downstream consumer no longer wants frames, so the source should stop producing them.
     var onFrame: (@Sendable (CMSampleBuffer) -> Bool)? { get set }
 }

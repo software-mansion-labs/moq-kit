@@ -45,10 +45,11 @@ public enum MediaTrackState: Sendable, Equatable {
 
 // MARK: - Media Track
 
-/// A low-level subscription to a single MoQ media track.
+/// Advanced low-level subscription to one MoQ media track.
 ///
-/// `MediaTrack` surfaces raw ``MediaFrame`` values from the relay. In most cases you should
-/// use ``Player`` instead, which manages subscriptions and rendering internally.
+/// `MediaTrack` surfaces raw ``MediaFrame`` values from the relay so you can plug them into
+/// your own decoder or processing pipeline. In most apps, use ``Player`` instead, because
+/// it manages subscriptions, decoding, buffering, and rendering for you.
 ///
 /// Both ``frames`` and ``state`` are `AsyncStream`s that complete when the track ends or when
 /// ``close()`` is called.

@@ -5,9 +5,12 @@ import UIKit
 
 /// Minimal connection details shared between the host app and ReplayKit extension.
 public struct ReplayKitBroadcastDescriptor: Codable, Sendable {
+    /// Relay URL the extension should connect to.
     public var relayURL: String
+    /// Broadcast path the extension should publish to.
     public var broadcastPath: String
 
+    /// Creates a minimal descriptor that the host app can share with the extension.
     public init(relayURL: String, broadcastPath: String) {
         self.relayURL = relayURL
         self.broadcastPath = broadcastPath
@@ -16,21 +19,31 @@ public struct ReplayKitBroadcastDescriptor: Codable, Sendable {
 
 /// Errors emitted by ReplayKit helpers.
 public enum ReplayKitBroadcastError: Error, Sendable {
+    /// The configured App Group is missing or not accessible to the current target.
     case invalidAppGroup(String)
+    /// No stored descriptor was found in the shared App Group store.
     case missingDescriptor
+    /// Required descriptor fields were missing or malformed.
     case invalidDescriptor(String)
+    /// Neither setup info nor App Group fallback produced a usable configuration.
     case missingConfiguration
+    /// ReplayKit setup info could not be decoded into a broadcast configuration.
     case invalidSetupInfo(String)
+    /// The broadcast pipeline was already started.
     case alreadyStarted
 }
 
 /// Persists ReplayKit publish configuration in an App Group for host app ↔ extension sharing.
 public struct ReplayKitBroadcastDescriptorStore: Sendable {
+    /// Default `UserDefaults` key used by MoQKit demos and helpers.
     public static let defaultKey = "moqkit.replaykit.broadcastDescriptor"
 
+    /// Shared App Group identifier used to open the shared container.
     public let appGroupIdentifier: String
+    /// `UserDefaults` key used to store the descriptor payload.
     public let key: String
 
+    /// Creates a descriptor store backed by an App Group `UserDefaults` suite.
     public init(
         appGroupIdentifier: String,
         key: String = defaultKey
@@ -56,12 +69,14 @@ public struct ReplayKitBroadcastDescriptorStore: Sendable {
         return defaults
     }
 
+    /// Stores the latest descriptor for later extension startup.
     public func save(_ descriptor: ReplayKitBroadcastDescriptor) throws {
         let defaults = try sharedDefaults()
         let encoded = try JSONEncoder().encode(descriptor)
         defaults.set(encoded, forKey: key)
     }
 
+    /// Loads the most recently stored descriptor.
     public func load() throws -> ReplayKitBroadcastDescriptor {
         let defaults = try sharedDefaults()
         guard let encoded = defaults.data(forKey: key) else {
@@ -74,22 +89,31 @@ public struct ReplayKitBroadcastDescriptorStore: Sendable {
         }
     }
 
+    /// Removes any stored descriptor from the shared container.
     public func clear() throws {
         let defaults = try sharedDefaults()
         defaults.removeObject(forKey: key)
     }
 }
 
-/// ReplayKit extension publishing configuration.
+/// Full ReplayKit publishing configuration for a Broadcast Upload extension.
 public struct ReplayKitBroadcastConfiguration: Sendable, Codable {
+    /// Relay location and broadcast path to publish.
     public var descriptor: ReplayKitBroadcastDescriptor
+    /// Name of the screen-video track.
     public var videoTrackName: String
+    /// Optional app-audio track name. Set to `nil` to skip app audio publishing.
     public var appAudioTrackName: String?
+    /// Optional microphone track name. Set to `nil` to skip microphone publishing.
     public var micAudioTrackName: String?
+    /// Encoder settings for screen video.
     public var videoEncoder: VideoEncoderConfig
+    /// Encoder settings for app audio.
     public var appAudioEncoder: AudioEncoderConfig
+    /// Encoder settings for microphone audio.
     public var micAudioEncoder: AudioEncoderConfig
 
+    /// Creates a ReplayKit publish configuration.
     public init(
         descriptor: ReplayKitBroadcastDescriptor,
         videoTrackName: String = "screen",
@@ -109,12 +133,12 @@ public struct ReplayKitBroadcastConfiguration: Sendable, Codable {
     }
 }
 
-/// Encodes/decodes ReplayKit setup info payloads used to bootstrap extension publishing.
+/// Helpers for encoding ReplayKit setup info used to bootstrap extension publishing.
 public enum ReplayKitBroadcastSetupInfo {
     /// Key used when setup info carries a nested configuration payload.
     public static let configurationKey = "moqkit.replaykit.config"
 
-    /// Encode a configuration for `RPBroadcastActivityViewController` setup info.
+    /// Encodes a configuration for `RPBroadcastActivityViewController` setup info.
     public static func makeSetupInfo(
         configuration: ReplayKitBroadcastConfiguration,
         key: String = configurationKey
@@ -136,7 +160,8 @@ public enum ReplayKitBroadcastSetupInfo {
 /// MoQ publishing pipeline for use inside a ReplayKit Broadcast Upload Extension.
 ///
 /// Use this from `RPBroadcastSampleHandler` to publish full-device screen capture while
-/// the host app is backgrounded.
+/// the host app is backgrounded. Most apps can subclass
+/// ``MoQReplayKitBroadcastSampleHandler`` instead of instantiating this actor directly.
 public actor ReplayKitBroadcastPipeline {
     private let configuration: ReplayKitBroadcastConfiguration
     private let videoSource = FrameRelay()
@@ -147,6 +172,7 @@ public actor ReplayKitBroadcastPipeline {
     private var publisher: Publisher?
     private var isRunning = false
 
+    /// Creates a pipeline for one ReplayKit extension publishing session.
     public init(configuration: ReplayKitBroadcastConfiguration) {
         self.configuration = configuration
     }
@@ -172,6 +198,9 @@ public actor ReplayKitBroadcastPipeline {
         return resolved
     }
 
+    /// Connects to the relay, registers the publisher, and starts forwarding ReplayKit samples.
+    ///
+    /// Call this from your extension startup path, typically `broadcastStarted`.
     public func start() async throws {
         guard !isRunning else {
             throw ReplayKitBroadcastError.alreadyStarted
@@ -228,6 +257,9 @@ public actor ReplayKitBroadcastPipeline {
         }
     }
 
+    /// Forwards a ReplayKit sample buffer into the active publish pipeline.
+    ///
+    /// Call this for every sample received by your `RPBroadcastSampleHandler`.
     public func processSampleBuffer(_ sampleBuffer: CMSampleBuffer, type: RPSampleBufferType) {
         guard isRunning else { return }
 
@@ -243,6 +275,7 @@ public actor ReplayKitBroadcastPipeline {
         }
     }
 
+    /// Stops publishing and closes the relay session.
     public func stop() async {
         let publisher = self.publisher
         self.publisher = nil
@@ -265,7 +298,9 @@ public actor ReplayKitBroadcastPipeline {
 
 /// Base `RPBroadcastSampleHandler` that handles MoQ session + publish pipeline lifecycle.
 ///
-/// Subclass this in your Broadcast Upload Extension and override app-group/config hooks.
+/// Subclass this in your Broadcast Upload Extension when you want MoQKit to manage the
+/// session and publisher lifecycle for you. Most apps only need to provide an App Group
+/// identifier or override configuration lookup.
 open class MoQReplayKitBroadcastSampleHandler: RPBroadcastSampleHandler {
     private final class PendingSample: @unchecked Sendable {
         let sampleBuffer: CMSampleBuffer
@@ -290,23 +325,30 @@ open class MoQReplayKitBroadcastSampleHandler: RPBroadcastSampleHandler {
     }
 
     /// Optional App Group identifier used for fallback configuration lookup.
+    ///
+    /// Return a value here when the host app stores a descriptor in shared defaults for
+    /// the extension to pick up.
     open var replayKitAppGroupIdentifier: String? {
         nil
     }
 
-    /// UserDefaults key for configuration fallback lookup in App Group store.
+    /// `UserDefaults` key used when reading fallback configuration from the App Group store.
     open var replayKitAppGroupDescriptorKey: String {
         ReplayKitBroadcastDescriptorStore.defaultKey
     }
 
-    /// Setup info key for configuration payload lookup.
+    /// Setup-info key used when the broadcast UI passes a nested configuration payload.
     open var replayKitSetupInfoConfigurationKey: String {
         ReplayKitBroadcastSetupInfo.configurationKey
     }
 
-    /// Resolve extension publishing configuration. Default behavior:
-    /// 1) Decode from setupInfo (preferred)
-    /// 2) Fallback to App Group descriptor store
+    /// Resolves the configuration used to start publishing.
+    ///
+    /// Default behavior is:
+    /// 1. Decode a full configuration from ReplayKit `setupInfo`.
+    /// 2. Fall back to ``ReplayKitBroadcastDescriptorStore`` using the App Group values.
+    ///
+    /// Override this when your extension needs custom configuration assembly.
     open func makeReplayKitBroadcastConfiguration(
         setupInfo: [String: NSObject]?
     ) throws -> ReplayKitBroadcastConfiguration {
@@ -326,7 +368,9 @@ open class MoQReplayKitBroadcastSampleHandler: RPBroadcastSampleHandler {
         return ReplayKitBroadcastConfiguration(descriptor: descriptor)
     }
 
-    /// Convert an error into ReplayKit-visible error payload.
+    /// Converts a startup error into the `NSError` shown by ReplayKit.
+    ///
+    /// Override to customize user-facing error text or error domains.
     open func replayKitNSError(from error: Error) -> NSError {
         NSError(
             domain: "MoQKit.ReplayKit",
@@ -335,12 +379,16 @@ open class MoQReplayKitBroadcastSampleHandler: RPBroadcastSampleHandler {
         )
     }
 
-    /// Called when the MoQ publishing pipeline has started.
+    /// Called after the MoQ publishing pipeline has started successfully.
     open func replayKitDidStartPublishing(configuration: ReplayKitBroadcastConfiguration) {}
 
-    /// Called when the MoQ publishing pipeline has fully stopped.
+    /// Called after the MoQ publishing pipeline has fully stopped.
     open func replayKitDidStopPublishing() {}
 
+    /// ReplayKit entry point that starts the MoQ publishing pipeline.
+    ///
+    /// Apps usually customize configuration via the override hooks above rather than
+    /// overriding this method directly.
     open override func broadcastStarted(withSetupInfo setupInfo: [String: NSObject]?) {
         startupTask?.cancel()
         stopSamplePump()
@@ -378,14 +426,17 @@ open class MoQReplayKitBroadcastSampleHandler: RPBroadcastSampleHandler {
         }
     }
 
+    /// ReplayKit entry point that temporarily pauses sample forwarding.
     open override func broadcastPaused() {
         isPaused = true
     }
 
+    /// ReplayKit entry point that resumes sample forwarding after a pause.
     open override func broadcastResumed() {
         isPaused = false
     }
 
+    /// ReplayKit entry point that stops publishing and tears down the pipeline.
     open override func broadcastFinished() {
         startupTask?.cancel()
         startupTask = nil
@@ -400,6 +451,10 @@ open class MoQReplayKitBroadcastSampleHandler: RPBroadcastSampleHandler {
         }
     }
 
+    /// ReplayKit entry point for every captured sample buffer.
+    ///
+    /// Apps normally do not call this directly; ReplayKit invokes it for the active
+    /// Broadcast Upload extension.
     open override func processSampleBuffer(
         _ sampleBuffer: CMSampleBuffer,
         with sampleBufferType: RPSampleBufferType
