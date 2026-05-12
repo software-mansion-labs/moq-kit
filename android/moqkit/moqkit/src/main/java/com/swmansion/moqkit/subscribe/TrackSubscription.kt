@@ -12,18 +12,28 @@ import uniffi.moq.MoqTrackConsumer
  */
 enum class TrackDelivery {
     /**
-     * Delivers groups with monotonically increasing sequence numbers, skipping late groups.
+     * Delivers groups with monotonically increasing sequence numbers.
+     *
+     * Late groups are skipped. Use this for live data where newer messages are more useful
+     * than replaying old ones.
      */
     Monotonic,
 
     /**
-     * Delivers groups in arrival order. Sequence numbers may move backwards.
+     * Delivers groups in arrival order.
+     *
+     * Sequence numbers may move backwards. Use this when every received group should be
+     * delivered to the app.
      */
     Arrival,
 }
 
 /**
  * A raw object received from a MoQ track.
+ *
+ * @property payload Application-defined binary payload.
+ * @property groupSequence Sequence number of the group that carried this object.
+ * @property objectIndex Object position within the group.
  */
 data class TrackObject(
     val payload: ByteArray,
@@ -52,6 +62,9 @@ data class TrackObject(
  *
  * Unlike [Player], this reads unparsed MoQ objects and does not require the track to appear
  * in a broadcast catalog.
+ *
+ * A track subscription supports a single active collector. Call [close] when the app no
+ * longer needs the track.
  */
 class TrackSubscription internal constructor(
     private val name: String,
@@ -99,9 +112,15 @@ class TrackSubscription internal constructor(
         }
     }
 
+    /**
+     * Whether this subscription has been closed.
+     */
     val isClosed: Boolean
         get() = synchronized(lock) { closed }
 
+    /**
+     * Stops receiving objects and releases the underlying track subscription.
+     */
     override fun close() {
         val shouldRelease = synchronized(lock) {
             if (closed) {

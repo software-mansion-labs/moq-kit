@@ -4,14 +4,18 @@ import android.util.Log
 import uniffi.moq.moqLogLevel
 
 /**
- * Utility object for configuring the native MoQ transport layer.
+ * Configures logs emitted by the native MoQ transport layer.
+ *
+ * Most apps do not need to call this. It is useful when diagnosing relay connection,
+ * subscription, or publishing problems that are not visible from the Kotlin state flows.
  */
 object NativeLogging {
     /**
-     * Sets the native log level for the underlying Rust transport layer.
+     * Sets the native log level.
      *
-     * @param level Log level string accepted by the Rust `tracing` crate:
-     *   `"error"`, `"warn"`, `"info"`, `"debug"`, or `"trace"`.
+     * Invalid values are ignored and logged with Android's [Log] API.
+     *
+     * @param level One of `"error"`, `"warn"`, `"info"`, `"debug"`, or `"trace"`.
      */
     fun setLogLevel(level: String) {
         try {

@@ -178,6 +178,12 @@ dependencies {
 The Android SDK includes Kotlin APIs backed by UniFFI-generated JNI bindings to the Rust
 `moq-ffi` library.
 
+Android apps must declare the permissions they use. Typical integrations need `INTERNET`.
+Camera publishing needs `CAMERA`, microphone publishing needs `RECORD_AUDIO`, and screen
+capture needs the Android MediaProjection permission flow plus a foreground service with
+the `mediaProjection` service type on Android versions that require it. The library does
+not add these permissions transitively.
+
 ## Usage
 
 Everything in moq-kit starts with a `Session`. A session owns one QUIC connection to a
@@ -246,16 +252,22 @@ lifecycleScope.launch {
 
     subscription.broadcasts.collect { broadcast ->
         broadcast.catalogs().collect { catalog ->
+            val videoTrack = catalog.playableVideoTracks.firstOrNull()?.name
+            val audioTrack = catalog.playableAudioTracks.firstOrNull()?.name
+            if (videoTrack == null && audioTrack == null) return@collect
+
             val player = Player(
                 catalog = catalog,
-                videoTrackName = catalog.videoTracks.firstOrNull()?.name,
-                audioTrackName = catalog.audioTracks.firstOrNull()?.name,
+                videoTrackName = videoTrack,
+                audioTrackName = audioTrack,
                 targetLatencyMs = 100,
                 parentScope = lifecycleScope,
             )
 
             player.setSurface(surfaceView.holder.surface)
             player.play()
+
+            // Keep the player while the screen is active, then call player.close().
         }
     }
 }
@@ -283,8 +295,20 @@ lifecycleScope.launch {
 
     session.publish(path = "live/android", publisher = publisher)
     publisher.start()
+
+    // When the broadcast ends, stop the publisher, captures, and session.
+    // publisher.stop()
+    // camera.stop()
+    // microphone.stop()
+    // session.close()
 }
 ```
+
+Use `VideoEncoderConfig.isSupported`, `AudioEncoderConfig.isSupported`, and the
+`supportedCodecs()` helpers before offering codec choices in UI. For app-defined messages
+or telemetry, add a `DataTrackEmitter` with `Publisher.addDataTrack` and read it with
+`Broadcast.subscribeTrack`. For screen capture setup, follow the Android demo because the
+MediaProjection permission and foreground-service wiring is app-owned.
 
 For complete app-shaped code, use the native demos.
 

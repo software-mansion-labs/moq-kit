@@ -19,11 +19,34 @@ import uniffi.moq.MoqTrackProducer
 
 private const val TAG = "Publisher"
 
+/**
+ * Collects tracks and publishes them as one broadcast.
+ *
+ * Add all tracks before calling [start]. A publisher is usually registered with
+ * [com.swmansion.moqkit.Session.publish] first, then started:
+ *
+ * ```kotlin
+ * val publisher = Publisher()
+ * publisher.addVideoTrack(name = "camera", source = camera)
+ * publisher.addAudioTrack(name = "mic", source = microphone)
+ * session.publish(path = "live/android", publisher = publisher)
+ * publisher.start()
+ * ```
+ *
+ * Call [stop] when the broadcast should end. A stopped publisher should not be reused;
+ * create a new [Publisher] for the next broadcast.
+ */
 class Publisher {
     private val _state = MutableStateFlow<PublisherState>(PublisherState.Idle)
+
+    /** Current publishing state. */
     val state: StateFlow<PublisherState> = _state.asStateFlow()
 
     private val _events = MutableSharedFlow<PublisherEvent>(extraBufferCapacity = 16)
+
+    /**
+     * Track-level events useful for updating UI or surfacing publish errors.
+     */
     val events: SharedFlow<PublisherEvent> = _events
 
     internal val broadcast = MoqBroadcastProducer()
@@ -39,6 +62,20 @@ class Publisher {
     private val activeAudioTracks = mutableMapOf<String, ActiveAudioTrack>()
     private val activeDataTracks = mutableMapOf<String, ActiveDataTrack>()
 
+    /**
+     * Adds a video track backed by a [VideoFrameSource].
+     *
+     * Built-in sources include [com.swmansion.moqkit.publish.source.CameraCapture] and
+     * [com.swmansion.moqkit.publish.source.ScreenCapture]. The track starts only after
+     * [start] is called.
+     *
+     * @param name Track name announced in the broadcast. Names must be unique among video
+     *   tracks in this publisher.
+     * @param source Video source that will feed encoder frames.
+     * @param config Encoder settings and codec choice.
+     * @return A handle for observing or stopping this track.
+     * @throws IllegalArgumentException if another video track already uses [name].
+     */
     fun addVideoTrack(
         name: String = "video",
         source: VideoFrameSource,
@@ -53,6 +90,19 @@ class Publisher {
         return track
     }
 
+    /**
+     * Adds an audio track backed by an [AudioFrameSource].
+     *
+     * Built-in sources include [com.swmansion.moqkit.publish.source.MicrophoneCapture].
+     * The track starts only after [start] is called.
+     *
+     * @param name Track name announced in the broadcast. Names must be unique among audio
+     *   tracks in this publisher.
+     * @param source Audio source that provides PCM samples.
+     * @param config Encoder settings and codec choice.
+     * @return A handle for observing or stopping this track.
+     * @throws IllegalArgumentException if another audio track already uses [name].
+     */
     fun addAudioTrack(
         name: String = "audio",
         source: AudioFrameSource,
@@ -67,6 +117,18 @@ class Publisher {
         return track
     }
 
+    /**
+     * Adds a raw data track.
+     *
+     * Data tracks send application-defined binary payloads, such as JSON chat messages.
+     * They do not need to appear in the media catalog and are read with
+     * [com.swmansion.moqkit.subscribe.Broadcast.subscribeTrack].
+     *
+     * @param name Track name used by subscribers.
+     * @param emitter Object used to send payloads after [start].
+     * @return A handle for observing or stopping this track.
+     * @throws IllegalArgumentException if another data track already uses [name].
+     */
     fun addDataTrack(
         name: String = "data",
         emitter: DataTrackEmitter,
@@ -77,6 +139,17 @@ class Publisher {
         return track
     }
 
+    /**
+     * Starts all configured tracks.
+     *
+     * This validates codec support before any track is started. If a selected codec is not
+     * available on the current device, [UnsupportedCodecException] is thrown and publishing
+     * does not begin.
+     *
+     * @throws IllegalStateException if this publisher has already been started.
+     * @throws UnsupportedCodecException if any configured media track cannot be encoded on
+     *   this device.
+     */
     fun start() {
         check(_state.value == PublisherState.Idle) { "Publisher already started" }
         Log.d(TAG, "Starting publisher: ${videoDescriptors.size} video, ${audioDescriptors.size} audio, ${dataDescriptors.size} data tracks")
@@ -91,6 +164,12 @@ class Publisher {
         checkAllTracksStopped()
     }
 
+    /**
+     * Stops all active tracks and finishes the broadcast.
+     *
+     * Safe to call more than once. Stopping emits [PublisherEvent.TrackStopped] for each
+     * configured track and moves [state] to [PublisherState.Stopped].
+     */
     fun stop() {
         val current = _state.value
         if (current == PublisherState.Stopped || current is PublisherState.Error) return

@@ -1,5 +1,6 @@
 import com.vanniktech.maven.publish.SonatypeHost
 import org.jetbrains.dokka.gradle.DokkaTask
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.library)
@@ -73,9 +74,27 @@ mavenPublishing {
 tasks.withType<DokkaTask>().configureEach {
     dokkaSourceSets {
         create("main") {
-            sourceRoots.from(file("src/main/java"))
+            sourceRoots.from(android.sourceSets.getByName("main").java.srcDirs)
+            val localSdkDir: String? = rootProject.file("local.properties")
+                .takeIf { it.isFile }
+                ?.inputStream()
+                ?.use { stream ->
+                    Properties().apply { load(stream) }.getProperty("sdk.dir")
+                }
+            val sdkDir = System.getenv("ANDROID_HOME")
+                ?: System.getenv("ANDROID_SDK_ROOT")
+                ?: localSdkDir
+            if (sdkDir != null) {
+                classpath.from(files("$sdkDir/platforms/android-${android.compileSdk ?: 35}/android.jar"))
+            }
+            classpath.from(configurations.getByName("releaseCompileClasspath"))
+
             perPackageOption {
                 matchingRegex.set("uniffi\\..*")
+                suppress.set(true)
+            }
+            perPackageOption {
+                matchingRegex.set("com\\.swmansion\\.moqkit\\..*\\.internal(\\..*)?")
                 suppress.set(true)
             }
         }

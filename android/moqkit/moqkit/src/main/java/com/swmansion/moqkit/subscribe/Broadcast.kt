@@ -17,6 +17,9 @@ private const val TAG = "Broadcast"
 
 /**
  * A pair of pixel dimensions used to describe video resolution or display ratio.
+ *
+ * @property width Width in pixels.
+ * @property height Height in pixels.
  */
 data class VideoSize(
     val width: UInt,
@@ -25,6 +28,12 @@ data class VideoSize(
 
 /**
  * Codec and format parameters for a video rendition.
+ *
+ * @property codec Catalog codec string, such as `"avc1"` or `"hev1"`.
+ * @property coded Encoded frame size, when announced by the broadcaster.
+ * @property displayRatio Display aspect ratio, when announced by the broadcaster.
+ * @property bitrate Advertised bitrate in bits per second, when available.
+ * @property framerate Advertised frame rate, when available.
  */
 data class VideoTrackConfig(
     val codec: String,
@@ -36,6 +45,11 @@ data class VideoTrackConfig(
 
 /**
  * Codec and format parameters for an audio rendition.
+ *
+ * @property codec Catalog codec string, such as `"aac"` or `"opus"`.
+ * @property sampleRate Samples per second.
+ * @property channelCount Number of audio channels.
+ * @property bitrate Advertised bitrate in bits per second, when available.
  */
 data class AudioTrackConfig(
     val codec: String,
@@ -52,6 +66,9 @@ interface TrackInfo {
 
 /**
  * A video track discovered from a broadcast catalog.
+ *
+ * @property name Track name to pass to [Player] when selecting this video track.
+ * @property config Catalog metadata announced for this track.
  */
 @ConsistentCopyVisibility
 data class VideoTrackInfo internal constructor(
@@ -70,6 +87,9 @@ data class VideoTrackInfo internal constructor(
 
 /**
  * An audio track discovered from a broadcast catalog.
+ *
+ * @property name Track name to pass to [Player] when selecting this audio track.
+ * @property config Catalog metadata announced for this track.
  */
 @ConsistentCopyVisibility
 data class AudioTrackInfo internal constructor(
@@ -87,7 +107,15 @@ data class AudioTrackInfo internal constructor(
 }
 
 /**
- * The latest playable track metadata for a single broadcast path.
+ * The latest catalog metadata for a single broadcast path.
+ *
+ * [videoTracks] and [audioTracks] include everything announced in the catalog.
+ * Use [playableVideoTracks] and [playableAudioTracks] when choosing tracks for
+ * [Player], because codec support can vary by device.
+ *
+ * @property path Broadcast path that produced this catalog.
+ * @property videoTracks Video tracks announced by the broadcaster.
+ * @property audioTracks Audio tracks announced by the broadcaster.
  */
 class Catalog internal constructor(
     val path: String,
@@ -123,6 +151,8 @@ class Catalog internal constructor(
  * Keep this broadcast open for as long as you need to create players or observe catalog updates.
  * A [Player] created from one of this broadcast's catalogs retains the underlying broadcast handle
  * until the player is closed.
+ *
+ * @property path Announced broadcast path.
  */
 class Broadcast internal constructor(
     val path: String,
@@ -136,6 +166,9 @@ class Broadcast internal constructor(
      *
      * This does not require the track to appear in the broadcast catalog. The returned
      * subscription emits every object from each received group as a [TrackObject].
+     *
+     * Raw tracks are useful for app-defined data such as chat messages, telemetry, or
+     * control events.
      */
     fun subscribeTrack(
         name: String,
@@ -158,6 +191,9 @@ class Broadcast internal constructor(
 
     /**
      * Streams catalog updates for this broadcast until the catalog track ends.
+     *
+     * Collect this flow to discover playable audio and video tracks. The flow may emit more
+     * than once if the broadcaster updates its catalog.
      */
     fun catalogs(): Flow<Catalog> = flow {
         val broadcast = owner.consumer()
@@ -203,6 +239,11 @@ class Broadcast internal constructor(
 
 /**
  * A prefix-based subscription created by [com.swmansion.moqkit.Session.subscribe].
+ *
+ * Collect [broadcasts] to receive matching announcements. A subscription owns one native
+ * announcement stream, so it supports only a single active collector.
+ *
+ * @property prefix Prefix passed to [com.swmansion.moqkit.Session.subscribe].
  */
 class BroadcastSubscription internal constructor(
     val prefix: String,
@@ -264,9 +305,15 @@ class BroadcastSubscription internal constructor(
         }
     }
 
+    /**
+     * Whether this subscription has been closed.
+     */
     val isClosed: Boolean
         get() = synchronized(lock) { closed }
 
+    /**
+     * Stops receiving broadcast announcements and releases subscription resources.
+     */
     override fun close() {
         finish()
     }

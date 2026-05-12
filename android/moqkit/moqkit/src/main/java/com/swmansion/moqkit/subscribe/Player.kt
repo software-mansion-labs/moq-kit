@@ -15,10 +15,13 @@ import kotlinx.coroutines.flow.SharedFlow
 private const val TAG = "Player"
 
 /**
- * Real-time audio/video player with fine-grained latency control.
+ * Plays audio and video tracks from a broadcast catalog.
  *
- * Uses MediaCodec (async) for decoding, AudioTrack (MODE_STREAM) for audio output,
- * and a Surface-configured MediaCodec for video output.
+ * Choose track names from [Catalog.playableVideoTracks] and [Catalog.playableAudioTracks],
+ * set a video [Surface] if video is selected, and call [play]. The player keeps the
+ * underlying broadcast open until [close] is called.
+ *
+ * Internally this uses Android's MediaCodec and AudioTrack APIs.
  *
  * ### Typical usage
  * ```kotlin
@@ -34,6 +37,15 @@ private const val TAG = "Player"
  * // later:
  * player.close()
  * ```
+ *
+ * @param catalog Catalog emitted by [Broadcast.catalogs].
+ * @param videoTrackName Video track name to play, or `null` for audio-only playback.
+ * @param audioTrackName Audio track name to play, or `null` for video-only playback.
+ * @param targetLatencyMs Desired live playback latency in milliseconds.
+ * @param parentScope Coroutine scope that owns playback work.
+ * @param volume Initial audio volume, clamped to the 0.0-1.0 range.
+ * @throws IllegalArgumentException if a selected track name does not exist.
+ * @throws IllegalStateException if both track names are `null`.
  */
 class Player(
     private val catalog: Catalog,
@@ -64,6 +76,12 @@ class Player(
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
 
+    /**
+     * Playback lifecycle events.
+     *
+     * Use this flow for UI state such as play/pause indicators and unrecoverable playback
+     * errors.
+     */
     val events: SharedFlow<Event> = _events
 
     private val broadcastOwner: BroadcastOwner
@@ -106,7 +124,10 @@ class Player(
         }
 
     /**
-     * Set, swap, or clear the video output surface.
+     * Sets, swaps, or clears the video output surface.
+     *
+     * It is safe to call this before [play]. If video playback is selected and the surface
+     * is `null`, audio can start while video waits for a surface.
      */
     fun setSurface(surface: Surface?) {
         this.surface = surface
@@ -118,6 +139,8 @@ class Player(
      *
      * Safe to call before a surface is available. If video is selected, the video side starts
      * once [setSurface] receives a non-null surface.
+     *
+     * @throws UnsupportedCodecException if a selected track cannot be decoded on this device.
      */
     fun play() {
         check(!closed) { "Player is already closed" }
@@ -139,6 +162,10 @@ class Player(
      *
      * Passing `null` disables video playback. If that would leave both media kinds disabled,
      * this call throws.
+     *
+     * @throws IllegalArgumentException if [trackName] is unknown.
+     * @throws IllegalStateException if disabling video would leave no track selected.
+     * @throws UnsupportedCodecException if the selected track cannot be decoded.
      */
     fun switchTrack(trackName: String?) {
         check(!closed) { "Player is already closed" }
@@ -171,6 +198,10 @@ class Player(
      *
      * Passing `null` disables audio playback. If that would leave both media kinds disabled,
      * this call throws.
+     *
+     * @throws IllegalArgumentException if [trackName] is unknown.
+     * @throws IllegalStateException if disabling audio would leave no track selected.
+     * @throws UnsupportedCodecException if the selected track cannot be decoded.
      */
     fun switchAudioTrack(trackName: String?) {
         check(!closed) { "Player is already closed" }
@@ -234,6 +265,8 @@ class Player(
 
     /**
      * Adjusts the target playback latency while the player is running.
+     *
+     * Lower values reduce delay but can increase stalls on unstable networks.
      */
     fun updateTargetLatency(ms: Int) {
         check(!closed) { "Player is already closed" }
@@ -243,6 +276,8 @@ class Player(
 
     /**
      * Sets audio output volume for this player.
+     *
+     * Values outside the 0.0-1.0 range are clamped.
      */
     fun setVolume(volume: Float) {
         check(!closed) { "Player is already closed" }

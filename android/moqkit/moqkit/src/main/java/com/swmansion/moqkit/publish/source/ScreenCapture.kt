@@ -13,6 +13,21 @@ import com.swmansion.moqkit.publish.source.internal.GlFanOutRenderer
 
 private const val TAG = "ScreenCapture"
 
+/**
+ * MediaProjection-backed video source for publishing screen content.
+ *
+ * Apps must request screen-capture permission with Android's [MediaProjectionManager] and
+ * pass the result [intent] and [resultCode] to this class. On Android versions that require
+ * it, start a foreground service with the `mediaProjection` service type before calling
+ * [start]. See the Android demo app for complete permission and foreground-service wiring.
+ *
+ * @param intent Permission result data returned by the MediaProjection flow.
+ * @param resultCode Permission result code returned by the MediaProjection flow.
+ * @param width Virtual display width in pixels.
+ * @param height Virtual display height in pixels.
+ * @param frameRate Desired frame rate for app configuration. Actual screen updates depend
+ *   on the device display and Android's MediaProjection pipeline.
+ */
 class ScreenCapture(
     private val intent: Intent,
     private val resultCode: Int,
@@ -26,6 +41,9 @@ class ScreenCapture(
     private var virtualDisplay: VirtualDisplay? = null
     private var inputSurface: Surface? = null
 
+    /**
+     * Starts screen capture.
+     */
     suspend fun start(context: Context) {
         val st: SurfaceTexture = glRenderer.initialize()
         st.setDefaultBufferSize(width, height)
@@ -50,6 +68,9 @@ class ScreenCapture(
         Log.d(TAG, "Screen capture started ${width}x$height")
     }
 
+    /**
+     * Stops screen capture and releases MediaProjection resources.
+     */
     fun stop() {
         virtualDisplay?.release()
         virtualDisplay = null

@@ -19,8 +19,28 @@ import kotlin.coroutines.resumeWithException
 
 private const val TAG = "CameraCapture"
 
-enum class CameraPosition { Front, Back }
+/** Camera lens selection for [CameraCapture]. */
+enum class CameraPosition {
+    /** Front-facing camera. */
+    Front,
 
+    /** Rear-facing camera. */
+    Back,
+}
+
+/**
+ * CameraX-backed video source for publishing camera video.
+ *
+ * Apps must declare and request `CAMERA` permission before calling [start]. Bind the
+ * capture to a lifecycle owner from the screen that owns the camera preview, then add the
+ * source to a [com.swmansion.moqkit.publish.Publisher] with `addVideoTrack`.
+ *
+ * @param position Initial camera lens.
+ * @param width Requested capture width in pixels.
+ * @param height Requested capture height in pixels.
+ * @param frameRate Desired frame rate for app configuration. Actual camera output depends
+ *   on device and CameraX support.
+ */
 class CameraCapture(
     private var position: CameraPosition = CameraPosition.Back,
     private val width: Int = 1920,
@@ -34,6 +54,11 @@ class CameraCapture(
     private var cameraProvider: ProcessCameraProvider? = null
     private var lifecycleOwner: LifecycleOwner? = null
 
+    /**
+     * Starts camera capture and binds it to [lifecycleOwner].
+     *
+     * Call [setPreviewSurface] after this if the app wants a local preview.
+     */
     suspend fun start(context: Context, lifecycleOwner: LifecycleOwner) {
         this.lifecycleOwner = lifecycleOwner
         val st = glRenderer.initialize()
@@ -45,6 +70,9 @@ class CameraCapture(
         bindCamera()
     }
 
+    /**
+     * Stops camera capture and releases camera resources.
+     */
     fun stop() {
         cameraProvider?.unbindAll()
         inputSurface?.release()
@@ -53,6 +81,11 @@ class CameraCapture(
         glRenderer.release()
     }
 
+    /**
+     * Switches between front and back cameras.
+     *
+     * The capture must have been started before this call can rebind the camera.
+     */
     suspend fun switchCamera() {
         position = if (position == CameraPosition.Front) CameraPosition.Back else CameraPosition.Front
         bindCamera()

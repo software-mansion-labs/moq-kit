@@ -3,6 +3,9 @@ package com.swmansion.moqkit.subscribe
 /**
  * A point-in-time snapshot of playback health metrics, available via [Player.stats].
  *
+ * These values are intended for diagnostics and quality UI. Poll them periodically while a
+ * player is running; they are not emitted as a flow.
+ *
  * All fields are nullable — a `null` value means the metric has not yet been measured
  * (e.g. no frames received yet) rather than that the metric is zero.
  *
@@ -48,6 +51,9 @@ data class PlaybackStats(
 /**
  * Arrival timing diagnostics for one received media stream.
  *
+ * These counters help explain stutter caused by network jitter, bursty delivery, or
+ * timestamps that move backwards.
+ *
  * @property receivedFramesPerSecond Received compressed frames per second over the rolling window.
  * @property averageInterarrivalMs Average wall-clock interval between received frames.
  * @property maxInterarrivalMs Maximum wall-clock interval between received frames.
@@ -76,6 +82,12 @@ data class FrameArrivalStats(
  * Timing starts when a compressed frame is queued to MediaCodec and ends when the matching decoded
  * output buffer is delivered.
  *
+ * @property trackName Video track these decode stats refer to.
+ * @property sampleCount Number of decoded samples included in the timing summary.
+ * @property minMs Fastest observed decode time in milliseconds.
+ * @property maxMs Slowest observed decode time in milliseconds.
+ * @property averageMs Average decode time in milliseconds.
+ * @property lastMs Most recent decode time in milliseconds.
  * @property inFlightBufferCount Number of compressed frame buffers queued to the decoder that have
  *   not emitted a matching output buffer yet.
  * @property minOutputIntervalMs Minimum wall-clock time between matching output buffer callbacks.
@@ -97,6 +109,8 @@ data class VideoDecodeStats(
 
 /**
  * Stall / rebuffering statistics for one media pipeline.
+ *
+ * A stall means playback had to wait for more media before it could continue.
  *
  * @property count Total number of stall events since playback started.
  * @property totalDurationMs Cumulative stall duration in milliseconds.

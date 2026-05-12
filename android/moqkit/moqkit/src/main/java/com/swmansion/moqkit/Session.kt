@@ -17,17 +17,22 @@ import uniffi.moq.MoqOriginProducer
 import uniffi.moq.MoqSession as UniMoqSession
 
 /**
- * A QUIC connection to a MOQ relay used for publishing and creating broadcast subscriptions.
+ * A connection to one MoQ relay.
+ *
+ * Create one session for a relay URL and use it as the starting point for discovering
+ * broadcasts, publishing media, and sending or receiving raw data tracks. A session owns
+ * the native connection and the work created through it, so closing the session also
+ * closes active subscriptions and stops active publishers.
  *
  * ### Lifecycle
  * 1. Create a session with the relay [url].
- * 2. Call [connect] (suspend) to establish the QUIC connection.
- * 3. Call [subscribe] to discover live broadcasts, and/or [publish] to publish media.
+ * 2. Call [connect] to establish the connection.
+ * 3. Call [subscribe] to discover live broadcasts, and/or [publish] to announce media.
  * 4. Call [close] to tear down the connection and free all resources.
  *
- * @param url WebTransport URL of the MOQ relay (e.g. `"https://relay.example.com:4443/moq"`).
- * @param parentScope Coroutine scope whose lifetime bounds the session. Defaults to a new
- *   IO-dispatched scope with a [SupervisorJob].
+ * @param url Relay URL, for example `"https://relay.example.com:4443/anon"`.
+ * @param parentScope Coroutine scope whose lifetime bounds background session work. In apps,
+ *   pass a lifecycle-owned scope such as `lifecycleScope` or `viewModelScope`.
  */
 class Session(
     private val url: String,
@@ -76,6 +81,8 @@ class Session(
      *
      * Suspends until the handshake is complete. Once this function returns, [state] is
      * [State.Connected] and the session may publish or create broadcast subscriptions.
+     *
+     * A session can be connected only once. Create a new [Session] after [close].
      *
      * @throws IllegalStateException if called on a session that has already been started.
      * @throws Exception if the connection attempt fails (state becomes [State.Error]).
@@ -131,6 +138,9 @@ class Session(
     /**
      * Starts watching for broadcast announcements under the supplied prefix.
      *
+     * Collect [BroadcastSubscription.broadcasts] to receive each matching broadcast as it is
+     * announced by the relay. Each prefix may have only one active subscription on a session.
+     *
      * @param prefix Only broadcasts whose path starts with this string will be surfaced.
      *   Pass `""` (the default) to receive all broadcasts.
      * @throws IllegalStateException if the session is not connected or the exact prefix
@@ -182,14 +192,15 @@ class Session(
     }
 
     /**
-     * Publish a broadcast to the relay at the given path.
+     * Announces a publisher at the given broadcast path.
      *
-     * The publisher's broadcast is registered with the relay. Call [Publisher.start] after
-     * this to begin encoding and sending frames.
+     * Configure the [Publisher] first, call this method to register the broadcast with the
+     * relay, then call [Publisher.start] to begin sending media or data.
      *
      * @param path Broadcast path on the relay (e.g. `"live/my-stream"`).
      * @param publisher A configured [Publisher] with at least one track added.
-     * @throws IllegalStateException if the session is not connected.
+     * @throws IllegalStateException if the session is not connected or already publishes at
+     *   the same [path].
      */
     fun publish(path: String, publisher: Publisher) {
         check(_state.value == State.Connected) { "Session must be connected before publishing" }
@@ -203,7 +214,10 @@ class Session(
     }
 
     /**
-     * Stop publishing at the given path. Calls [Publisher.stop] on the associated publisher.
+     * Stops publishing at the given path.
+     *
+     * If [path] is active, this calls [Publisher.stop] for the associated publisher. If the
+     * path is not active, this method does nothing.
      */
     fun unpublish(path: String) {
         val publisher = activePublishers.remove(path) ?: return
@@ -215,7 +229,8 @@ class Session(
      * Closes the session and releases all resources.
      *
      * Safe to call from any thread. No-op if the session is already [State.Closed].
-     * After this returns, [state] is [State.Closed] and the coroutine scope is cancelled.
+     * After this returns, [state] is [State.Closed] and background work owned by this
+     * session is cancelled.
      */
     fun close() {
         val wasConnected = _state.compareAndSet(State.Connected, State.Closed)
