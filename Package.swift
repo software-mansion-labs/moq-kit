@@ -6,14 +6,15 @@ import PackageDescription
 // flag so generated Swift bindings compile against the matching binary.
 let moqFFITarget: Target = Context.environment["MOQKIT_USE_LOCAL_FFI"] == "1"
     ? .binaryTarget(
-        name: "moqFFI",
-        path: "ios/Frameworks/moqffi.xcframework"
-    )
+            name: "moqFFI",
+            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.1.0/moqffi.xcframework.zip",
+            checksum: "4ae7c531e4a48b1f56561a1f54ef08564a93006da57816e0f82851ba1d09e1e2"
+        )
     : .binaryTarget(
-        name: "moqFFI",
-        url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.0.1-alpha5/moqffi.xcframework.zip",
-        checksum: "d74f5ec3fc740f3be804611a51cfeac1de3746637bc8783699dc8d94270b17d8"
-    )
+            name: "moqFFI",
+            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.1.0/moqffi.xcframework.zip",
+            checksum: "4ae7c531e4a48b1f56561a1f54ef08564a93006da57816e0f82851ba1d09e1e2"
+        )
 
 let package = Package(
     name: "MoQKit",
