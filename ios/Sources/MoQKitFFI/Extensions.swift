@@ -20,8 +20,8 @@ extension Container: CustomStringConvertible {
         switch self {
         case .legacy:
             return "legacy"
-        case .cmaf(let timescale, let trackId):
-            return "cmaf{timescale=\(timescale), trackId=\(trackId)}"
+        case .cmaf(let initData):
+            return "cmaf{initBytes=\(initData.count)}"
         }
     }
 }

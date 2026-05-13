@@ -3466,7 +3466,7 @@ public func FfiConverterTypeMoqVideo_lower(_ value: MoqVideo) -> RustBuffer {
 public enum Container: Equatable, Hashable {
     
     case legacy
-    case cmaf(timescale: UInt64, trackId: UInt32
+    case cmaf(`init`: Data
     )
 
 
@@ -3491,7 +3491,7 @@ public struct FfiConverterTypeContainer: FfiConverterRustBuffer {
         
         case 1: return .legacy
         
-        case 2: return .cmaf(timescale: try FfiConverterUInt64.read(from: &buf), trackId: try FfiConverterUInt32.read(from: &buf)
+        case 2: return .cmaf(init: try FfiConverterData.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3506,10 +3506,9 @@ public struct FfiConverterTypeContainer: FfiConverterRustBuffer {
             writeInt(&buf, Int32(1))
         
         
-        case let .cmaf(timescale,trackId):
+        case let .cmaf(`init`):
             writeInt(&buf, Int32(2))
-            FfiConverterUInt64.write(timescale, into: &buf)
-            FfiConverterUInt32.write(trackId, into: &buf)
+            FfiConverterData.write(`init`, into: &buf)
             
         }
     }
