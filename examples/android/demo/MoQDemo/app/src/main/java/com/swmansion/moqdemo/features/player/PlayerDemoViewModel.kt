@@ -40,7 +40,7 @@ class BroadcastEntry(catalog: Catalog) {
 }
 
 class PlayerDemoViewModel(application: Application) : AndroidViewModel(application) {
-    var relayUrl by mutableStateOf("https://cdn.moq.dev/demo")
+    var relayUrl by mutableStateOf("http://192.168.92.140:4443/anon")
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
