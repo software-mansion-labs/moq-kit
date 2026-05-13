@@ -201,8 +201,8 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     private fun startPlayer(entry: BroadcastEntry, preferredVideoName: String?) {
         val catalog = entry.catalog
         val initialVideo = preferredVideoTrack(catalog, preferredVideoName)
-        val initialAudioName = catalog.playableAudioTracks.firstOrNull()?.name
-        if (initialVideo == null && initialAudioName == null) {
+        val initialAudio = catalog.playableAudioTracks.firstOrNull()
+        if (initialVideo == null && initialAudio == null) {
             return
         }
 
@@ -210,7 +210,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
             Player(
                 catalog = catalog,
                 videoTrackName = initialVideo?.name,
-                audioTrackName = initialAudioName,
+                audioTrackName = initialAudio?.name,
                 targetLatencyMs = entry.targetLatencyMs,
                 parentScope = viewModelScope,
                 volume = entry.volume,
