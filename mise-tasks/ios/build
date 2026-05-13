@@ -12,8 +12,29 @@ mise run ios:ffi "$@"
 echo ""
 echo "==> Building Swift package..."
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+SWIFTPM_CACHE_DIR="$ROOT_DIR/.build/swiftpm-cache"
+SWIFTPM_CONFIG_DIR="$ROOT_DIR/.build/swiftpm-configuration"
+SWIFTPM_SECURITY_DIR="$ROOT_DIR/.build/swiftpm-security"
+CLANG_MODULE_CACHE_DIR="$ROOT_DIR/.build/clang-module-cache"
+XDG_CACHE_DIR="$ROOT_DIR/.build/xdg-cache"
+mkdir -p \
+    "$SWIFTPM_CACHE_DIR" \
+    "$SWIFTPM_CONFIG_DIR" \
+    "$SWIFTPM_SECURITY_DIR" \
+    "$CLANG_MODULE_CACHE_DIR" \
+    "$XDG_CACHE_DIR"
+
+MOQKIT_USE_LOCAL_FFI=1 \
+XDG_CACHE_HOME="$XDG_CACHE_DIR" \
+CLANG_MODULE_CACHE_PATH="$CLANG_MODULE_CACHE_DIR" \
 swift build \
     --package-path "$ROOT_DIR" \
+    --cache-path "$SWIFTPM_CACHE_DIR" \
+    --config-path "$SWIFTPM_CONFIG_DIR" \
+    --security-path "$SWIFTPM_SECURITY_DIR" \
+    --scratch-path "$ROOT_DIR/.build" \
+    --manifest-cache local \
+    --disable-sandbox \
     --sdk "$SDK" \
     --triple arm64-apple-ios16.0-simulator
 
