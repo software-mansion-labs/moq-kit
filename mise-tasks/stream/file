@@ -24,17 +24,10 @@
 #USAGE   AV1 is playback-only and depends on platform decoder hardware.
 #USAGE   """
 #USAGE }
-#USAGE flag "--passthrough" help="Publish media in passthrough mode without catalog conversion"
 set -euo pipefail
 
 INPUT=$(realpath "$usage_input")
 PIDS=()
-
-if [ "${usage_passthrough:-false}" = "true" ]; then
-  passthrough="--passthrough"
-else
-  passthrough=""
-fi
 
 publish_stream() {
   local name="$1"
@@ -44,7 +37,7 @@ publish_stream() {
     -i "$INPUT" \
     -c copy \
     -f mp4 -movflags cmaf+separate_moof+delay_moov+skip_trailer+frag_every_frame - |
-    cargo run --bin moq-cli -- publish --url "$usage_url" --name "$name" fmp4 $passthrough
+    cargo run --bin moq-cli -- publish --url "$usage_url" --name "$name" fmp4
 }
 
 cleanup() {
