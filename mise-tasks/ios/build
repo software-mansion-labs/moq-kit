@@ -2,12 +2,30 @@
 #MISE description="Build iOS FFI artifacts, then compile the MoQKit Swift package for the iOS simulator"
 #USAGE flag "--debug" help="Build Rust FFI artifacts with optimized debug symbols before compiling Swift"
 #USAGE flag "--macos" help="Also build the macOS arm64 FFI slice before compiling Swift"
+#USAGE flag "--local-ffi" help="Compile Swift against the generated local XCFramework instead of the release binary target"
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
+LOCAL_FFI="${usage_local_ffi:-false}"
+FFI_ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+  --local-ffi) LOCAL_FFI=true ;;
+  --debug | --macos) FFI_ARGS+=("$arg") ;;
+  *)
+    echo "Unknown argument: $arg" >&2
+    exit 1
+    ;;
+  esac
+done
+
+if [[ "$LOCAL_FFI" = "true" || "$LOCAL_FFI" = "1" || "${MOQKIT_USE_LOCAL_FFI:-}" = "1" ]]; then
+  export MOQKIT_USE_LOCAL_FFI=1
+fi
+
 echo "==> Building iOS FFI artifacts..."
-mise run ios:ffi "$@"
+mise run ios:ffi "${FFI_ARGS[@]}"
 
 echo ""
 echo "==> Building Swift package..."
@@ -24,7 +42,6 @@ mkdir -p \
     "$CLANG_MODULE_CACHE_DIR" \
     "$XDG_CACHE_DIR"
 
-MOQKIT_USE_LOCAL_FFI=1 \
 XDG_CACHE_HOME="$XDG_CACHE_DIR" \
 CLANG_MODULE_CACHE_PATH="$CLANG_MODULE_CACHE_DIR" \
 swift build \

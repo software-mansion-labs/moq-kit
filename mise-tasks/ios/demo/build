@@ -6,14 +6,31 @@ ROOT_DIR="$MISE_PROJECT_ROOT"
 PROJECT="$ROOT_DIR/examples/ios/demo/MoQDemo.xcodeproj"
 SCHEME="MoQDemo"
 DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData/MoQDemo"
+export MOQKIT_USE_LOCAL_FFI=1
+PACKAGE_CACHE_DIR="$ROOT_DIR/.build/xcode-package-cache"
+CLONED_PACKAGES_DIR="$ROOT_DIR/.build/SourcePackages"
+CLANG_MODULE_CACHE_DIR="$ROOT_DIR/.build/clang-module-cache"
+XDG_CACHE_DIR="$ROOT_DIR/.build/xdg-cache"
+XCODE_HOME="$ROOT_DIR/.build/xcode-home"
+mkdir -p \
+  "$PACKAGE_CACHE_DIR" \
+  "$CLONED_PACKAGES_DIR" \
+  "$CLANG_MODULE_CACHE_DIR" \
+  "$XDG_CACHE_DIR" \
+  "$XCODE_HOME"
+export CLANG_MODULE_CACHE_PATH="$CLANG_MODULE_CACHE_DIR"
+export XDG_CACHE_HOME="$XDG_CACHE_DIR"
 
 echo "==> Building $SCHEME for generic iOS simulator..."
+HOME="$XCODE_HOME" \
 xcodebuild -project "$PROJECT" \
   -scheme "$SCHEME" \
   -configuration Debug \
   -sdk iphonesimulator \
   -destination "generic/platform=iOS Simulator" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
+  -packageCachePath "$PACKAGE_CACHE_DIR" \
+  -clonedSourcePackagesDirPath "$CLONED_PACKAGES_DIR" \
   build
 
 echo ""

@@ -1,14 +1,24 @@
 // swift-tools-version: 5.9
 
+import Foundation
 import PackageDescription
 
-// Local build tasks regenerate ios/Frameworks/moqffi.xcframework and set this
-// flag so generated Swift bindings compile against the matching binary.
-let moqFFITarget: Target = Context.environment["MOQKIT_USE_LOCAL_FFI"] == "1"
+// Local checkouts, including the demo Xcode project, use the generated
+// XCFramework when present. Release consumers fall back to the remote binary
+// because ios/Frameworks/moqffi.xcframework is not tracked.
+let localMoqFFIPath = "ios/Frameworks/moqffi.xcframework"
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let localMoqFFIExists = FileManager.default.fileExists(
+    atPath: packageRoot.appendingPathComponent(localMoqFFIPath).path
+)
+let localMoqFFISetting = Context.environment["MOQKIT_USE_LOCAL_FFI"]
+let useLocalMoqFFI = localMoqFFISetting == "1"
+    || (localMoqFFISetting != "0" && localMoqFFIExists)
+
+let moqFFITarget: Target = useLocalMoqFFI
     ? .binaryTarget(
             name: "moqFFI",
-            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.1.0/moqffi.xcframework.zip",
-            checksum: "4ae7c531e4a48b1f56561a1f54ef08564a93006da57816e0f82851ba1d09e1e2"
+            path: localMoqFFIPath
         )
     : .binaryTarget(
             name: "moqFFI",
