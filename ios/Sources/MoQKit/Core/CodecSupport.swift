@@ -92,22 +92,15 @@ internal enum CodecSupport {
 
     static func videoPlayback(_ config: MoqVideo) -> CodecSupportResult {
         let codec = config.codec.lowercased()
-        let codecType: CMVideoCodecType
         if codec.hasPrefix("avc") {
-            codecType = kCMVideoCodecType_H264
+            return .supported
         } else if codec.hasPrefix("hev") || codec.hasPrefix("hvc") {
-            codecType = kCMVideoCodecType_HEVC
+            return .supported
         } else if codec.hasPrefix("av0") {
-            codecType = kCMVideoCodecType_AV1
+            return .supported
         } else {
             return .unsupported("Unsupported video codec: \(config.codec)")
         }
-
-        guard VTIsHardwareDecodeSupported(codecType) else {
-            return .unsupported("No hardware \(config.codec) video decoder is available")
-        }
-
-        return .supported
     }
 
     static func audioPlayback(_ config: MoqAudio) -> CodecSupportResult {
@@ -162,7 +155,7 @@ extension AudioEncoderConfig {
 }
 
 extension VideoTrackInfo {
-    /// Whether this track can be decoded on the current device.
+    /// Whether MoQKit's iOS playback path recognizes this track's video codec.
     public var isPlayable: Bool {
         CodecSupport.videoPlayback(rawConfig).isSupported
     }
@@ -186,7 +179,7 @@ extension AudioTrackInfo {
 }
 
 extension Catalog {
-    /// Video tracks from this catalog that can be decoded on the current device.
+    /// Video tracks from this catalog whose codec is recognized by MoQKit's renderer.
     ///
     /// This is the preferred source for playback track pickers and simple “play the first
     /// supported video track” selection logic.

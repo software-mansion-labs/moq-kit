@@ -128,12 +128,10 @@ The best-tested media path today is H.264 video with AAC or Opus audio.
 | Opus         | ✅          | ✅           | ✅              | ✅               |
 | AV1          | Not yet     | ✅\*         | Not yet         | ✅\*             |
 
-\* AV1 playback depends on the platform decoder and device hardware. On Apple devices,
+\* AV1 playback depends on the platform decoder available at runtime. On Apple devices,
 Apple documents AV1 playback for iPhone 15 Pro and says A17 Pro includes a dedicated AV1
-decoder. VideoToolbox also exposes runtime hardware decode checks through
-[`VTIsHardwareDecodeSupported`](https://developer.apple.com/documentation/videotoolbox).
-moq-kit does not currently expose AV1 publishing, and iOS AV1 playback should be treated
-as iPhone 15 Pro-class device support rather than broad Apple platform support.
+decoder. moq-kit does not currently expose AV1 publishing, and iOS AV1 playback should be
+treated as iPhone 15 Pro-class device support rather than broad Apple platform support.
 See Apple's [iPhone 15 Pro tech specs](https://support.apple.com/en-us/111829) and
 [A17 Pro announcement](https://www.apple.com/newsroom/2023/09/apple-unveils-iphone-15-pro-and-iphone-15-pro-max/)
 for more context.
@@ -335,7 +333,9 @@ lifecycleScope.launch {
 Use `VideoEncoderConfig.isSupported`, `AudioEncoderConfig.isSupported`, and the
 `supportedCodecs()` helpers before offering codec choices in UI. Use
 `Catalog.playableVideoTracks` and `Catalog.playableAudioTracks` when selecting tracks for
-playback. For app-defined messages or telemetry, add a `DataTrackEmitter` with
+playback. On iOS, video track playability is based on codec families recognized by
+MoQKit's renderer; actual decode/render support is still determined by AVFoundation at
+runtime. For app-defined messages or telemetry, add a `DataTrackEmitter` with
 `Publisher.addDataTrack` and read it with `Broadcast.subscribeTrack`.
 
 On iOS, camera and microphone publishing are app-owned integrations: your app handles the

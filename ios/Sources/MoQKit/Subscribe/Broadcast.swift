@@ -114,7 +114,7 @@ public struct AudioTrackInfo: TrackInfo, Sendable {
 ///
 /// Each value emitted by ``Broadcast/catalogs()`` replaces the previous metadata for the
 /// same broadcast path. Use ``Catalog/playableVideoTracks`` and
-/// ``Catalog/playableAudioTracks`` when you want tracks that the current device can play.
+/// ``Catalog/playableAudioTracks`` when you want tracks MoQKit can attempt to play.
 public struct Catalog: Sendable {
     /// The relay path that identifies this broadcast (e.g. `"live/game1"`).
     public let path: String

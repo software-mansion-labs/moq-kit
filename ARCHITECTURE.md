@@ -98,7 +98,7 @@ players, publishers, encoders, renderers, and capture sources must close or canc
 native and FFI resources deterministically.
 
 Codec support is platform-dependent. H.264/AAC/Opus are the best-tested paths; newer codecs
-may depend on device hardware and platform decoder support.
+may depend on platform decoder support and runtime availability.
 
 The repository has limited formal tests. Android has focused unit tests for playback helpers
 and selection behavior; the native demo apps act as integration tests for end-to-end relay,
