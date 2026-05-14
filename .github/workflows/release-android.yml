@@ -6,6 +6,9 @@ on:
       tag:
         required: true
         type: string
+      version:
+        required: false
+        type: string
     outputs:
       checksum:
         description: "SHA256 checksum of moqkit-{version}.aar"
@@ -27,10 +30,24 @@ jobs:
 
       - name: Derive version
         id: version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${{ inputs.tag }}"
-          VERSION="${VERSION#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="$INPUT_TAG"
+            VERSION="${VERSION#android/v}"
+            VERSION="${VERSION#v}"
+          fi
+
+          if [ -z "$VERSION" ]; then
+            echo "::error::Release version is empty"
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
