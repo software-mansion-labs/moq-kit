@@ -29,7 +29,9 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
                     captureSession.automaticallyConfiguresApplicationAudioSession = false
                     captureSession.beginConfiguration()
 
-                    guard let device = AVCaptureDevice.default(for: .audio) else {
+                    // Checking for empty uniqueID ensures that we didn't receive a mock device, i.e. the one created by iOS Simulator
+                    // Otherwise AVCaptureDeviceInput will crash the app
+                    guard let device = AVCaptureDevice.default(for: .audio), !device.uniqueID.isEmpty else {
                         throw SessionError.invalidConfiguration("No microphone available")
                     }
 
