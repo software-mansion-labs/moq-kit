@@ -8,24 +8,24 @@
 
 /* Begin PBXBuildFile section */
 		3B6C2D6B2F729D6D0087267B /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B6C2D6A2F729D6D0087267B /* VideoPlayerView.swift */; };
-		B10000000000000000000001 /* ChatDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* ChatDemoView.swift */; };
-		B10000000000000000000002 /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* ChatModels.swift */; };
-		B10000000000000000000003 /* ChatDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* ChatDemoViewModel.swift */; };
-		A10000000000000000000081 /* BoyModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000091 /* BoyModels.swift */; };
-		A10000000000000000000082 /* BoyDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000092 /* BoyDemoViewModel.swift */; };
-		A10000000000000000000083 /* BoyConnectionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000093 /* BoyConnectionCardView.swift */; };
-		A10000000000000000000084 /* BoyConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000094 /* BoyConsoleView.swift */; };
-		A10000000000000000000085 /* BoyControlPadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000095 /* BoyControlPadView.swift */; };
 		A10000000000000000000001 /* MoQDemoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000011 /* MoQDemoApp.swift */; };
 		A10000000000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000012 /* ContentView.swift */; };
-		A10000000000000000000008 /* BoyDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* BoyDemoView.swift */; };
-		A10000000000000000000009 /* PlayerDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* PlayerDemoView.swift */; };
-		A1000000000000000000000A /* BroadcastEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* BroadcastEntry.swift */; };
 		A10000000000000000000003 /* VideoLayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000013 /* VideoLayerView.swift */; };
 		A10000000000000000000004 /* MoQKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000072 /* MoQKit */; };
 		A10000000000000000000005 /* PlayerDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* PlayerDemoViewModel.swift */; };
 		A10000000000000000000006 /* ConnectionControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000015 /* ConnectionControlsView.swift */; };
 		A10000000000000000000007 /* SessionPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000016 /* SessionPlayerView.swift */; };
+		A10000000000000000000008 /* BoyDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* BoyDemoView.swift */; };
+		A10000000000000000000009 /* PlayerDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* PlayerDemoView.swift */; };
+		A1000000000000000000000A /* BroadcastEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* BroadcastEntry.swift */; };
+		A10000000000000000000081 /* BoyModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000091 /* BoyModels.swift */; };
+		A10000000000000000000082 /* BoyDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000092 /* BoyDemoViewModel.swift */; };
+		A10000000000000000000083 /* BoyConnectionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000093 /* BoyConnectionCardView.swift */; };
+		A10000000000000000000084 /* BoyConsoleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000094 /* BoyConsoleView.swift */; };
+		A10000000000000000000085 /* BoyControlPadView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000095 /* BoyControlPadView.swift */; };
+		B10000000000000000000001 /* ChatDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000011 /* ChatDemoView.swift */; };
+		B10000000000000000000002 /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000012 /* ChatModels.swift */; };
+		B10000000000000000000003 /* ChatDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000013 /* ChatDemoViewModel.swift */; };
 		C10000000000000000000001 /* PublisherDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000011 /* PublisherDemoView.swift */; };
 		C10000000000000000000002 /* PublisherViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000012 /* PublisherViewModel.swift */; };
 		C10000000000000000000003 /* PublisherConnectionControlsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000013 /* PublisherConnectionControlsView.swift */; };
@@ -36,7 +36,7 @@
 		C10000000000000000000008 /* ReplayKitBroadcastPickerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000018 /* ReplayKitBroadcastPickerButton.swift */; };
 		C10000000000000000000009 /* SampleHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000019 /* SampleHandler.swift */; };
 		C1000000000000000000000A /* MoQKit in Frameworks */ = {isa = PBXBuildFile; productRef = C10000000000000000000072 /* MoQKit */; };
-		C1000000000000000000000B /* MoQDemoBroadcastUpload.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C1000000000000000000001C /* MoQDemoBroadcastUpload.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		C1000000000000000000000B /* MoQDemoBroadcastUpload.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C1000000000000000000001C /* MoQDemoBroadcastUpload.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -50,39 +50,39 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		C100000000000000000000A7 /* Embed App Extensions */ = {
+		C100000000000000000000A7 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				C1000000000000000000000B /* MoQDemoBroadcastUpload.appex in Embed App Extensions */,
+				C1000000000000000000000B /* MoQDemoBroadcastUpload.appex in Embed Foundation Extensions */,
 			);
-			name = "Embed App Extensions";
+			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		3B6C2D6A2F729D6D0087267B /* VideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
-		B10000000000000000000011 /* ChatDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDemoView.swift; sourceTree = "<group>"; };
-		B10000000000000000000012 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
-		B10000000000000000000013 /* ChatDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDemoViewModel.swift; sourceTree = "<group>"; };
+		A10000000000000000000011 /* MoQDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoQDemoApp.swift; sourceTree = "<group>"; };
+		A10000000000000000000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A10000000000000000000013 /* VideoLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoLayerView.swift; sourceTree = "<group>"; };
+		A10000000000000000000014 /* PlayerDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerDemoViewModel.swift; sourceTree = "<group>"; };
+		A10000000000000000000015 /* ConnectionControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionControlsView.swift; sourceTree = "<group>"; };
+		A10000000000000000000016 /* SessionPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPlayerView.swift; sourceTree = "<group>"; };
+		A10000000000000000000017 /* BoyDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyDemoView.swift; sourceTree = "<group>"; };
+		A10000000000000000000018 /* PlayerDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerDemoView.swift; sourceTree = "<group>"; };
+		A10000000000000000000019 /* BroadcastEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastEntry.swift; sourceTree = "<group>"; };
+		A10000000000000000000032 /* MoQDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MoQDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000091 /* BoyModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000092 /* BoyDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyDemoViewModel.swift; sourceTree = "<group>"; };
 		A10000000000000000000093 /* BoyConnectionCardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyConnectionCardView.swift; sourceTree = "<group>"; };
 		A10000000000000000000094 /* BoyConsoleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyConsoleView.swift; sourceTree = "<group>"; };
 		A10000000000000000000095 /* BoyControlPadView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyControlPadView.swift; sourceTree = "<group>"; };
-		A10000000000000000000011 /* MoQDemoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoQDemoApp.swift; sourceTree = "<group>"; };
-		A10000000000000000000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		A10000000000000000000017 /* BoyDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyDemoView.swift; sourceTree = "<group>"; };
-		A10000000000000000000018 /* PlayerDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerDemoView.swift; sourceTree = "<group>"; };
-		A10000000000000000000019 /* BroadcastEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastEntry.swift; sourceTree = "<group>"; };
-		A10000000000000000000013 /* VideoLayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoLayerView.swift; sourceTree = "<group>"; };
-		A10000000000000000000014 /* PlayerDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerDemoViewModel.swift; sourceTree = "<group>"; };
-		A10000000000000000000015 /* ConnectionControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionControlsView.swift; sourceTree = "<group>"; };
-		A10000000000000000000016 /* SessionPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPlayerView.swift; sourceTree = "<group>"; };
-		A10000000000000000000032 /* MoQDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MoQDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000011 /* ChatDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDemoView.swift; sourceTree = "<group>"; };
+		B10000000000000000000012 /* ChatModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000013 /* ChatDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDemoViewModel.swift; sourceTree = "<group>"; };
 		C10000000000000000000011 /* PublisherDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublisherDemoView.swift; sourceTree = "<group>"; };
 		C10000000000000000000012 /* PublisherViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublisherViewModel.swift; sourceTree = "<group>"; };
 		C10000000000000000000013 /* PublisherConnectionControlsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublisherConnectionControlsView.swift; sourceTree = "<group>"; };
@@ -166,57 +166,6 @@
 			path = Features;
 			sourceTree = "<group>";
 		};
-		C10000000000000000000021 /* Publisher */ = {
-			isa = PBXGroup;
-			children = (
-				C10000000000000000000011 /* PublisherDemoView.swift */,
-				C10000000000000000000012 /* PublisherViewModel.swift */,
-				C10000000000000000000013 /* PublisherConnectionControlsView.swift */,
-				C10000000000000000000014 /* CameraPreviewView.swift */,
-				C10000000000000000000015 /* SourceConfigView.swift */,
-				C10000000000000000000016 /* PublishingStatusView.swift */,
-				C10000000000000000000017 /* CodecConfigView.swift */,
-				C10000000000000000000018 /* ReplayKitBroadcastPickerButton.swift */,
-			);
-			path = Publisher;
-			sourceTree = "<group>";
-		};
-		C10000000000000000000031 /* MoQDemoBroadcastUpload */ = {
-			isa = PBXGroup;
-			children = (
-				C10000000000000000000019 /* SampleHandler.swift */,
-				C1000000000000000000001A /* Info.plist */,
-				C1000000000000000000001B /* MoQDemoBroadcastUpload.entitlements */,
-			);
-			path = MoQDemoBroadcastUpload;
-			sourceTree = "<group>";
-		};
-		B10000000000000000000021 /* Chat */ = {
-			isa = PBXGroup;
-			children = (
-				B10000000000000000000011 /* ChatDemoView.swift */,
-				B10000000000000000000022 /* Models */,
-				B10000000000000000000023 /* ViewModels */,
-			);
-			path = Chat;
-			sourceTree = "<group>";
-		};
-		B10000000000000000000022 /* Models */ = {
-			isa = PBXGroup;
-			children = (
-				B10000000000000000000012 /* ChatModels.swift */,
-			);
-			path = Models;
-			sourceTree = "<group>";
-		};
-		B10000000000000000000023 /* ViewModels */ = {
-			isa = PBXGroup;
-			children = (
-				B10000000000000000000013 /* ChatDemoViewModel.swift */,
-			);
-			path = ViewModels;
-			sourceTree = "<group>";
-		};
 		A10000000000000000000026 /* Boy */ = {
 			isa = PBXGroup;
 			children = (
@@ -226,32 +175,6 @@
 				A10000000000000000000088 /* Views */,
 			);
 			path = Boy;
-			sourceTree = "<group>";
-		};
-		A10000000000000000000086 /* Models */ = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000091 /* BoyModels.swift */,
-			);
-			path = Models;
-			sourceTree = "<group>";
-		};
-		A10000000000000000000087 /* ViewModels */ = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000092 /* BoyDemoViewModel.swift */,
-			);
-			path = ViewModels;
-			sourceTree = "<group>";
-		};
-		A10000000000000000000088 /* Views */ = {
-			isa = PBXGroup;
-			children = (
-				A10000000000000000000093 /* BoyConnectionCardView.swift */,
-				A10000000000000000000094 /* BoyConsoleView.swift */,
-				A10000000000000000000095 /* BoyControlPadView.swift */,
-			);
-			path = Views;
 			sourceTree = "<group>";
 		};
 		A10000000000000000000027 /* Player */ = {
@@ -292,6 +215,83 @@
 			path = Views;
 			sourceTree = "<group>";
 		};
+		A10000000000000000000086 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000091 /* BoyModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000087 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000092 /* BoyDemoViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		A10000000000000000000088 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000093 /* BoyConnectionCardView.swift */,
+				A10000000000000000000094 /* BoyConsoleView.swift */,
+				A10000000000000000000095 /* BoyControlPadView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000021 /* Chat */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000011 /* ChatDemoView.swift */,
+				B10000000000000000000022 /* Models */,
+				B10000000000000000000023 /* ViewModels */,
+			);
+			path = Chat;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000022 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000012 /* ChatModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		B10000000000000000000023 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				B10000000000000000000013 /* ChatDemoViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		C10000000000000000000021 /* Publisher */ = {
+			isa = PBXGroup;
+			children = (
+				C10000000000000000000011 /* PublisherDemoView.swift */,
+				C10000000000000000000012 /* PublisherViewModel.swift */,
+				C10000000000000000000013 /* PublisherConnectionControlsView.swift */,
+				C10000000000000000000014 /* CameraPreviewView.swift */,
+				C10000000000000000000015 /* SourceConfigView.swift */,
+				C10000000000000000000016 /* PublishingStatusView.swift */,
+				C10000000000000000000017 /* CodecConfigView.swift */,
+				C10000000000000000000018 /* ReplayKitBroadcastPickerButton.swift */,
+			);
+			path = Publisher;
+			sourceTree = "<group>";
+		};
+		C10000000000000000000031 /* MoQDemoBroadcastUpload */ = {
+			isa = PBXGroup;
+			children = (
+				C10000000000000000000019 /* SampleHandler.swift */,
+				C1000000000000000000001A /* Info.plist */,
+				C1000000000000000000001B /* MoQDemoBroadcastUpload.entitlements */,
+			);
+			path = MoQDemoBroadcastUpload;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -302,7 +302,7 @@
 				A10000000000000000000041 /* Sources */,
 				A10000000000000000000042 /* Frameworks */,
 				A10000000000000000000043 /* Resources */,
-				C100000000000000000000A7 /* Embed App Extensions */,
+				C100000000000000000000A7 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
@@ -345,7 +345,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1540;
-				LastUpgradeCheck = 1540;
+				LastUpgradeCheck = 2650;
 			};
 			buildConfigurationList = A10000000000000000000055 /* Build configuration list for PBXProject "MoQDemo" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -357,7 +357,7 @@
 			);
 			mainGroup = A10000000000000000000021;
 			packageReferences = (
-				A10000000000000000000071 /* XCLocalSwiftPackageReference "moq-kit" */,
+				A10000000000000000000071 /* XCLocalSwiftPackageReference "../../.." */,
 			);
 			productRefGroup = A10000000000000000000023 /* Products */;
 			projectDirPath = "";
@@ -475,6 +475,7 @@
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -494,6 +495,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -535,6 +537,7 @@
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -546,6 +549,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -558,7 +562,7 @@
 				CODE_SIGN_ENTITLEMENTS = MoQDemo/MoQDemo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = YGRG6VYGY2;
+				DEVELOPMENT_TEAM = J5FM626PE2;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "MoQ Demo";
@@ -571,7 +575,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemo;
+				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemoapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -586,7 +590,7 @@
 				CODE_SIGN_ENTITLEMENTS = MoQDemo/MoQDemo.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = YGRG6VYGY2;
+				DEVELOPMENT_TEAM = J5FM626PE2;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "MoQ Demo";
@@ -599,7 +603,7 @@
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemo;
+				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemoapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
@@ -614,13 +618,13 @@
 				CODE_SIGN_ENTITLEMENTS = MoQDemoBroadcastUpload/MoQDemoBroadcastUpload.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = YGRG6VYGY2;
+				DEVELOPMENT_TEAM = J5FM626PE2;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MoQDemoBroadcastUpload/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemo.broadcastupload;
+				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemoapp.broadcastuploadapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
@@ -634,13 +638,13 @@
 				CODE_SIGN_ENTITLEMENTS = MoQDemoBroadcastUpload/MoQDemoBroadcastUpload.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = YGRG6VYGY2;
+				DEVELOPMENT_TEAM = J5FM626PE2;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MoQDemoBroadcastUpload/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.6;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemo.broadcastupload;
+				PRODUCT_BUNDLE_IDENTIFIER = com.swmansion.moqdemoapp.broadcastuploadapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 5.0;
@@ -680,7 +684,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		A10000000000000000000071 /* XCLocalSwiftPackageReference "moq-kit" */ = {
+		A10000000000000000000071 /* XCLocalSwiftPackageReference "../../.." */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../../..;
 		};
@@ -689,12 +693,12 @@
 /* Begin XCSwiftPackageProductDependency section */
 		A10000000000000000000072 /* MoQKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000071 /* XCLocalSwiftPackageReference "moq-kit" */;
+			package = A10000000000000000000071 /* XCLocalSwiftPackageReference "../../.." */;
 			productName = MoQKit;
 		};
 		C10000000000000000000072 /* MoQKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A10000000000000000000071 /* XCLocalSwiftPackageReference "moq-kit" */;
+			package = A10000000000000000000071 /* XCLocalSwiftPackageReference "../../.." */;
 			productName = MoQKit;
 		};
 /* End XCSwiftPackageProductDependency section */
