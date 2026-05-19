@@ -18,12 +18,13 @@ let useLocalMoqFFI = localMoqFFISetting == "1"
 let moqFFITarget: Target = useLocalMoqFFI
     ? .binaryTarget(
             name: "moqFFI",
-            path: localMoqFFIPath
+            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/ios/v1.0.1/moqffi.xcframework.zip",
+            checksum: "36feab14d516c8dde5d320a48925924bf88702da17bc26f5f1062d9d4869c65c"
         )
     : .binaryTarget(
             name: "moqFFI",
-            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/v0.1.0/moqffi.xcframework.zip",
-            checksum: "4ae7c531e4a48b1f56561a1f54ef08564a93006da57816e0f82851ba1d09e1e2"
+            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/ios/v1.0.1/moqffi.xcframework.zip",
+            checksum: "36feab14d516c8dde5d320a48925924bf88702da17bc26f5f1062d9d4869c65c"
         )
 
 let package = Package(
