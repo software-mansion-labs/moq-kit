@@ -2195,6 +2195,21 @@ public protocol MoqMediaProducerProtocol: AnyObject, Sendable {
     func finish() throws 
     
     /**
+     * Return the name of the media track.
+     */
+    func name() throws  -> String
+    
+    /**
+     * Wait until this media track has no active consumers.
+     */
+    func unused() async throws 
+    
+    /**
+     * Wait until this media track has at least one active consumer.
+     */
+    func used() async throws 
+    
+    /**
      * Write a frame to this media track.
      *
      * `timestamp_us` is the presentation timestamp in microseconds.
@@ -2263,6 +2278,57 @@ open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift)
             self.uniffiCloneHandle(),$0
     )
 }
+}
+    
+    /**
+     * Return the name of the media track.
+     */
+open func name()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqmediaproducer_name(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Wait until this media track has no active consumers.
+     */
+open func unused()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqmediaproducer_unused(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_void,
+            completeFunc: ffi_moq_ffi_rust_future_complete_void,
+            freeFunc: ffi_moq_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+    /**
+     * Wait until this media track has at least one active consumer.
+     */
+open func used()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqmediaproducer_used(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_void,
+            completeFunc: ffi_moq_ffi_rust_future_complete_void,
+            freeFunc: ffi_moq_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
 }
     
     /**
@@ -2986,6 +3052,21 @@ public protocol MoqTrackProducerProtocol: AnyObject, Sendable {
     func finish() throws 
     
     /**
+     * Return the name of this track.
+     */
+    func name() throws  -> String
+    
+    /**
+     * Wait until this track has no active consumers.
+     */
+    func unused() async throws 
+    
+    /**
+     * Wait until this track has at least one active consumer.
+     */
+    func used() async throws 
+    
+    /**
      * Convenience: write a single-frame group in one call — the same pattern
      * used by moq-boy's status/command tracks.
      */
@@ -3074,6 +3155,57 @@ open func finish()throws   {try rustCallWithError(FfiConverterTypeMoqError_lift)
             self.uniffiCloneHandle(),$0
     )
 }
+}
+    
+    /**
+     * Return the name of this track.
+     */
+open func name()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMoqError_lift) {
+    uniffi_moq_ffi_fn_method_moqtrackproducer_name(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+    /**
+     * Wait until this track has no active consumers.
+     */
+open func unused()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqtrackproducer_unused(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_void,
+            completeFunc: ffi_moq_ffi_rust_future_complete_void,
+            freeFunc: ffi_moq_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
+}
+    
+    /**
+     * Wait until this track has at least one active consumer.
+     */
+open func used()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_moq_ffi_fn_method_moqtrackproducer_used(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_moq_ffi_rust_future_poll_void,
+            completeFunc: ffi_moq_ffi_rust_future_complete_void,
+            freeFunc: ffi_moq_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeMoqError_lift
+        )
 }
     
     /**
@@ -4171,6 +4303,15 @@ private let initializationResult: InitializationResult = {
     if (uniffi_moq_ffi_checksum_method_moqmediaproducer_finish() != 13508) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_moq_ffi_checksum_method_moqmediaproducer_name() != 45039) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqmediaproducer_unused() != 45236) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqmediaproducer_used() != 49162) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_moq_ffi_checksum_method_moqmediaproducer_write_frame() != 4813) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4181,6 +4322,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqtrackproducer_finish() != 52719) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackproducer_name() != 18320) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackproducer_unused() != 40969) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_moq_ffi_checksum_method_moqtrackproducer_used() != 20539) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_moq_ffi_checksum_method_moqtrackproducer_write_frame() != 62709) {
