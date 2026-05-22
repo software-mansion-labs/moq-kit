@@ -1,5 +1,11 @@
 import Foundation
 
+private let playbackStatsWindow: Duration = .seconds(1)
+private let playbackStatsMinWindowSpan: Duration = .milliseconds(100)
+private let playbackStatsArrivalGapFactor: Double = 2.0
+private let playbackStatsBurstFactor: Double = 0.3
+private let playbackStatsDiscontinuityThreshold: Duration = .seconds(2)
+
 struct PlaybackStartContext: Sendable {
     let kind: MediaFrameKind
     let trackName: String
@@ -18,36 +24,40 @@ struct PlaybackStartContext: Sendable {
 /// the audio render callback may call into the tracker concurrently. The audio render
 /// callback uses a non-locking probe (`hasPendingAudioStart`) so it pays the lock cost
 /// only while a first-sample handoff is actually pending.
-final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
+typealias PlaybackStatsTracker = ClockedPlaybackStatsTracker<ContinuousClock>
+
+final class ClockedPlaybackStatsTracker<C: Clock>: MediaFrameObserver,
+    @unchecked Sendable
+where C.Instant: Sendable, C.Instant.Duration == Duration {
     // MARK: - Internal state shapes
 
     private struct TrackStallState: Sendable {
-        var readyAt: ContinuousClock.Instant?
-        var activeAt: ContinuousClock.Instant?
+        var readyAt: C.Instant?
+        var activeAt: C.Instant?
         var count: UInt64 = 0
         var duration: Duration = .zero
         var active: Bool = false
 
-        mutating func markReady(at instant: ContinuousClock.Instant) {
+        mutating func markReady(at instant: C.Instant) {
             if readyAt == nil {
                 readyAt = instant
             }
         }
 
-        mutating func start(at instant: ContinuousClock.Instant) {
+        mutating func start(at instant: C.Instant) {
             markReady(at: instant)
             guard activeAt == nil else { return }
             activeAt = instant
             count += 1
         }
 
-        mutating func end(at instant: ContinuousClock.Instant) {
+        mutating func end(at instant: C.Instant) {
             guard let startedAt = activeAt else { return }
             duration += startedAt.duration(to: instant)
             activeAt = nil
         }
 
-        func stats(at instant: ContinuousClock.Instant) -> StallStats? {
+        func stats(at instant: C.Instant) -> StallStats? {
             guard let readyAt else { return nil }
 
             var total = duration
@@ -69,10 +79,10 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private struct TrackSwitchState: Sendable {
         private struct Attempt: Sendable {
             var trackName: String?
-            var startedAt: ContinuousClock.Instant
-            var readyAt: ContinuousClock.Instant?
-            var playingAt: ContinuousClock.Instant?
-            var activeAt: ContinuousClock.Instant?
+            var startedAt: C.Instant
+            var readyAt: C.Instant?
+            var playingAt: C.Instant?
+            var activeAt: C.Instant?
             var errorMessage: String?
         }
 
@@ -81,7 +91,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         var requestedCount: UInt64 = 0
         var completedCount: UInt64 = 0
 
-        mutating func start(trackName: String?, at instant: ContinuousClock.Instant) {
+        mutating func start(trackName: String?, at instant: C.Instant) {
             requestedCount += 1
             latestAttempt = Attempt(
                 trackName: trackName,
@@ -90,19 +100,19 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
             didCountLatestCompletion = false
         }
 
-        mutating func markReady(at instant: ContinuousClock.Instant) {
+        mutating func markReady(at instant: C.Instant) {
             update { attempt in
                 attempt.readyAt = attempt.readyAt ?? instant
             }
         }
 
-        mutating func markPlaying(at instant: ContinuousClock.Instant) {
+        mutating func markPlaying(at instant: C.Instant) {
             update { attempt in
                 attempt.playingAt = attempt.playingAt ?? instant
             }
         }
 
-        mutating func markActive(at instant: ContinuousClock.Instant) {
+        mutating func markActive(at instant: C.Instant) {
             update { attempt in
                 attempt.activeAt = attempt.activeAt ?? instant
             }
@@ -144,8 +154,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         }
 
         private func elapsed(
-            from start: ContinuousClock.Instant?,
-            to end: ContinuousClock.Instant?
+            from start: C.Instant?,
+            to end: C.Instant?
         ) -> Duration? {
             guard let start, let end else { return nil }
             return start.duration(to: end)
@@ -200,9 +210,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     private let lock = UnfairLock()
     private let wallClock: any PlaybackWallClock
+    private let clock: C
     private let events: PlayerEventHub
-    private let instantOrigin: ContinuousClock.Instant
-    private let wallClockOriginNs: Int64
 
     private var rebufferKind: MediaFrameKind?
     private var hasPlaybackStartEmitted = false
@@ -226,7 +235,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private var videoFramesDropped: UInt64 = 0
 
     // Stalls / TTFF / switches
-    private var playbackRequestedAt: ContinuousClock.Instant?
+    private var playbackRequestedAt: C.Instant?
     private var timeToFirst = TimeToFirstPlaybackState()
     private var audioStalls = TrackStallState()
     private var videoStalls = TrackStallState()
@@ -244,20 +253,14 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private var latestSamples: PlaybackStats = .empty
     private var hasPublishedSample = false
 
-    private static let windowNs: UInt64 = 1_000_000_000
-    private static let minWindowSpanNs: UInt64 = 100_000_000
-    private static let arrivalGapFactor: Double = 2.0
-    private static let burstFactor: Double = 0.3
-    private static let discontinuityThresholdUs: UInt64 = 2_000_000
-
     init(
         events: PlayerEventHub,
+        clock: C,
         wallClock: any PlaybackWallClock = HostPlaybackWallClock()
     ) {
         self.events = events
+        self.clock = clock
         self.wallClock = wallClock
-        self.instantOrigin = ContinuousClock().now
-        self.wallClockOriginNs = wallClock.now(in: .ns)
     }
 
     // MARK: - Session lifecycle
@@ -326,9 +329,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     func emitSubscribeStart(kind: MediaFrameKind, trackName: String, trackEpoch: TrackEpoch) {
         events.emit(
-            .trackSubscribeStart,
-            attributes: PlayerEventAttributes.track(
-                kind: kind, trackName: trackName, trackEpoch: trackEpoch
+            .trackSubscribeStart(
+                trackEvent(kind: kind, trackName: trackName, trackEpoch: trackEpoch)
             )
         )
         let instant = nowInstant()
@@ -343,9 +345,11 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     func emitSubscribeError(kind: MediaFrameKind, trackName: String, message: String, trackEpoch: TrackEpoch) {
         events.emit(
-            .trackSubscribeError,
-            attributes: PlayerEventAttributes.track(
-                kind: kind, trackName: trackName, message: message, trackEpoch: trackEpoch
+            .trackSubscribeError(
+                PlayerTrackErrorEvent(
+                    track: trackEvent(kind: kind, trackName: trackName, trackEpoch: trackEpoch),
+                    message: message
+                )
             )
         )
         guard trackEpoch > 1 else { return }
@@ -359,9 +363,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     func emitSubscribeEnd(kind: MediaFrameKind, trackName: String, trackEpoch: TrackEpoch) {
         events.emit(
-            .trackSubscribeEnd,
-            attributes: PlayerEventAttributes.track(
-                kind: kind, trackName: trackName, trackEpoch: trackEpoch
+            .trackSubscribeEnd(
+                trackEvent(kind: kind, trackName: trackName, trackEpoch: trackEpoch)
             )
         )
     }
@@ -378,15 +381,14 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         payloadBytes: Int
     ) {
         events.emit(
-            .trackReady,
-            attributes: PlayerEventAttributes.track(
-                kind: kind,
-                trackName: trackName,
-                trackEpoch: trackEpoch,
-                sourceTimestampUs: sourceTimestampUs,
-                targetBuffering: targetBuffering,
-                keyframe: keyframe,
-                payloadBytes: payloadBytes
+            .trackReady(
+                PlayerTrackReadyEvent(
+                    track: trackEvent(kind: kind, trackName: trackName, trackEpoch: trackEpoch),
+                    sourceTimestampUs: sourceTimestampUs,
+                    targetBuffering: targetBuffering,
+                    keyframe: keyframe,
+                    payloadBytes: UInt64(max(0, payloadBytes))
+                )
             )
         )
         let instant = nowInstant()
@@ -413,9 +415,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     /// and by the video renderer when it cuts over to the pending track.
     func emitTrackSwitch(kind: MediaFrameKind, trackName: String, trackEpoch: TrackEpoch) {
         events.emit(
-            .trackSwitch,
-            attributes: PlayerEventAttributes.track(
-                kind: kind, trackName: trackName, trackEpoch: trackEpoch
+            .trackSwitch(
+                trackEvent(kind: kind, trackName: trackName, trackEpoch: trackEpoch)
             )
         )
         let instant = nowInstant()
@@ -429,22 +430,19 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     func emitDecodeError(kind: MediaFrameKind, trackName: String, message: String) {
         events.emit(
-            .decodeError,
-            attributes: PlayerEventAttributes.track(kind: kind, trackName: trackName, message: message)
+            .decodeError(
+                PlayerTrackErrorEvent(
+                    track: trackEvent(kind: kind, trackName: trackName),
+                    message: message
+                )
+            )
         )
     }
 
     /// Emits `.playbackEnd`. Player calls this on permanent teardown; the pipeline
     /// coordinator task calls this when all upstream tracks end naturally.
     func emitPlaybackEnd(reason: String? = nil) {
-        var attributes: [String: PlayerEventValue] = [:]
-        if let reason { attributes["reason"] = .string(reason) }
-        events.emit(.playbackEnd, attributes: attributes)
-    }
-
-    /// Emits a player-level event (lifecycle events emitted from `Player`).
-    func emit(_ name: PlayerEventName, attributes: [String: PlayerEventValue] = [:]) {
-        events.emit(name, attributes: attributes)
+        events.emit(.playbackEnd(PlayerPlaybackEndEvent(reason: reason)))
     }
 
     /// Subscribe to all events.
@@ -462,7 +460,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     func videoStallEnded() { reportStall(kind: .video, stalled: false) }
 
     private func reportStall(kind: MediaFrameKind, stalled: Bool) {
-        let outcome = lock.withLock { () -> (trackEvent: PlayerEventName, rebufferEvent: PlayerEventName?, attributes: [String: PlayerEventValue])? in
+        let outcome = lock.withLock { () -> (trackEvent: PlayerEventType, rebufferEvent: PlayerEventType?)? in
             let wasStalled: Bool
             switch kind {
             case .audio: wasStalled = audioStalls.active
@@ -480,22 +478,22 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
                 stalled ? videoStalls.start(at: instant) : videoStalls.end(at: instant)
             }
 
-            var rebufferEvent: PlayerEventName?
+            let track = trackEvent(kind: kind)
+            var rebufferEvent: PlayerEventType?
             if kind == rebufferKind, isRebuffering != stalled {
                 isRebuffering = stalled
-                rebufferEvent = stalled ? .rebufferStart : .rebufferEnd
+                rebufferEvent = stalled ? .rebufferStart(track) : .rebufferEnd(track)
             }
             return (
-                stalled ? .trackStallStart : .trackStallEnd,
-                rebufferEvent,
-                PlayerEventAttributes.track(kind: kind)
+                stalled ? .trackStallStart(track) : .trackStallEnd(track),
+                rebufferEvent
             )
         }
 
         guard let outcome else { return }
-        events.emit(outcome.trackEvent, attributes: outcome.attributes)
+        events.emit(outcome.trackEvent)
         if let rebufferEvent = outcome.rebufferEvent {
-            events.emit(rebufferEvent, attributes: outcome.attributes)
+            events.emit(rebufferEvent)
         }
     }
 
@@ -526,19 +524,23 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         }
     }
 
+    var hasExpectedAudioPlaybackStart: Bool {
+        hasPendingAudioStart
+    }
+
     /// **Test-only.** Production audio rendering MUST emit playback-started
     /// through `AudioRenderEventBridge` to keep the realtime audio
     /// thread free of locks, Obj-C calls, and listener fan-out. Do not call
     /// this from non-test code.
     func audioPlaybackStartedIfExpected(
-        renderedTimestampUs: UInt64,
-        outputHostTime: UInt64?,
-        outputPresentationLatencyMs: Double?
+        timestampUs: UInt64,
+        hostTime: UInt64?,
+        outputPresentationLatency: Duration?
     ) {
         guard hasPendingAudioStart else { return }
         let context = lock.withLock { () -> PlaybackStartContext? in
             guard let context = pendingAudioPlaybackStart,
-                  renderedTimestampUs >= context.sourceTimestampUs
+                  timestampUs >= context.sourceTimestampUs
             else { return nil }
             pendingAudioPlaybackStart = nil
             hasPendingAudioStart = false
@@ -548,31 +550,32 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
         audioPlaybackStarted(
             context: context,
-            renderedTimestampUs: renderedTimestampUs,
-            outputHostTime: outputHostTime,
-            outputPresentationLatencyMs: outputPresentationLatencyMs
+            timestampUs: timestampUs,
+            hostTime: hostTime,
+            outputPresentationLatency: outputPresentationLatency
         )
     }
 
     /// Emits the audio first-frame playback-started event from the bridge queue.
     ///
-    /// `renderedTimestampUs` and `outputHostTime` are sampled precisely on the audio render
+    /// `timestampUs` and `hostTime` are sampled precisely on the audio render
     /// thread, but the event emission itself is deferred to `AudioRenderEventBridge`.
     func audioPlaybackStarted(
         context: PlaybackStartContext,
-        renderedTimestampUs: UInt64,
-        outputHostTime: UInt64?,
-        outputPresentationLatencyMs: Double?
+        timestampUs: UInt64,
+        hostTime: UInt64?,
+        outputPresentationLatency: Duration?
     ) {
-        emitTrackPlaying(context: context) { attributes in
-            attributes["renderedTimestampUs"] = .uint(renderedTimestampUs)
-            if let outputHostTime {
-                attributes["outputHostTime"] = .uint(outputHostTime)
-            }
-            if let outputPresentationLatencyMs {
-                attributes["outputPresentationLatencyMs"] = .double(outputPresentationLatencyMs)
-            }
-        }
+        emitTrackPlaying(
+            context: context,
+            output: .audio(
+                PlayerAudioPlaybackOutput(
+                    timestampUs: timestampUs,
+                    hostTime: hostTime,
+                    outputPresentationLatency: outputPresentationLatency
+                )
+            )
+        )
     }
 
     /// Called from the video display-link observer on first visible frame.
@@ -580,28 +583,35 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         context: PlaybackStartContext,
         presentationTimeUs: UInt64,
         clockTimeUs: UInt64,
-        bufferMs: Double
+        buffer: Duration
     ) {
-        emitTrackPlaying(context: context) { attributes in
-            attributes["presentationTimeUs"] = .uint(presentationTimeUs)
-            attributes["clockTimeUs"] = .uint(clockTimeUs)
-            attributes["bufferMs"] = .double(bufferMs)
-        }
+        emitTrackPlaying(
+            context: context,
+            output: .video(
+                PlayerVideoPlaybackOutput(
+                    presentationTimeUs: presentationTimeUs,
+                    clockTimeUs: clockTimeUs,
+                    buffer: buffer
+                )
+            )
+        )
     }
 
     private func emitTrackPlaying(
         context: PlaybackStartContext,
-        update: (inout [String: PlayerEventValue]) -> Void
+        output: PlayerTrackPlaybackOutput
     ) {
-        var attributes = PlayerEventAttributes.track(
-            kind: context.kind,
-            trackName: context.trackName,
-            trackEpoch: context.trackEpoch,
+        let event = PlayerTrackPlayingEvent(
+            track: trackEvent(
+                kind: context.kind,
+                trackName: context.trackName,
+                trackEpoch: context.trackEpoch
+            ),
             sourceTimestampUs: context.sourceTimestampUs,
-            targetBuffering: context.targetBuffering
+            targetBuffering: context.targetBuffering,
+            output: output
         )
-        update(&attributes)
-        events.emit(.trackPlaying, attributes: attributes)
+        events.emit(.trackPlaying(event))
         let instant = nowInstant()
 
         // Update TTFF + switch milestones, then decide whether playbackStart should
@@ -635,7 +645,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
             return true
         }
         if shouldEmitPlaybackStart {
-            events.emit(.playbackStart, attributes: attributes)
+            events.emit(.playbackStart(event))
         }
     }
 
@@ -796,7 +806,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         videoLatency: Duration?,
         audioRingBuffer: Duration?,
         videoJitterBuffer: Duration?,
-        instant: ContinuousClock.Instant
+        instant: C.Instant
     ) -> PlaybackStats {
         let now = nowNs()
         let audioBitrateKbps = computeBitrateKbps(
@@ -847,8 +857,9 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
             let isOutOfOrder = frame.timestampUs < previousPtsUs
             let ptsDeltaUs = isOutOfOrder ? 0 : frame.timestampUs - previousPtsUs
 
+            let ptsDelta = Duration.microsecondsClamped(ptsDeltaUs)
             if !isOutOfOrder,
-                ptsDeltaUs <= Self.discontinuityThresholdUs,
+                ptsDelta <= playbackStatsDiscontinuityThreshold,
                 let wallDeltaNs = Self.elapsedNs(from: previousWallNs, to: now)
             {
                 let wallDelta = Duration.nanosecondsClamped(wallDeltaNs)
@@ -856,12 +867,12 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
                 state.intervalTotal += wallDelta
                 pruneArrivalIntervals(state: &state, now: now)
 
-                let ptsDeltaMs = Double(ptsDeltaUs) / 1_000.0
+                let ptsDeltaMs = ptsDelta.milliseconds
                 if ptsDeltaMs > 0 {
                     let wallDeltaMs = wallDelta.milliseconds
-                    if wallDeltaMs > ptsDeltaMs * Self.arrivalGapFactor {
+                    if wallDeltaMs > ptsDeltaMs * playbackStatsArrivalGapFactor {
                         state.slowArrivalCount += 1
-                    } else if wallDeltaMs < ptsDeltaMs * Self.burstFactor {
+                    } else if wallDeltaMs < ptsDeltaMs * playbackStatsBurstFactor {
                         state.fastArrivalCount += 1
                     }
                 }
@@ -875,7 +886,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private func pruneWindow(
         entries: inout [(ns: UInt64, bytes: Int)], total: inout Int, now: UInt64
     ) {
-        let cutoff = now >= Self.windowNs ? now - Self.windowNs : 0
+        let window = playbackStatsWindow.nanosecondsUInt64Clamped
+        let cutoff = now >= window ? now - window : 0
         while let first = entries.first, first.ns < cutoff {
             total -= first.bytes
             entries.removeFirst()
@@ -883,14 +895,16 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     }
 
     private func pruneTimestamps(entries: inout [UInt64], now: UInt64) {
-        let cutoff = now >= Self.windowNs ? now - Self.windowNs : 0
+        let window = playbackStatsWindow.nanosecondsUInt64Clamped
+        let cutoff = now >= window ? now - window : 0
         while let first = entries.first, first < cutoff {
             entries.removeFirst()
         }
     }
 
     private func pruneArrivalIntervals(state: inout FrameArrivalState, now: UInt64) {
-        let cutoff = now >= Self.windowNs ? now - Self.windowNs : 0
+        let window = playbackStatsWindow.nanosecondsUInt64Clamped
+        let cutoff = now >= window ? now - window : 0
         while let first = state.intervalsWindow.first, first.ns < cutoff {
             state.intervalTotal -= first.duration
             state.intervalsWindow.removeFirst()
@@ -902,16 +916,18 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     {
         guard let first = entries.first else { return nil }
         guard let spanNs = Self.elapsedNs(from: first.ns, to: now) else { return nil }
-        guard spanNs > Self.minWindowSpanNs else { return nil }
-        let spanSec = Double(spanNs) / 1_000_000_000.0
+        let span = Duration.nanosecondsClamped(spanNs)
+        guard span > playbackStatsMinWindowSpan else { return nil }
+        let spanSec = span.milliseconds / 1_000.0
         return Double(total) * 8.0 / 1000.0 / spanSec
     }
 
     private func computeFps(entries: [UInt64], now: UInt64) -> Double? {
         guard entries.count >= 2, let first = entries.first else { return nil }
         guard let spanNs = Self.elapsedNs(from: first, to: now) else { return nil }
-        guard spanNs > Self.minWindowSpanNs else { return nil }
-        let spanSec = Double(spanNs) / 1_000_000_000.0
+        let span = Duration.nanosecondsClamped(spanNs)
+        guard span > playbackStatsMinWindowSpan else { return nil }
+        let spanSec = span.milliseconds / 1_000.0
         return Double(entries.count) / spanSec
     }
 
@@ -943,6 +959,18 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         return max(lhs, rhs)
     }
 
+    private func trackEvent(
+        kind: MediaFrameKind,
+        trackName: String? = nil,
+        trackEpoch: TrackEpoch = .zero
+    ) -> PlayerTrackEvent {
+        PlayerTrackEvent(
+            kind: kind.playerTrackKind,
+            trackName: trackName,
+            epoch: trackEpoch
+        )
+    }
+
     private static func elapsedNs(from start: UInt64, to end: UInt64) -> UInt64? {
         let elapsed = end.subtractingReportingOverflow(start)
         return elapsed.overflow ? nil : elapsed.partialValue
@@ -952,16 +980,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         UInt64(max(0, wallClock.now(in: .ns)))
     }
 
-    private func nowInstant() -> ContinuousClock.Instant {
-        let elapsedNs: Int64
-        let nowNs = wallClock.now(in: .ns)
-        let result = nowNs.subtractingReportingOverflow(wallClockOriginNs)
-        if result.overflow {
-            elapsedNs = nowNs >= wallClockOriginNs ? Int64.max : 0
-        } else {
-            elapsedNs = max(0, result.partialValue)
-        }
-        return instantOrigin.advanced(by: .nanoseconds(elapsedNs))
+    private func nowInstant() -> C.Instant {
+        clock.now
     }
 
     private func notify(
@@ -974,5 +994,18 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
                 listener(stats)
             }
         }
+    }
+}
+
+extension ClockedPlaybackStatsTracker where C == ContinuousClock {
+    convenience init(
+        events: PlayerEventHub,
+        wallClock: any PlaybackWallClock = HostPlaybackWallClock()
+    ) {
+        self.init(
+            events: events,
+            clock: ContinuousClock(),
+            wallClock: wallClock
+        )
     }
 }

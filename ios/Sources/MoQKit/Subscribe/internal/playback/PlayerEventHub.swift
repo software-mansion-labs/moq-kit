@@ -4,8 +4,13 @@ final class PlayerEventHub: @unchecked Sendable {
     typealias Listener = @Sendable (PlayerEvent) -> Void
 
     private let lock = UnfairLock()
+    private let clock: ContinuousClock
     private var listeners: [UUID: Listener] = [:]
     private var sequence: UInt64 = 0
+
+    init(clock: ContinuousClock = ContinuousClock()) {
+        self.clock = clock
+    }
 
     func subscribe(
         _ listener: @escaping @MainActor @Sendable (PlayerEvent) -> Void
@@ -32,18 +37,14 @@ final class PlayerEventHub: @unchecked Sendable {
     }
 
     @discardableResult
-    func emit(
-        _ name: PlayerEventName,
-        attributes: [String: PlayerEventValue] = [:]
-    ) -> PlayerEvent {
-        let timestampMs = Self.timestampMs()
+    func emit(_ type: PlayerEventType) -> PlayerEvent {
+        let timestamp = clock.now
         let result: (PlayerEvent, [Listener]) = lock.withLock {
             sequence = sequence &+ 1
             let event = PlayerEvent(
-                name: name,
-                timestampMs: timestampMs,
-                sequence: sequence,
-                attributes: attributes
+                type: type,
+                timestamp: timestamp,
+                sequence: sequence
             )
             return (event, Array(listeners.values))
         }
@@ -53,47 +54,15 @@ final class PlayerEventHub: @unchecked Sendable {
         }
         return result.0
     }
-
-    static func timestampMs() -> Double {
-        Double(DispatchTime.now().uptimeNanoseconds) / 1_000_000.0
-    }
 }
 
-// MARK: - Shared attribute builder
-
-enum PlayerEventAttributes {
-    static func track(
-        kind: MediaFrameKind,
-        trackName: String? = nil,
-        message: String? = nil,
-        trackEpoch: TrackEpoch? = nil,
-        sourceTimestampUs: UInt64? = nil,
-        targetBuffering: Duration? = nil,
-        keyframe: Bool? = nil,
-        payloadBytes: Int? = nil
-    ) -> [String: PlayerEventValue] {
-        var attributes: [String: PlayerEventValue] = ["kind": .string(kind.eventName)]
-        if let trackName {
-            attributes["trackName"] = .string(trackName)
+extension MediaFrameKind {
+    var playerTrackKind: PlayerTrackKind {
+        switch self {
+        case .audio:
+            return .audio
+        case .video:
+            return .video
         }
-        if let message {
-            attributes["message"] = .string(message)
-        }
-        if let trackEpoch {
-            attributes["trackEpoch"] = .uint(trackEpoch)
-        }
-        if let sourceTimestampUs {
-            attributes["sourceTimestampUs"] = .uint(sourceTimestampUs)
-        }
-        if let targetBuffering {
-            attributes["targetBufferingMs"] = .uint(targetBuffering.millisecondsUInt64Clamped)
-        }
-        if let keyframe {
-            attributes["keyframe"] = .bool(keyframe)
-        }
-        if let payloadBytes {
-            attributes["payloadBytes"] = .uint(UInt64(max(0, payloadBytes)))
-        }
-        return attributes
     }
 }

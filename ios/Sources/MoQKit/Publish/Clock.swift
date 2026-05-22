@@ -3,9 +3,9 @@ import CoreMedia
 /// A thread-safe clock that converts presentation timestamps to microseconds
 /// relative to the first frame received across all tracks.
 ///
-/// All tracks in a ``Publisher`` share the same `Clock` instance so that
+/// All tracks in a ``Publisher`` share the same `PublisherClock` instance so that
 /// audio and video timestamps are aligned to a common epoch.
-final class Clock: @unchecked Sendable {
+final class PublisherClock: @unchecked Sendable {
     private var epoch: CMTime?
     private let lock = UnfairLock()
 

@@ -34,4 +34,34 @@ extension Duration {
         guard milliseconds < Double(UInt64.max) else { return UInt64.max }
         return UInt64(milliseconds.rounded())
     }
+
+    var microsecondsUInt64Clamped: UInt64 {
+        let components = components
+        let seconds = UInt64(clamping: components.seconds)
+        let attosecondsPerMicrosecond: Int64 = 1_000_000_000_000
+        let attosecondMicros = components.attoseconds / attosecondsPerMicrosecond
+        let secondsMicros = seconds.multipliedReportingOverflow(by: 1_000_000)
+        if secondsMicros.overflow {
+            return UInt64.max
+        }
+        let result = secondsMicros.partialValue.addingReportingOverflow(
+            UInt64(clamping: attosecondMicros)
+        )
+        return result.overflow ? UInt64.max : result.partialValue
+    }
+
+    var nanosecondsUInt64Clamped: UInt64 {
+        let components = components
+        let seconds = UInt64(clamping: components.seconds)
+        let attosecondsPerNanosecond: Int64 = 1_000_000_000
+        let attosecondNanoseconds = components.attoseconds / attosecondsPerNanosecond
+        let secondsNanoseconds = seconds.multipliedReportingOverflow(by: 1_000_000_000)
+        if secondsNanoseconds.overflow {
+            return UInt64.max
+        }
+        let result = secondsNanoseconds.partialValue.addingReportingOverflow(
+            UInt64(clamping: attosecondNanoseconds)
+        )
+        return result.overflow ? UInt64.max : result.partialValue
+    }
 }

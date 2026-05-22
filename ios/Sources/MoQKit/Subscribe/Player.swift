@@ -239,7 +239,7 @@ public final class Player {
         self.events = events
         self.tracker = PlaybackStatsTracker(events: events)
 
-        events.emit(.playerInit, attributes: sessionEventAttributes)
+        events.emit(.playerInit(sessionEvent))
         emitSelectedTrackSelect()
     }
 
@@ -322,15 +322,15 @@ public final class Player {
 
         try validateSelectedTracks()
 
-        KitLogger.player.debug("Starting real-time player for \(self.playbackLogDescription), targetBufferingMs=\(self.targetBuffering.milliseconds)")
-        events.emit(.playbackRequest, attributes: sessionEventAttributes)
+        KitLogger.player.debug("Starting real-time player for \(self.playbackLogDescription), targetBuffering=\(self.targetBuffering.milliseconds)ms")
+        events.emit(.playbackRequest(sessionEvent))
         tracker.beginSession(
             rebufferKind: selectedAudioTrack != nil ? .audio : .video
         )
         let shouldEmitResume = isPaused
         playbackPipeline = try makePlaybackPipeline()
         if shouldEmitResume {
-            events.emit(.playbackResume, attributes: sessionEventAttributes)
+            events.emit(.playbackResume(sessionEvent))
         }
         isPaused = false
         startStatsSampling()
@@ -345,7 +345,7 @@ public final class Player {
     public func pause() async {
         KitLogger.player.debug("Pausing real-time player for \(self.playbackLogDescription)")
         teardown(permanent: false, reason: "pause()")
-        events.emit(.playbackPause, attributes: sessionEventAttributes)
+        events.emit(.playbackPause(sessionEvent))
         isPaused = true
     }
 
@@ -383,7 +383,7 @@ public final class Player {
 
         guard let playbackPipeline else {
             selectedVideoTrack = newTrack
-            emitTrackSelect(kind: "video", trackName: newTrack?.name)
+            emitTrackSelect(kind: .video, trackName: newTrack?.name)
             return
         }
 
@@ -391,7 +391,7 @@ public final class Player {
             switch try playbackPipeline.switchVideo(to: newTrack) {
             case .handled:
                 selectedVideoTrack = newTrack
-                emitTrackSelect(kind: "video", trackName: newTrack.name)
+                emitTrackSelect(kind: .video, trackName: newTrack.name)
                 return
             case .restartRequired:
                 break
@@ -399,7 +399,7 @@ public final class Player {
         }
 
         selectedVideoTrack = newTrack
-        emitTrackSelect(kind: "video", trackName: newTrack?.name)
+        emitTrackSelect(kind: .video, trackName: newTrack?.name)
         try await restartPlaybackForSelectionChange()
     }
 
@@ -428,7 +428,7 @@ public final class Player {
 
         guard let playbackPipeline else {
             selectedAudioTrack = newTrack
-            emitTrackSelect(kind: "audio", trackName: newTrack?.name)
+            emitTrackSelect(kind: .audio, trackName: newTrack?.name)
             return
         }
 
@@ -436,7 +436,7 @@ public final class Player {
             switch try playbackPipeline.switchAudio(to: newTrack) {
             case .handled:
                 selectedAudioTrack = newTrack
-                emitTrackSelect(kind: "audio", trackName: newTrack.name)
+                emitTrackSelect(kind: .audio, trackName: newTrack.name)
                 return
             case .restartRequired:
                 break
@@ -444,7 +444,7 @@ public final class Player {
         }
 
         selectedAudioTrack = newTrack
-        emitTrackSelect(kind: "audio", trackName: newTrack?.name)
+        emitTrackSelect(kind: .audio, trackName: newTrack?.name)
         try await restartPlaybackForSelectionChange()
     }
 
@@ -529,37 +529,33 @@ public final class Player {
         "catalog=\(catalog.path), video=\(selectedVideoTrack?.name ?? "none"), audio=\(selectedAudioTrack?.name ?? "none")"
     }
 
-    private var sessionEventAttributes: [String: PlayerEventValue] {
-        var attributes: [String: PlayerEventValue] = [
-            "catalogPath": .string(catalog.path),
-            "targetBufferingMs": .uint(targetBuffering.millisecondsUInt64Clamped)
-        ]
-        if let selectedVideoTrack {
-            attributes["videoTrackName"] = .string(selectedVideoTrack.name)
-        }
-        if let selectedAudioTrack {
-            attributes["audioTrackName"] = .string(selectedAudioTrack.name)
-        }
-        return attributes
+    private var sessionEvent: PlayerSessionEvent {
+        PlayerSessionEvent(
+            catalogPath: catalog.path,
+            targetBuffering: targetBuffering,
+            videoTrackName: selectedVideoTrack?.name,
+            audioTrackName: selectedAudioTrack?.name
+        )
     }
 
     private func emitSelectedTrackSelect() {
         if let selectedVideoTrack {
-            emitTrackSelect(kind: "video", trackName: selectedVideoTrack.name)
+            emitTrackSelect(kind: .video, trackName: selectedVideoTrack.name)
         }
         if let selectedAudioTrack {
-            emitTrackSelect(kind: "audio", trackName: selectedAudioTrack.name)
+            emitTrackSelect(kind: .audio, trackName: selectedAudioTrack.name)
         }
     }
 
-    private func emitTrackSelect(kind: String, trackName: String?) {
-        var attributes: [String: PlayerEventValue] = ["kind": .string(kind)]
-        if let trackName {
-            attributes["trackName"] = .string(trackName)
-        } else {
-            attributes["enabled"] = .bool(false)
-        }
-        events.emit(.trackSelect, attributes: attributes)
+    private func emitTrackSelect(kind: PlayerTrackKind, trackName: String?) {
+        events.emit(
+            .trackSelect(
+                PlayerTrackSelectionEvent(
+                    kind: kind,
+                    trackName: trackName
+                )
+            )
+        )
     }
 
     private func validateSelectedTracks() throws {

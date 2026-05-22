@@ -110,7 +110,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         )
         eventsSubscription?.cancel()
         eventsSubscription = nil
-        stopStatsSubscription()
+        statsSubscription?.cancel()
+        statsSubscription = nil
+        playbackStats = nil
         await player?.stopAll(reason: reason)
         player = nil
         isPlaying = false
@@ -118,23 +120,23 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     private func handleEvent(_ event: PlayerEvent) {
         broadcastEntryLogger.debug(
-            "Player event path=\(self.broadcastPath), event=\(event.name.rawValue), attributes=\(Self.eventAttributesDescription(event.attributes))"
+            "Player event path=\(self.broadcastPath), event=\(event.name.rawValue)"
         )
 
         startupDiagnostics.record(event)
 
-        switch event.name {
-        case .playbackStart:
+        switch event.type {
+        case .playbackStart(_):
             isPlaying = true
             isPaused = false
             startStatsSubscription()
-        case .playbackPause:
+        case .playbackPause(_):
             isPaused = true
-        case .playbackResume:
+        case .playbackResume(_):
             isPaused = false
-        case .trackSwitch:
-            if event.string("kind") == "video" {
-                if let trackName = event.string("trackName") {
+        case .trackSwitch(let track):
+            if track.kind == .video {
+                if let trackName = track.trackName {
                     selectedVideoTrackName = trackName
                     self.pendingVideoTrackName = nil
                 } else if let pendingVideoTrackName {
@@ -142,11 +144,13 @@ final class BroadcastEntry: ObservableObject, Identifiable {
                     self.pendingVideoTrackName = nil
                 }
             }
-        case .playbackEnd:
+        case .playbackEnd(_):
             isPlaying = false
             isPaused = false
             offline = true
-            stopStatsSubscription()
+            statsSubscription?.cancel()
+            statsSubscription = nil
+            playbackStats = nil
         default:
             break
         }
@@ -160,53 +164,22 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         }
     }
 
-    private func stopStatsSubscription() {
-        statsSubscription?.cancel()
-        statsSubscription = nil
-        playbackStats = nil
-    }
-
-    private static func eventAttributesDescription(
-        _ attributes: [String: PlayerEventValue]
-    ) -> String {
-        guard !attributes.isEmpty else { return "{}" }
-        return attributes.keys.sorted().map { key in
-            "\(key)=\(eventValueDescription(attributes[key]))"
-        }.joined(separator: ",")
-    }
-
-    private static func eventValueDescription(_ value: PlayerEventValue?) -> String {
-        switch value {
-        case .some(.string(let value)):
-            return value
-        case .some(.int(let value)):
-            return String(value)
-        case .some(.uint(let value)):
-            return String(value)
-        case .some(.double(let value)):
-            return String(value)
-        case .some(.bool(let value)):
-            return String(value)
-        case nil:
-            return "nil"
-        }
-    }
 }
 
 struct PlayerStartupDiagnostics {
-    var playerInitAtMs: Double?
-    var playRequestedAtMs: Double?
-    var playbackStartedAtMs: Double?
-    var playbackEndedAtMs: Double?
-    var playbackStartedByKind: String?
+    var playerInitAt: ContinuousClock.Instant?
+    var playRequestedAt: ContinuousClock.Instant?
+    var playbackStartedAt: ContinuousClock.Instant?
+    var playbackEndedAt: ContinuousClock.Instant?
+    var playbackStartedByKind: PlayerTrackKind?
     private var tracks: [TrackStartupDiagnostics] = []
 
-    var initToPlayRequestMs: Double? {
-        elapsed(from: playerInitAtMs, to: playRequestedAtMs)
+    var initToPlayRequest: Duration? {
+        elapsed(from: playerInitAt, to: playRequestedAt)
     }
 
-    var playRequestToPlaybackStartMs: Double? {
-        elapsed(from: playRequestedAtMs, to: playbackStartedAtMs)
+    var playRequestToPlaybackStart: Duration? {
+        elapsed(from: playRequestedAt, to: playbackStartedAt)
     }
 
     var orderedTracks: [TrackStartupDiagnostics] {
@@ -214,87 +187,89 @@ struct PlayerStartupDiagnostics {
     }
 
     mutating func record(_ event: PlayerEvent) {
-        switch event.name {
-        case .playerInit:
-            playerInitAtMs = playerInitAtMs ?? event.timestampMs
-        case .playbackRequest:
-            playRequestedAtMs = event.timestampMs
-            playbackStartedAtMs = nil
-            playbackEndedAtMs = nil
+        switch event.type {
+        case .playerInit(_):
+            playerInitAt = playerInitAt ?? event.timestamp
+        case .playbackRequest(_):
+            playRequestedAt = event.timestamp
+            playbackStartedAt = nil
+            playbackEndedAt = nil
             playbackStartedByKind = nil
             tracks.removeAll()
-        case .playbackStart:
-            playbackStartedAtMs = playbackStartedAtMs ?? event.timestampMs
-            playbackStartedByKind = event.string("kind") ?? playbackStartedByKind
-        case .playbackEnd:
-            playbackEndedAtMs = event.timestampMs
-        case .trackSubscribeStart:
-            startTrack(event)
-        case .trackReady:
-            updateTrack(event) { track in
-                track.trackName = event.string("trackName") ?? track.trackName
-                track.readyAtMs = track.readyAtMs ?? event.timestampMs
-                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
+        case .playbackStart(let playback):
+            playbackStartedAt = playbackStartedAt ?? event.timestamp
+            playbackStartedByKind = playback.track.kind
+        case .playbackEnd(_):
+            playbackEndedAt = event.timestamp
+        case .trackSubscribeStart(let track):
+            startTrack(event, track)
+        case .trackReady(let ready):
+            updateTrack(event, ready.track) { track in
+                track.trackName = ready.track.trackName ?? track.trackName
+                track.readyAt = track.readyAt ?? event.timestamp
+                track.epoch = ready.track.epoch
             }
-        case .trackPlaying:
-            updateTrack(event) { track in
-                track.trackName = event.string("trackName") ?? track.trackName
-                track.playingAtMs = track.playingAtMs ?? event.timestampMs
-                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
+        case .trackPlaying(let playing):
+            updateTrack(event, playing.track) { track in
+                track.trackName = playing.track.trackName ?? track.trackName
+                track.playingAt = track.playingAt ?? event.timestamp
+                track.epoch = playing.track.epoch
             }
-        case .trackSubscribeError:
-            updateTrack(event) { track in
-                track.trackName = event.string("trackName") ?? track.trackName
-                track.errorAtMs = event.timestampMs
-                track.errorMessage = event.string("message")
-                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
+        case .trackSubscribeError(let error):
+            updateTrack(event, error.track) { track in
+                track.trackName = error.track.trackName ?? track.trackName
+                track.errorAt = event.timestamp
+                track.errorMessage = error.message
+                track.epoch = error.track.epoch
             }
-        case .trackSubscribeEnd:
-            updateTrack(event) { track in
-                track.trackName = event.string("trackName") ?? track.trackName
-                track.endedAtMs = event.timestampMs
-                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
+        case .trackSubscribeEnd(let eventTrack):
+            updateTrack(event, eventTrack) { track in
+                track.trackName = eventTrack.trackName ?? track.trackName
+                track.endedAt = event.timestamp
+                track.epoch = eventTrack.epoch
             }
-        case .trackSwitch:
-            updateTrack(event) { track in
-                track.trackName = event.string("trackName") ?? track.trackName
-                track.activeAtMs = track.activeAtMs ?? event.timestampMs
-                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
+        case .trackSwitch(let eventTrack):
+            updateTrack(event, eventTrack) { track in
+                track.trackName = eventTrack.trackName ?? track.trackName
+                track.activeAt = track.activeAt ?? event.timestamp
+                track.epoch = eventTrack.epoch
             }
         default:
             break
         }
     }
 
-    func elapsed(from start: Double?, to end: Double?) -> Double? {
+    func elapsed(
+        from start: ContinuousClock.Instant?,
+        to end: ContinuousClock.Instant?
+    ) -> Duration? {
         guard let start, let end else { return nil }
-        return max(0, end - start)
+        return start.duration(to: end)
     }
 
-    private mutating func startTrack(_ event: PlayerEvent) {
-        guard let kind = event.string("kind") else { return }
-        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: kind)
-        track.trackName = event.string("trackName")
-        track.subscribeStartedAtMs = event.timestampMs
-        track.trackEpoch = event.uint("trackEpoch") ?? 1
+    private mutating func startTrack(_ event: PlayerEvent, _ eventTrack: PlayerTrackEvent) {
+        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: eventTrack.kind)
+        track.trackName = eventTrack.trackName
+        track.subscribeStartedAt = event.timestamp
+        track.epoch = eventTrack.epoch
         tracks.append(track)
     }
 
     private mutating func updateTrack(
         _ event: PlayerEvent,
+        _ eventTrack: PlayerTrackEvent,
         _ update: (inout TrackStartupDiagnostics) -> Void
     ) {
-        guard let kind = event.string("kind") else { return }
-        let trackName = event.string("trackName")
-        let trackEpoch = event.uint("trackEpoch")
-
         if let index = tracks.indices.reversed().first(where: { index in
             let track = tracks[index]
-            guard track.kind == kind else { return false }
-            if let trackName, let existingName = track.trackName, existingName != trackName {
+            guard track.kind == eventTrack.kind else { return false }
+            if let trackName = eventTrack.trackName,
+               let existingName = track.trackName,
+               existingName != trackName
+            {
                 return false
             }
-            if let trackEpoch, track.trackEpoch != trackEpoch {
+            if eventTrack.epoch != .zero, track.epoch != eventTrack.epoch {
                 return false
             }
             return true
@@ -303,8 +278,8 @@ struct PlayerStartupDiagnostics {
             return
         }
 
-        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: kind)
-        track.trackEpoch = trackEpoch ?? 1
+        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: eventTrack.kind)
+        track.epoch = eventTrack.epoch
         update(&track)
         tracks.append(track)
     }
@@ -312,51 +287,56 @@ struct PlayerStartupDiagnostics {
 
 struct TrackStartupDiagnostics: Identifiable {
     let id: String
-    let kind: String
+    let kind: PlayerTrackKind
     var trackName: String?
-    var subscribeStartedAtMs: Double?
-    var readyAtMs: Double?
-    var playingAtMs: Double?
-    var activeAtMs: Double?
-    var errorAtMs: Double?
+    var subscribeStartedAt: ContinuousClock.Instant?
+    var readyAt: ContinuousClock.Instant?
+    var playingAt: ContinuousClock.Instant?
+    var activeAt: ContinuousClock.Instant?
+    var errorAt: ContinuousClock.Instant?
     var errorMessage: String?
-    var endedAtMs: Double?
-    var trackEpoch: UInt64 = 1
+    var endedAt: ContinuousClock.Instant?
+    var epoch: UInt64 = .zero
 
     var isTrackSwitch: Bool {
-        trackEpoch > 1
+        epoch > 1
     }
 
     var operationLabel: String {
         isTrackSwitch ? "Switch" : "Play request"
     }
 
-    func subscribeToReadyMs() -> Double? {
-        elapsed(from: subscribeStartedAtMs, to: readyAtMs)
+    func subscribeToReady() -> Duration? {
+        elapsed(from: subscribeStartedAt, to: readyAt)
     }
 
-    func operationToReadyMs(playRequestedAtMs: Double?) -> Double? {
-        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: readyAtMs)
+    func operationToReady(playRequestedAt: ContinuousClock.Instant?) -> Duration? {
+        elapsed(from: operationStartedAt(playRequestedAt: playRequestedAt), to: readyAt)
     }
 
-    func readyToPlayingMs() -> Double? {
-        elapsed(from: readyAtMs, to: playingAtMs)
+    func readyToPlaying() -> Duration? {
+        elapsed(from: readyAt, to: playingAt)
     }
 
-    func operationToPlayingMs(playRequestedAtMs: Double?) -> Double? {
-        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: playingAtMs)
+    func operationToPlaying(playRequestedAt: ContinuousClock.Instant?) -> Duration? {
+        elapsed(from: operationStartedAt(playRequestedAt: playRequestedAt), to: playingAt)
     }
 
-    func operationToActiveMs(playRequestedAtMs: Double?) -> Double? {
-        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: activeAtMs)
+    func operationToActive(playRequestedAt: ContinuousClock.Instant?) -> Duration? {
+        elapsed(from: operationStartedAt(playRequestedAt: playRequestedAt), to: activeAt)
     }
 
-    private func operationStartedAtMs(playRequestedAtMs: Double?) -> Double? {
-        isTrackSwitch ? subscribeStartedAtMs : playRequestedAtMs
+    private func operationStartedAt(
+        playRequestedAt: ContinuousClock.Instant?
+    ) -> ContinuousClock.Instant? {
+        isTrackSwitch ? subscribeStartedAt : playRequestedAt
     }
 
-    private func elapsed(from start: Double?, to end: Double?) -> Double? {
+    private func elapsed(
+        from start: ContinuousClock.Instant?,
+        to end: ContinuousClock.Instant?
+    ) -> Duration? {
         guard let start, let end else { return nil }
-        return max(0, end - start)
+        return start.duration(to: end)
     }
 }

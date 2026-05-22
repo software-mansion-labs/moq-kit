@@ -33,13 +33,13 @@ final class VideoRendererTrack: @unchecked Sendable {
         trackName: String,
         epoch: TrackEpoch,
         config: MoqVideo,
-        targetBufferingMs: UInt64
+        targetBuffering: Duration
     ) throws {
         self.trackName = trackName
         self.trackEpoch = epoch
         self.processor = try VideoFrameProcessor(config: config)
         self.buffer = JitterBuffer<VideoRendererSample>(
-            targetBufferingUs: targetBufferingMs * 1_000)
+            targetBufferingUs: targetBuffering.microsecondsUInt64Clamped)
     }
 
     // MARK: - Insertion (called from ingest task)
@@ -131,8 +131,8 @@ final class VideoRendererTrack: @unchecked Sendable {
     }
 
     @discardableResult
-    func updateTargetBuffering(ms: UInt64) -> Bool {
-        lock.withLock { buffer.updateTargetBuffering(us: ms * 1_000) }
+    func updateTargetBuffering(_ targetBuffering: Duration) -> Bool {
+        lock.withLock { buffer.updateTargetBuffering(us: targetBuffering.microsecondsUInt64Clamped) }
     }
 
     func flush() {
@@ -149,8 +149,12 @@ final class VideoRendererTrack: @unchecked Sendable {
         lock.withLock { buffer.depthMs }
     }
 
-    var targetBufferingUs: UInt64 {
-        lock.withLock { buffer.targetBuffering }
+    var depth: Duration {
+        lock.withLock { .millisecondsClamped(buffer.depthMs) }
+    }
+
+    var targetBuffering: Duration {
+        lock.withLock { .microsecondsClamped(buffer.targetBuffering) }
     }
 
     func estimatedLivePTS() -> Int64? {

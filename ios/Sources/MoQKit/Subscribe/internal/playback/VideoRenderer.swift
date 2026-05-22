@@ -52,7 +52,7 @@ final class VideoRenderer: @unchecked Sendable {
     private var onTrackActivated: (() -> Void)?
 
     private let enqueueQueue: DispatchQueue
-    private let timing: any MediaClock
+    private let timing: any MediaPlaybackClock
     private let timestampAligner: MediaTimestampAligner?
     private var timelineStarted: Bool
     private let tracker: PlaybackStatsTracker
@@ -76,7 +76,7 @@ final class VideoRenderer: @unchecked Sendable {
     private let clockRetargetToleranceUs: UInt64 = 20_000
 
     init(
-        timing: any MediaClock,
+        timing: any MediaPlaybackClock,
         timestampAligner: MediaTimestampAligner? = nil,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
@@ -174,10 +174,10 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     /// Update the target buffering depth for the active track.
-    func updateTargetBuffering(ms: UInt64) {
+    func updateTargetBuffering(_ targetBuffering: Duration) {
         enqueueQueue.async {
-            let activeBecamePlayable = self.activeTrack.updateTargetBuffering(ms: ms)
-            self.pendingTrack?.updateTargetBuffering(ms: ms)
+            let activeBecamePlayable = self.activeTrack.updateTargetBuffering(targetBuffering)
+            self.pendingTrack?.updateTargetBuffering(targetBuffering)
             if self.timing.isVideoDriven, self.timelineStarted {
                 self.syncClockToTargetLatency()
             }
@@ -187,7 +187,7 @@ final class VideoRenderer: @unchecked Sendable {
         }
     }
 
-    var bufferFill: Duration { .millisecondsClamped(syncOnEnqueueQueue { activeTrack.depthMs }) }
+    var bufferFill: Duration { syncOnEnqueueQueue { activeTrack.depth } }
 
     var hasPendingTrack: Bool { syncOnEnqueueQueue { pendingTrack != nil } }
 
@@ -339,7 +339,7 @@ final class VideoRenderer: @unchecked Sendable {
             scheduleFirstPlayablePlaybackIfNeeded(
                 sourceTimestampUs: entry.timestampUs,
                 presentationTimeUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
-                bufferMs: activeTrack.depthMs
+                buffer: activeTrack.depth
             )
         }
         if !hasLoggedFirstEnqueue {
@@ -354,7 +354,7 @@ final class VideoRenderer: @unchecked Sendable {
     private func scheduleFirstPlayablePlaybackIfNeeded(
         sourceTimestampUs: UInt64,
         presentationTimeUs: UInt64,
-        bufferMs: Double
+        buffer: Duration
     ) {
         guard isWaitingForFirstPlayablePlayback else { return }
         isWaitingForFirstPlayablePlayback = false
@@ -363,7 +363,7 @@ final class VideoRenderer: @unchecked Sendable {
             kind: .video,
             trackName: activeTrack.trackName,
             sourceTimestampUs: sourceTimestampUs,
-            targetBuffering: .microsecondsClamped(activeTrack.targetBufferingUs),
+            targetBuffering: activeTrack.targetBuffering,
             trackEpoch: activeTrack.trackEpoch
         )
 
@@ -371,7 +371,7 @@ final class VideoRenderer: @unchecked Sendable {
             context: context,
             presentationTimeUs: presentationTimeUs,
             clockTimeUs: max(timing.currentTimeUs, presentationTimeUs),
-            bufferMs: bufferMs
+            buffer: buffer
         )
     }
 

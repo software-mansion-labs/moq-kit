@@ -230,8 +230,8 @@ private struct DiagnosticsCardView: View {
     @ViewBuilder
     private var summaryView: some View {
         HStack(spacing: 8) {
-            if let ms = entry.startupDiagnostics.playRequestToPlaybackStartMs {
-                Text("start \(formatMs(ms))")
+            if let duration = entry.startupDiagnostics.playRequestToPlaybackStart {
+                Text("start \(formatMs(duration))")
                     .foregroundStyle(.secondary)
             }
             if let latency = entry.playbackStats?.videoLatency {
@@ -250,18 +250,18 @@ private struct DiagnosticsCardView: View {
     private var startupSection: some View {
         let startup = entry.startupDiagnostics
         StatsSection(title: "Startup") {
-            if let ms = startup.initToPlayRequestMs {
-                StatRow(label: "Init -> play request", value: formatMs(ms))
+            if let duration = startup.initToPlayRequest {
+                StatRow(label: "Init -> play request", value: formatMs(duration))
             } else {
                 StatRow(label: "Init -> play request", value: "pending", color: .secondary)
             }
-            if let ms = startup.playRequestToPlaybackStartMs {
-                StatRow(label: "Play request -> playback", value: formatMs(ms), color: startupColor(ms))
-            } else if startup.playRequestedAtMs != nil {
+            if let duration = startup.playRequestToPlaybackStart {
+                StatRow(label: "Play request -> playback", value: formatMs(duration), color: startupColor(duration))
+            } else if startup.playRequestedAt != nil {
                 StatRow(label: "Play request -> playback", value: "pending", color: .secondary)
             }
             if let kind = startup.playbackStartedByKind {
-                StatRow(label: "Playback start trigger", value: kind)
+                StatRow(label: "Playback start trigger", value: kind.rawValue)
             }
             if let stats = entry.playbackStats {
                 if let ms = stats.timeToFirst.videoFrame {
@@ -284,7 +284,7 @@ private struct DiagnosticsCardView: View {
                 ForEach(startup.orderedTracks) { track in
                     TrackStartupView(
                         track: track,
-                        playRequestedAtMs: startup.playRequestedAtMs,
+                        playRequestedAt: startup.playRequestedAt,
                         formatMs: formatMs,
                         startupColor: startupColor
                     )
@@ -499,20 +499,21 @@ private struct DiagnosticsCardView: View {
 
 private struct TrackStartupView: View {
     let track: TrackStartupDiagnostics
-    let playRequestedAtMs: Double?
-    let formatMs: (Double) -> String
-    let startupColor: (Double) -> Color
+    let playRequestedAt: ContinuousClock.Instant?
+    let formatMs: (Duration) -> String
+    let startupColor: (Duration) -> Color
 
     private var title: String {
-        track.isTrackSwitch ? "\(track.kind.capitalized) switch" : "\(track.kind.capitalized) startup"
+        let kind = track.kind.rawValue.capitalized
+        return track.isTrackSwitch ? "\(kind) switch" : "\(kind) startup"
     }
 
     private var status: (text: String, color: Color) {
-        if track.errorAtMs != nil { return ("error", .red) }
-        if track.activeAtMs != nil { return ("active", .green) }
-        if track.playingAtMs != nil { return ("playing", .green) }
-        if track.readyAtMs != nil { return ("ready", .green) }
-        if track.subscribeStartedAtMs != nil { return ("subscribing", .orange) }
+        if track.errorAt != nil { return ("error", .red) }
+        if track.activeAt != nil { return ("active", .green) }
+        if track.playingAt != nil { return ("playing", .green) }
+        if track.readyAt != nil { return ("ready", .green) }
+        if track.subscribeStartedAt != nil { return ("subscribing", .orange) }
         return ("pending", .secondary)
     }
 
@@ -535,29 +536,29 @@ private struct TrackStartupView: View {
                 StatRow(label: "Track", value: trackName)
             }
             if track.isTrackSwitch {
-                if let ms = track.operationToReadyMs(playRequestedAtMs: playRequestedAtMs) {
-                    StatRow(label: "Switch -> ready", value: formatMs(ms), color: startupColor(ms))
-                } else if track.subscribeStartedAtMs != nil, track.errorAtMs == nil {
+                if let duration = track.operationToReady(playRequestedAt: playRequestedAt) {
+                    StatRow(label: "Switch -> ready", value: formatMs(duration), color: startupColor(duration))
+                } else if track.subscribeStartedAt != nil, track.errorAt == nil {
                     StatRow(label: "Switch -> ready", value: "pending", color: .secondary)
                 }
             } else {
-                if let ms = track.subscribeToReadyMs() {
-                    StatRow(label: "Subscribe -> ready", value: formatMs(ms), color: startupColor(ms))
-                } else if track.subscribeStartedAtMs != nil, track.errorAtMs == nil {
+                if let duration = track.subscribeToReady() {
+                    StatRow(label: "Subscribe -> ready", value: formatMs(duration), color: startupColor(duration))
+                } else if track.subscribeStartedAt != nil, track.errorAt == nil {
                     StatRow(label: "Subscribe -> ready", value: "pending", color: .secondary)
                 }
-                if let ms = track.operationToReadyMs(playRequestedAtMs: playRequestedAtMs) {
-                    StatRow(label: "Play request -> ready", value: formatMs(ms), color: startupColor(ms))
+                if let duration = track.operationToReady(playRequestedAt: playRequestedAt) {
+                    StatRow(label: "Play request -> ready", value: formatMs(duration), color: startupColor(duration))
                 }
             }
-            if let ms = track.readyToPlayingMs() {
-                StatRow(label: "Ready -> playing", value: formatMs(ms), color: startupColor(ms))
+            if let duration = track.readyToPlaying() {
+                StatRow(label: "Ready -> playing", value: formatMs(duration), color: startupColor(duration))
             }
-            if let ms = track.operationToPlayingMs(playRequestedAtMs: playRequestedAtMs) {
-                StatRow(label: "\(track.operationLabel) -> playing", value: formatMs(ms), color: startupColor(ms))
+            if let duration = track.operationToPlaying(playRequestedAt: playRequestedAt) {
+                StatRow(label: "\(track.operationLabel) -> playing", value: formatMs(duration), color: startupColor(duration))
             }
-            if let ms = track.operationToActiveMs(playRequestedAtMs: playRequestedAtMs) {
-                StatRow(label: "\(track.operationLabel) -> active", value: formatMs(ms), color: startupColor(ms))
+            if let duration = track.operationToActive(playRequestedAt: playRequestedAt) {
+                StatRow(label: "\(track.operationLabel) -> active", value: formatMs(duration), color: startupColor(duration))
             }
             if let errorMessage = track.errorMessage {
                 StatRow(label: "Error", value: errorMessage, color: .red)

@@ -2,7 +2,7 @@ import AVFoundation
 import Foundation
 import MoQKitFFI
 
-private let playbackStatsPTSCorrectionThresholdUs: Int64 = 2_000_000
+private let playbackStatsPTSCorrectionThreshold: Duration = .seconds(2)
 
 enum PlaybackPipelineSwitchOutcome {
     case handled
@@ -29,13 +29,13 @@ final class PlaybackPipeline {
     private let tracker: PlaybackStatsTracker
     private let aligner: MediaTimestampAligner
     private let frameObserver: any MediaFrameObserver
-    private let clock: any MediaClock
+    private let playbackClock: any MediaPlaybackClock
     private let audioRenderer: AudioRenderer?
     private let videoRenderer: VideoRenderer?
     private var videoTrackName: String?
     private var audioTrackName: String?
-    private var videoTrackEpoch: TrackEpoch
-    private var audioTrackEpoch: TrackEpoch
+    private var videoEpoch: TrackEpoch = .zero
+    private var audioEpoch: TrackEpoch = .zero
 
     private var audioSubscription: MediaTrack?
     private var videoSubscription: MediaTrack?
@@ -60,15 +60,15 @@ final class PlaybackPipeline {
 
         let aligner = MediaTimestampAligner()
         let frameObserver = CompositeMediaFrameObserver([tracker, aligner])
-        let initialVideoTrackEpoch: TrackEpoch = videoTrack == nil ? 0 : 1
-        let initialAudioTrackEpoch: TrackEpoch = audioTrack == nil ? 0 : 1
+        let initialVideoEpoch: TrackEpoch = videoTrack == nil ? .zero : TrackEpoch.zero.next()
+        let initialAudioEpoch: TrackEpoch = audioTrack == nil ? .zero : TrackEpoch.zero.next()
         let subscriptions = try Self.makePlaybackSubscriptions(
             videoTrack: videoTrack,
-            videoTrackEpoch: initialVideoTrackEpoch,
+            videoEpoch: initialVideoEpoch,
             audioTrack: audioTrack,
-            audioTrackEpoch: initialAudioTrackEpoch,
+            audioEpoch: initialAudioEpoch,
             catalog: catalog,
-            maxLatencyMs: targetBuffering.millisecondsUInt64Clamped,
+            maxLatency: targetBuffering,
             tracker: tracker
         )
 
@@ -81,18 +81,18 @@ final class PlaybackPipeline {
         self.videoSubscription = subscriptions.video
         self.videoTrackName = videoTrack?.name
         self.audioTrackName = audioTrack?.name
-        self.videoTrackEpoch = initialVideoTrackEpoch
-        self.audioTrackEpoch = initialAudioTrackEpoch
+        self.videoEpoch = initialVideoEpoch
+        self.audioEpoch = initialAudioEpoch
 
         let audioClock: AudioDrivenClock? = audioTrack != nil ? try AudioDrivenClock() : nil
-        let clock: any MediaClock = audioClock ?? VideoDrivenClock()
-        self.clock = clock
+        let playbackClock: any MediaPlaybackClock = audioClock ?? VideoDrivenClock()
+        self.playbackClock = playbackClock
 
         if let audioTrack, let audioClock {
             let renderer = try AudioRenderer(
                 config: audioTrack.rawConfig,
                 clock: audioClock,
-                targetLatencyMs: Int(targetBuffering.millisecondsUInt64Clamped),
+                targetLatency: targetBuffering,
                 initialVolume: volume,
                 tracker: tracker
             )
@@ -106,12 +106,12 @@ final class PlaybackPipeline {
         if let videoTrack {
             let track = try VideoRendererTrack(
                 trackName: videoTrack.name,
-                epoch: initialVideoTrackEpoch,
+                epoch: initialVideoEpoch,
                 config: videoTrack.rawConfig,
-                targetBufferingMs: targetBuffering.millisecondsUInt64Clamped
+                targetBuffering: targetBuffering
             )
             let renderer = VideoRenderer(
-                timing: clock,
+                timing: playbackClock,
                 timestampAligner: aligner,
                 track: track,
                 layer: videoLayer,
@@ -137,7 +137,7 @@ final class PlaybackPipeline {
                 frameObserver: frameObserver,
                 tracker: tracker,
                 targetBuffering: targetBuffering,
-                trackEpoch: initialAudioTrackEpoch
+                trackEpoch: initialAudioEpoch
             )
         }
 
@@ -149,7 +149,7 @@ final class PlaybackPipeline {
                 frameObserver: frameObserver,
                 tracker: tracker,
                 targetBuffering: targetBuffering,
-                trackEpoch: initialVideoTrackEpoch
+                trackEpoch: initialVideoEpoch
             )
         }
 
@@ -161,7 +161,7 @@ final class PlaybackPipeline {
     func getStats() -> PlaybackStats {
         let hasAudio = audioRenderer != nil
         let hasVideo = videoRenderer != nil
-        let currentTimeUs = clock.currentTimeUs
+        let currentTimeUs = playbackClock.currentTimeUs
         let audioLiveTime: Int64? = hasAudio ? aligner.audioLiveEdge.estimatedLivePTS() : nil
         let videoLiveTime: Int64? = hasVideo ? videoLiveTimeForStats(hasAudio: hasAudio) : nil
 
@@ -181,9 +181,8 @@ final class PlaybackPipeline {
 
     func updateTargetLatency(_ latency: Duration) {
         targetBuffering = latency
-        let milliseconds = latency.millisecondsUInt64Clamped
-        audioRenderer?.updateTargetLatency(ms: Int(milliseconds))
-        videoRenderer?.updateTargetBuffering(ms: milliseconds)
+        audioRenderer?.updateTargetLatency(latency)
+        videoRenderer?.updateTargetBuffering(latency)
     }
 
     func switchVideo(to track: VideoTrackInfo) throws -> PlaybackPipelineSwitchOutcome {
@@ -191,7 +190,7 @@ final class PlaybackPipeline {
         guard !videoRenderer.hasPendingTrack else { return .restartRequired }
 
         KitLogger.player.debug("Switching video track to \(track.name)")
-        let nextEpoch = videoTrackEpoch.next()
+        let nextEpoch = videoEpoch.next()
         tracker.emitSubscribeStart(kind: .video, trackName: track.name, trackEpoch: nextEpoch)
         let newSub: MediaTrack
         do {
@@ -199,7 +198,7 @@ final class PlaybackPipeline {
                 name: track.name,
                 container: track.rawConfig.container,
                 catalog: catalog,
-                maxLatencyMs: targetBuffering.millisecondsUInt64Clamped
+                maxLatency: targetBuffering
             )
         } catch {
             tracker.emitSubscribeError(
@@ -219,9 +218,9 @@ final class PlaybackPipeline {
             trackName: track.name,
             epoch: nextEpoch,
             config: track.rawConfig,
-            targetBufferingMs: targetBuffering.millisecondsUInt64Clamped
+            targetBuffering: targetBuffering
         )
-        videoTrackEpoch = nextEpoch
+        videoEpoch = nextEpoch
 
         let oldHandle = TrackIngestHandle(task: videoTask, subscription: videoSubscription)
         pendingVideoCleanup?.close()
@@ -264,7 +263,7 @@ final class PlaybackPipeline {
 
         KitLogger.player.debug("Switching audio track to \(track.name)")
 
-        let nextEpoch = audioTrackEpoch.next()
+        let nextEpoch = audioEpoch.next()
         tracker.emitSubscribeStart(kind: .audio, trackName: track.name, trackEpoch: nextEpoch)
         let newSub: MediaTrack
         do {
@@ -272,7 +271,7 @@ final class PlaybackPipeline {
                 name: track.name,
                 container: track.rawConfig.container,
                 catalog: catalog,
-                maxLatencyMs: targetBuffering.millisecondsUInt64Clamped
+                maxLatency: targetBuffering
             )
         } catch {
             tracker.emitSubscribeError(
@@ -288,7 +287,7 @@ final class PlaybackPipeline {
 
         audioSubscription = newSub
         audioTrackName = track.name
-        audioTrackEpoch = nextEpoch
+        audioEpoch = nextEpoch
         audioTask = Self.makeAudioIngestTask(
             trackName: track.name,
             subscription: newSub,
@@ -347,7 +346,7 @@ final class PlaybackPipeline {
 
     /// Stats helper: returns the video live-edge timestamp.
     /// In audio-bearing modes the value is mapped into the audio-clock domain so both
-    /// latencies are comparable against `clock.currentTimeUs`. In video-only mode the
+    /// latencies are comparable against `playbackClock.currentTimeUs`. In video-only mode the
     /// raw video edge is correct as-is (the clock IS the video timeline).
     private func videoLiveTimeForStats(hasAudio: Bool) -> Int64? {
         guard let videoTime = aligner.videoLiveEdge.estimatedLivePTS(), videoTime >= 0
@@ -356,7 +355,7 @@ final class PlaybackPipeline {
 
         let mapped = aligner.audioTime(
             videoTime: UInt64(videoTime),
-            threshold: playbackStatsPTSCorrectionThresholdUs
+            threshold: Int64(clamping: playbackStatsPTSCorrectionThreshold.microsecondsUInt64Clamped)
         )
         guard mapped <= UInt64(Int64.max) else { return nil }
         return Int64(mapped)
@@ -402,11 +401,11 @@ private final class TrackIngestHandle: @unchecked Sendable {
 extension PlaybackPipeline {
     fileprivate static func makePlaybackSubscriptions(
         videoTrack: VideoTrackInfo?,
-        videoTrackEpoch: TrackEpoch,
+        videoEpoch: TrackEpoch,
         audioTrack: AudioTrackInfo?,
-        audioTrackEpoch: TrackEpoch,
+        audioEpoch: TrackEpoch,
         catalog: Catalog,
-        maxLatencyMs: UInt64,
+        maxLatency: Duration,
         tracker: PlaybackStatsTracker
     ) throws -> PlaybackSubscriptions {
         var subscriptions = PlaybackSubscriptions()
@@ -417,7 +416,7 @@ extension PlaybackPipeline {
 
         if let videoTrack {
             tracker.emitSubscribeStart(
-                kind: .video, trackName: videoTrack.name, trackEpoch: videoTrackEpoch
+                kind: .video, trackName: videoTrack.name, trackEpoch: videoEpoch
             )
             KitLogger.player.debug(
                 "Video track: \(videoTrack.name), codec=\(videoTrack.config.codec), config=\(videoTrack.config.debugDescription), container=\(videoTrack.rawConfig.container)"
@@ -427,7 +426,7 @@ extension PlaybackPipeline {
                     name: videoTrack.name,
                     container: videoTrack.rawConfig.container,
                     catalog: catalog,
-                    maxLatencyMs: maxLatencyMs
+                    maxLatency: maxLatency
                 )
             } catch {
                 if firstError == nil { firstError = error }
@@ -437,14 +436,14 @@ extension PlaybackPipeline {
                     kind: .video,
                     trackName: videoTrack.name,
                     message: error.localizedDescription,
-                    trackEpoch: videoTrackEpoch
+                    trackEpoch: videoEpoch
                 )
             }
         }
 
         if let audioTrack {
             tracker.emitSubscribeStart(
-                kind: .audio, trackName: audioTrack.name, trackEpoch: audioTrackEpoch
+                kind: .audio, trackName: audioTrack.name, trackEpoch: audioEpoch
             )
             KitLogger.player.debug(
                 "Audio track: \(audioTrack.name), config = \(audioTrack.config.debugDescription), container=\(audioTrack.rawConfig.container)"
@@ -454,7 +453,7 @@ extension PlaybackPipeline {
                     name: audioTrack.name,
                     container: audioTrack.rawConfig.container,
                     catalog: catalog,
-                    maxLatencyMs: maxLatencyMs
+                    maxLatency: maxLatency
                 )
             } catch {
                 if firstError == nil { firstError = error }
@@ -464,7 +463,7 @@ extension PlaybackPipeline {
                     kind: .audio,
                     trackName: audioTrack.name,
                     message: error.localizedDescription,
-                    trackEpoch: audioTrackEpoch
+                    trackEpoch: audioEpoch
                 )
             }
         }
@@ -479,13 +478,13 @@ extension PlaybackPipeline {
         name: String,
         container: Container,
         catalog: Catalog,
-        maxLatencyMs: UInt64
+        maxLatency: Duration
     ) throws -> MediaTrack {
         try MediaTrack(
             broadcast: catalog.broadcast,
             name: name,
             container: container,
-            maxLatencyMs: maxLatencyMs
+            maxLatencyMs: maxLatency.millisecondsUInt64Clamped
         )
     }
 

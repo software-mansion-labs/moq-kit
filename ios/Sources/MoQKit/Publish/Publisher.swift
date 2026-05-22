@@ -178,7 +178,7 @@ public final class Publisher {
     /// The underlying FFI broadcast producer.
     internal let broadcast: MoqBroadcastProducer
 
-    internal let clock = Clock()
+    internal let clock = PublisherClock()
 
     private let stateContinuation: AsyncStream<PublisherState>.Continuation
     private let eventsContinuation: AsyncStream<PublisherEvent>.Continuation
