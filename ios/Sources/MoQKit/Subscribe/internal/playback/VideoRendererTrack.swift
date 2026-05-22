@@ -21,13 +21,22 @@ struct VideoRendererSample {
 /// `onDataAvailable` is fired **outside** the lock to avoid potential deadlocks
 /// with callers that re-enter under the same lock.
 final class VideoRendererTrack: @unchecked Sendable {
+    let trackName: String
+    let isSwitch: Bool
     let processor: VideoFrameProcessor
 
     private var buffer: JitterBuffer<VideoRendererSample>
     private let lock = UnfairLock()
     private var onDataAvailable: (() -> Void)?
 
-    init(config: MoqVideo, targetBufferingMs: UInt64) throws {
+    init(
+        trackName: String,
+        isSwitch: Bool,
+        config: MoqVideo,
+        targetBufferingMs: UInt64
+    ) throws {
+        self.trackName = trackName
+        self.isSwitch = isSwitch
         self.processor = try VideoFrameProcessor(config: config)
         self.buffer = JitterBuffer<VideoRendererSample>(
             targetBufferingUs: targetBufferingMs * 1_000)
@@ -37,8 +46,9 @@ final class VideoRendererTrack: @unchecked Sendable {
 
     /// Process a raw frame payload through the `VideoFrameProcessor` and insert the result
     /// into the jitter buffer.
-    func insert(payload: Data, timestampUs: UInt64, keyframe: Bool) {
+    func insert(payload: Data, timestampUs: UInt64, keyframe: Bool) -> Bool {
         var notify: (() -> Void)? = nil
+        var accepted = false
 
         lock.withLock {
             do {
@@ -49,7 +59,9 @@ final class VideoRendererTrack: @unchecked Sendable {
 
                 let sample = VideoRendererSample(sampleBuffer: sb, isKeyframe: keyframe)
 
+                let countBeforeInsert = buffer.count
                 let shouldNotify = buffer.insert(item: sample, timestampUs: timestampUs)
+                accepted = buffer.count > countBeforeInsert
                 let pendingKeyframe = buffer.state == .pending && keyframe
 
                 notify = (shouldNotify || pendingKeyframe) ? onDataAvailable : nil
@@ -59,6 +71,7 @@ final class VideoRendererTrack: @unchecked Sendable {
         }
 
         notify?()
+        return accepted
     }
 
     // MARK: - Consumption (called from enqueueQueue)

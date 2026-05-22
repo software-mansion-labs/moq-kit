@@ -143,9 +143,8 @@ private struct BroadcastPlayerView: View {
                     }
                 }
 
-                // Expandable stats
-                if let stats = entry.playbackStats {
-                    StatsCardView(stats: stats)
+                if entry.player != nil {
+                    DiagnosticsCardView(entry: entry)
                 }
             }
             .padding(12)
@@ -170,22 +169,21 @@ private struct InfoPill: View {
     }
 }
 
-// MARK: - Stats Card
+// MARK: - Diagnostics Card
 
-private struct StatsCardView: View {
-    let stats: PlaybackStats
-    @State private var isExpanded = false
+private struct DiagnosticsCardView: View {
+    @ObservedObject var entry: BroadcastEntry
+    @State private var isExpanded = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header — always visible
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     isExpanded.toggle()
                 }
             } label: {
                 HStack {
-                    Label("Playback Stats", systemImage: "chart.bar.fill")
+                    Label("Stats for Nerds", systemImage: "waveform.path.ecg")
                         .font(.subheadline)
                         .fontWeight(.medium)
                     Spacer()
@@ -203,84 +201,14 @@ private struct StatsCardView: View {
                 Divider()
                     .padding(.vertical, 8)
 
-                VStack(spacing: 10) {
-                    // Latency section
-                    if stats.videoLatencyMs != nil || stats.audioLatencyMs != nil {
-                        StatsSection(title: "Latency") {
-                            if let ms = stats.videoLatencyMs {
-                                StatRow(
-                                    label: "Video", value: "\(Int(ms)) ms", color: latencyColor(ms))
-                            }
-                            if let ms = stats.audioLatencyMs {
-                                StatRow(
-                                    label: "Audio", value: "\(Int(ms)) ms", color: latencyColor(ms))
-                            }
-                        }
-                    }
-
-                    // Buffers section
-                    if stats.audioRingBufferMs != nil || stats.videoJitterBufferMs != nil {
-                        StatsSection(title: "Buffers") {
-                            if let ms = stats.videoJitterBufferMs {
-                                StatRow(label: "Video jitter buffer", value: "\(Int(ms)) ms")
-                            }
-                            if let ms = stats.audioRingBufferMs {
-                                StatRow(label: "Audio ring buffer", value: "\(Int(ms)) ms")
-                            }
-                        }
-                    }
-
-                    // Throughput section
-                    if stats.videoBitrateKbps != nil || stats.audioBitrateKbps != nil
-                        || stats.videoFps != nil
-                    {
-                        StatsSection(title: "Throughput") {
-                            if let kbps = stats.videoBitrateKbps {
-                                StatRow(label: "Video bitrate", value: formatBitrate(kbps))
-                            }
-                            if let kbps = stats.audioBitrateKbps {
-                                StatRow(label: "Audio bitrate", value: formatBitrate(kbps))
-                            }
-                            if let fps = stats.videoFps {
-                                StatRow(label: "Frame rate", value: "\(Int(fps)) fps")
-                            }
-                        }
-                    }
-
-                    // Startup section
-                    if stats.timeToFirstVideoFrameMs != nil || stats.timeToFirstAudioFrameMs != nil
-                    {
-                        StatsSection(title: "Startup") {
-                            if let ms = stats.timeToFirstVideoFrameMs {
-                                StatRow(label: "First video frame", value: "\(Int(ms)) ms")
-                            }
-                            if let ms = stats.timeToFirstAudioFrameMs {
-                                StatRow(label: "First audio frame", value: "\(Int(ms)) ms")
-                            }
-                        }
-                    }
-
-                    // Health section
-                    if hasHealthStats {
-                        StatsSection(title: "Health") {
-                            if let s = stats.videoStalls, s.count > 0 {
-                                StatRow(
-                                    label: "Video stalls",
-                                    value: "\(s.count) (\(Int(s.totalDurationMs)) ms)",
-                                    color: .orange)
-                            }
-                            if let s = stats.audioStalls, s.count > 0 {
-                                StatRow(
-                                    label: "Audio stalls",
-                                    value: "\(s.count) (\(Int(s.totalDurationMs)) ms)",
-                                    color: .orange)
-                            }
-                            if let d = stats.videoFramesDropped, d > 0 {
-                                StatRow(label: "Video frames dropped", value: "\(d)", color: .red)
-                            }
-                            if let d = stats.audioFramesDropped, d > 0 {
-                                StatRow(label: "Audio frames dropped", value: "\(d)", color: .red)
-                            }
+                VStack(spacing: 12) {
+                    startupSection
+                    selectedTracksSection
+                    if let stats = entry.playbackStats {
+                        liveStatsSections(stats)
+                    } else {
+                        StatsSection(title: "Live") {
+                            StatRow(label: "Playback samples", value: "pending", color: .secondary)
                         }
                     }
                 }
@@ -294,23 +222,192 @@ private struct StatsCardView: View {
     @ViewBuilder
     private var summaryView: some View {
         HStack(spacing: 8) {
-            if let ms = stats.videoLatencyMs {
+            if let ms = entry.startupDiagnostics.playRequestToPlaybackStartMs {
+                Text("start \(formatMs(ms))")
+                    .foregroundStyle(.secondary)
+            }
+            if let ms = entry.playbackStats?.videoLatencyMs {
                 Text("\(Int(ms)) ms")
                     .foregroundStyle(latencyColor(ms))
             }
-            if let fps = stats.videoFps {
-                Text("\(Int(fps)) fps")
+            if let fps = entry.playbackStats?.videoFps {
+                Text(formatFps(fps))
                     .foregroundStyle(.secondary)
             }
         }
         .font(.caption)
     }
 
-    private var hasHealthStats: Bool {
-        (stats.videoStalls.map { $0.count > 0 } ?? false)
-            || (stats.audioStalls.map { $0.count > 0 } ?? false)
-            || (stats.videoFramesDropped.map { $0 > 0 } ?? false)
-            || (stats.audioFramesDropped.map { $0 > 0 } ?? false)
+    @ViewBuilder
+    private var startupSection: some View {
+        let startup = entry.startupDiagnostics
+        StatsSection(title: "Startup") {
+            if let ms = startup.initToPlayRequestMs {
+                StatRow(label: "Init -> play request", value: formatMs(ms))
+            } else {
+                StatRow(label: "Init -> play request", value: "pending", color: .secondary)
+            }
+            if let ms = startup.playRequestToPlaybackStartMs {
+                StatRow(label: "Play request -> playback", value: formatMs(ms), color: startupColor(ms))
+            } else if startup.playRequestedAtMs != nil {
+                StatRow(label: "Play request -> playback", value: "pending", color: .secondary)
+            }
+            if let kind = startup.playbackStartedByKind {
+                StatRow(label: "Playback start trigger", value: kind)
+            }
+            if let stats = entry.playbackStats {
+                if let ms = stats.timeToFirstVideoFrameMs {
+                    StatRow(label: "Play request -> video playable", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = stats.timeToFirstAudioFrameMs {
+                    StatRow(label: "Play request -> audio playable", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = stats.timeToFirstVideoPlayingMs {
+                    StatRow(label: "Play request -> video playing", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = stats.timeToFirstAudioPlayingMs {
+                    StatRow(label: "Play request -> audio playing", value: formatMs(ms), color: startupColor(ms))
+                }
+            }
+        }
+
+        if !startup.orderedTracks.isEmpty {
+            StatsSection(title: "Track Lifecycle") {
+                ForEach(startup.orderedTracks) { track in
+                    TrackStartupView(
+                        track: track,
+                        playRequestedAtMs: startup.playRequestedAtMs,
+                        formatMs: formatMs,
+                        startupColor: startupColor
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var selectedTracksSection: some View {
+        if entry.selectedVideoTrack != nil || entry.selectedAudioTrack != nil {
+            StatsSection(title: "Selected Tracks") {
+                if let video = entry.selectedVideoTrack {
+                    StatRow(label: "Video track", value: trackLabel(video.name))
+                    StatRow(label: "Video codec", value: video.config.codec)
+                    if let coded = video.config.coded {
+                        StatRow(label: "Video coded size", value: "\(coded.width)x\(coded.height)")
+                    }
+                    if let framerate = video.config.framerate {
+                        StatRow(label: "Declared frame rate", value: formatFps(framerate))
+                    }
+                    if let bitrate = video.config.bitrate {
+                        StatRow(label: "Declared video bitrate", value: formatBitsPerSecond(bitrate))
+                    }
+                }
+                if let audio = entry.selectedAudioTrack {
+                    StatRow(label: "Audio track", value: trackLabel(audio.name))
+                    StatRow(label: "Audio codec", value: audio.config.codec)
+                    StatRow(label: "Audio format", value: "\(audio.config.sampleRate) Hz / \(audio.config.channelCount) ch")
+                    if let bitrate = audio.config.bitrate {
+                        StatRow(label: "Declared audio bitrate", value: formatBitsPerSecond(bitrate))
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func liveStatsSections(_ stats: PlaybackStats) -> some View {
+        if stats.videoLatencyMs != nil || stats.audioLatencyMs != nil {
+            StatsSection(title: "Latency") {
+                if let ms = stats.videoLatencyMs {
+                    StatRow(label: "Video live latency", value: formatMs(ms), color: latencyColor(ms))
+                }
+                if let ms = stats.audioLatencyMs {
+                    StatRow(label: "Audio live latency", value: formatMs(ms), color: latencyColor(ms))
+                }
+            }
+        }
+
+        if stats.audioRingBufferMs != nil || stats.videoJitterBufferMs != nil {
+            StatsSection(title: "Buffers") {
+                if let ms = stats.videoJitterBufferMs {
+                    StatRow(label: "Video jitter buffer", value: formatMs(ms), color: bufferColor(ms))
+                }
+                if let ms = stats.audioRingBufferMs {
+                    StatRow(label: "Audio ring buffer", value: formatMs(ms), color: bufferColor(ms))
+                }
+                StatRow(label: "Target buffer", value: formatMs(entry.targetLatencyMs))
+            }
+        }
+
+        if stats.videoBitrateKbps != nil || stats.audioBitrateKbps != nil || stats.videoFps != nil {
+            StatsSection(title: "Throughput") {
+                if let kbps = stats.videoBitrateKbps {
+                    StatRow(label: "Video bitrate", value: formatBitrate(kbps))
+                }
+                if let kbps = stats.audioBitrateKbps {
+                    StatRow(label: "Audio bitrate", value: formatBitrate(kbps))
+                }
+                if let fps = stats.videoFps {
+                    StatRow(label: "Displayed frame rate", value: formatFps(fps))
+                }
+            }
+        }
+
+        if stats.videoSwitches != nil || stats.audioSwitches != nil {
+            StatsSection(title: "Quality Switches") {
+                if let switches = stats.videoSwitches {
+                    TrackSwitchStatsView(
+                        kind: "Video",
+                        switches: switches,
+                        formatMs: formatMs,
+                        startupColor: startupColor
+                    )
+                }
+                if let switches = stats.audioSwitches {
+                    TrackSwitchStatsView(
+                        kind: "Audio",
+                        switches: switches,
+                        formatMs: formatMs,
+                        startupColor: startupColor
+                    )
+                }
+            }
+        }
+
+        if hasHealthStats(stats) {
+            StatsSection(title: "Health") {
+                if let s = stats.videoStalls {
+                    StatRow(label: "Video stalls", value: formatStalls(s), color: stallColor(s))
+                }
+                if let s = stats.audioStalls {
+                    StatRow(label: "Audio stalls", value: formatStalls(s), color: stallColor(s))
+                }
+                if let d = stats.videoFramesDropped {
+                    StatRow(label: "Video frames dropped", value: "\(d)", color: d > 0 ? .red : .primary)
+                }
+                if let d = stats.audioFramesDropped {
+                    StatRow(label: "Audio frames dropped", value: "\(d)", color: d > 0 ? .red : .primary)
+                }
+            }
+        }
+
+        if stats.videoArrival != nil || stats.audioArrival != nil {
+            StatsSection(title: "Frame Arrival") {
+                if let arrival = stats.videoArrival {
+                    ArrivalStatsView(kind: "Video", arrival: arrival)
+                }
+                if let arrival = stats.audioArrival {
+                    ArrivalStatsView(kind: "Audio", arrival: arrival)
+                }
+            }
+        }
+    }
+
+    private func hasHealthStats(_ stats: PlaybackStats) -> Bool {
+        stats.videoStalls != nil
+            || stats.audioStalls != nil
+            || stats.videoFramesDropped != nil
+            || stats.audioFramesDropped != nil
     }
 
     private func latencyColor(_ ms: Double) -> Color {
@@ -319,15 +416,259 @@ private struct StatsCardView: View {
         return .red
     }
 
+    private func startupColor(_ ms: Double) -> Color {
+        if ms < 250 { return .green }
+        if ms < 1000 { return .orange }
+        return .red
+    }
+
+    private func bufferColor(_ ms: Double) -> Color {
+        let target = entry.targetLatencyMs
+        if ms < target * 0.25 { return .orange }
+        if ms > target * 2 { return .orange }
+        return .primary
+    }
+
+    private func stallColor(_ stats: StallStats) -> Color {
+        stats.count > 0 ? .orange : .primary
+    }
+
+    private func formatMs(_ ms: Double) -> String {
+        if ms >= 1000 {
+            return String(format: "%.2f s", ms / 1000)
+        }
+        return "\(Int(ms.rounded())) ms"
+    }
+
     private func formatBitrate(_ kbps: Double) -> String {
         if kbps >= 1000 {
             return String(format: "%.1f Mbps", kbps / 1000)
         }
         return "\(Int(kbps)) kbps"
     }
+
+    private func formatBitsPerSecond(_ bps: UInt64) -> String {
+        formatBitrate(Double(bps) / 1000)
+    }
+
+    private func formatFps(_ fps: Double) -> String {
+        if fps >= 10 {
+            return "\(Int(fps.rounded())) fps"
+        }
+        return String(format: "%.1f fps", fps)
+    }
+
+    private func formatStalls(_ stats: StallStats) -> String {
+        "\(stats.count) / \(formatMs(stats.totalDurationMs)) / \(formatPercent(stats.rebufferingRatio))"
+    }
+
+    private func formatPercent(_ ratio: Double) -> String {
+        String(format: "%.1f%%", ratio * 100)
+    }
+
+    private func trackLabel(_ value: String) -> String {
+        value.isEmpty ? "unnamed" : value
+    }
 }
 
 // MARK: - Stats Helpers
+
+private struct TrackStartupView: View {
+    let track: TrackStartupDiagnostics
+    let playRequestedAtMs: Double?
+    let formatMs: (Double) -> String
+    let startupColor: (Double) -> Color
+
+    private var title: String {
+        track.isSwitch ? "\(track.kind.capitalized) switch" : "\(track.kind.capitalized) startup"
+    }
+
+    private var status: (text: String, color: Color) {
+        if track.errorAtMs != nil { return ("error", .red) }
+        if track.activeAtMs != nil { return ("active", .green) }
+        if track.playingAtMs != nil { return ("playing", .green) }
+        if track.frameReadyAtMs != nil { return ("playable", .green) }
+        if track.subscribeReadyAtMs != nil { return ("ready", .green) }
+        if track.subscribeStartedAtMs != nil { return ("subscribing", .orange) }
+        return ("pending", .secondary)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                Text(status.text)
+                    .font(.caption2)
+                    .fontWeight(.semibold)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(status.color.opacity(0.14), in: Capsule())
+                    .foregroundStyle(status.color)
+                Spacer()
+            }
+            if let trackName = track.trackName {
+                StatRow(label: "Track", value: trackName)
+            }
+            if track.isSwitch {
+                if let ms = track.operationToReadyMs(playRequestedAtMs: playRequestedAtMs) {
+                    StatRow(label: "Switch -> ready", value: formatMs(ms), color: startupColor(ms))
+                } else if track.subscribeStartedAtMs != nil, track.errorAtMs == nil {
+                    StatRow(label: "Switch -> ready", value: "pending", color: .secondary)
+                }
+            } else {
+                if let ms = track.subscribeToReadyMs() {
+                    StatRow(label: "Subscribe -> ready", value: formatMs(ms), color: startupColor(ms))
+                } else if track.subscribeStartedAtMs != nil, track.errorAtMs == nil {
+                    StatRow(label: "Subscribe -> ready", value: "pending", color: .secondary)
+                }
+                if let ms = track.operationToReadyMs(playRequestedAtMs: playRequestedAtMs) {
+                    StatRow(label: "Play request -> ready", value: formatMs(ms), color: startupColor(ms))
+                }
+            }
+            if let ms = track.readyToFrameMs() {
+                StatRow(label: "Ready -> playable frame", value: formatMs(ms), color: startupColor(ms))
+            }
+            if let ms = track.operationToFrameMs(playRequestedAtMs: playRequestedAtMs) {
+                StatRow(label: "\(track.operationLabel) -> playable frame", value: formatMs(ms), color: startupColor(ms))
+            }
+            if let ms = track.frameToPlayingMs() {
+                StatRow(label: "Playable frame -> playing", value: formatMs(ms), color: startupColor(ms))
+            }
+            if let ms = track.operationToPlayingMs(playRequestedAtMs: playRequestedAtMs) {
+                StatRow(label: "\(track.operationLabel) -> playing", value: formatMs(ms), color: startupColor(ms))
+            }
+            if let ms = track.operationToActiveMs(playRequestedAtMs: playRequestedAtMs) {
+                StatRow(label: "\(track.operationLabel) -> active", value: formatMs(ms), color: startupColor(ms))
+            }
+            if let errorMessage = track.errorMessage {
+                StatRow(label: "Error", value: errorMessage, color: .red)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+private struct TrackSwitchStatsView: View {
+    let kind: String
+    let switches: TrackSwitchStats
+    let formatMs: (Double) -> String
+    let startupColor: (Double) -> Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(kind)
+                .font(.caption)
+                .fontWeight(.medium)
+            StatRow(label: "Switches", value: "\(switches.completedCount) / \(switches.requestedCount)")
+            if let latest = switches.latest {
+                if let trackName = latest.trackName {
+                    StatRow(label: "Latest track", value: trackName)
+                }
+                StatRow(
+                    label: "Latest status",
+                    value: latestStatus(latest),
+                    color: latestStatusColor(latest)
+                )
+                if let ms = latest.switchToReadyMs {
+                    StatRow(label: "Switch -> ready", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = latest.readyToFrameMs {
+                    StatRow(label: "Ready -> playable frame", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = latest.switchToFrameMs {
+                    StatRow(label: "Switch -> playable frame", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = latest.frameToPlayingMs {
+                    StatRow(label: "Playable frame -> playing", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = latest.switchToPlayingMs {
+                    StatRow(label: "Switch -> playing", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let ms = latest.switchToActiveMs {
+                    StatRow(label: "Switch -> active", value: formatMs(ms), color: startupColor(ms))
+                }
+                if let errorMessage = latest.errorMessage {
+                    StatRow(label: "Error", value: errorMessage, color: .red)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func latestStatus(_ latest: TrackSwitch) -> String {
+        if latest.errorMessage != nil { return "error" }
+        if latest.isCompleted { return "active" }
+        if latest.switchToPlayingMs != nil { return "playing" }
+        if latest.switchToFrameMs != nil { return "playable" }
+        if latest.switchToReadyMs != nil { return "ready" }
+        return "pending"
+    }
+
+    private func latestStatusColor(_ latest: TrackSwitch) -> Color {
+        if latest.errorMessage != nil { return .red }
+        if latest.isCompleted || latest.switchToPlayingMs != nil || latest.switchToFrameMs != nil {
+            return .green
+        }
+        return .orange
+    }
+}
+
+private struct ArrivalStatsView: View {
+    let kind: String
+    let arrival: FrameArrivalStats
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(kind)
+                .font(.caption)
+                .fontWeight(.medium)
+            if let fps = arrival.receivedFramesPerSecond {
+                StatRow(label: "Received rate", value: formatFps(fps))
+            }
+            if let average = arrival.averageInterarrivalMs {
+                StatRow(label: "Average interarrival", value: formatMs(average))
+            }
+            if let max = arrival.maxInterarrivalMs {
+                StatRow(label: "Max interarrival", value: formatMs(max))
+            }
+            StatRow(label: "Slow arrivals", value: "\(arrival.slowArrivalCount)", color: arrival.slowArrivalCount > 0 ? .orange : .primary)
+            StatRow(label: "Fast arrivals", value: "\(arrival.fastArrivalCount)", color: arrival.fastArrivalCount > 0 ? .orange : .primary)
+            StatRow(label: "Out of order", value: outOfOrderValue, color: arrival.outOfOrderCount > 0 ? .red : .primary)
+            StatRow(label: "Discontinuities", value: discontinuityValue, color: arrival.discontinuityCount > 0 ? .orange : .primary)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var outOfOrderValue: String {
+        guard let delta = arrival.maxOutOfOrderDeltaMs else {
+            return "\(arrival.outOfOrderCount)"
+        }
+        return "\(arrival.outOfOrderCount) / max \(formatMs(delta))"
+    }
+
+    private var discontinuityValue: String {
+        guard let gap = arrival.maxDiscontinuityGapMs else {
+            return "\(arrival.discontinuityCount)"
+        }
+        return "\(arrival.discontinuityCount) / max \(formatMs(gap))"
+    }
+
+    private func formatMs(_ ms: Double) -> String {
+        if ms >= 1000 {
+            return String(format: "%.2f s", ms / 1000)
+        }
+        return "\(Int(ms.rounded())) ms"
+    }
+
+    private func formatFps(_ fps: Double) -> String {
+        if fps >= 10 {
+            return "\(Int(fps.rounded())) fps"
+        }
+        return String(format: "%.1f fps", fps)
+    }
+}
 
 private struct StatsSection<Content: View>: View {
     let title: String

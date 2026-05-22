@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import QuartzCore
 import MoQKitFFI
 
 // MARK: - VideoRenderer
@@ -54,11 +55,13 @@ final class VideoRenderer: @unchecked Sendable {
     private let timing: any MediaClock
     private let timestampAligner: MediaTimestampAligner?
     private var timelineStarted: Bool
-    private let metrics: PlaybackStatsTracker
+    private let tracker: PlaybackStatsTracker
     private var lastEnqueuedPTS: CMTime = .invalid
     private var lastKnownClockTimeUs: UInt64 = 0
     private var pendingStallCheck: DispatchWorkItem?
     private var pendingDrainWakeup: DispatchWorkItem?
+    private var pendingPlaybackObserver: VideoPlaybackObserver?
+    private var isWaitingForFirstPlayablePlayback = true
     private var hasLoggedFirstEnqueue = false
     private var hasLoggedNoActiveFrame = false
 
@@ -78,12 +81,12 @@ final class VideoRenderer: @unchecked Sendable {
         timestampAligner: MediaTimestampAligner? = nil,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
-        metrics: PlaybackStatsTracker
+        tracker: PlaybackStatsTracker
     ) {
         self.layer = layer
         self.timing = timing
         self.timestampAligner = timestampAligner
-        self.metrics = metrics
+        self.tracker = tracker
         self.activeTrack = track
         let enqueueQueue = DispatchQueue(
             label: "com.swmansion.MoQKit.VideoEnqueue", qos: .userInteractive)
@@ -129,8 +132,11 @@ final class VideoRenderer: @unchecked Sendable {
             pendingStallCheck = nil
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
+            pendingPlaybackObserver?.cancel()
+            pendingPlaybackObserver = nil
             lastEnqueuedPTS = .invalid
             lastKnownClockTimeUs = 0
+            isWaitingForFirstPlayablePlayback = true
             hasLoggedFirstEnqueue = false
             hasLoggedNoActiveFrame = false
         }
@@ -147,7 +153,10 @@ final class VideoRenderer: @unchecked Sendable {
             pendingStallCheck = nil
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
+            pendingPlaybackObserver?.cancel()
+            pendingPlaybackObserver = nil
             lastEnqueuedPTS = .invalid
+            isWaitingForFirstPlayablePlayback = true
             hasLoggedNoActiveFrame = false
         }
     }
@@ -315,9 +324,9 @@ final class VideoRenderer: @unchecked Sendable {
         guard let entry else { return false }
 
         if playable {
-            metrics.recordVideoFrameDisplayed()
+            tracker.recordVideoFrameDisplayed()
         } else {
-            metrics.recordVideoFrameDropped()
+            tracker.recordVideoFrameDropped()
         }
 
         let displaySample = displaySampleBuffer(
@@ -331,6 +340,13 @@ final class VideoRenderer: @unchecked Sendable {
         layer.enqueue(displaySample.sampleBuffer)
         lastEnqueuedPTS = displaySample.presentationTime
         hasLoggedNoActiveFrame = false
+        if playable {
+            scheduleFirstPlayablePlaybackIfNeeded(
+                sourceTimestampUs: entry.timestampUs,
+                presentationTimeUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
+                bufferMs: activeTrack.depthMs
+            )
+        }
         if !hasLoggedFirstEnqueue {
             hasLoggedFirstEnqueue = true
             KitLogger.player.debug(
@@ -338,6 +354,35 @@ final class VideoRenderer: @unchecked Sendable {
             )
         }
         return true
+    }
+
+    private func scheduleFirstPlayablePlaybackIfNeeded(
+        sourceTimestampUs: UInt64,
+        presentationTimeUs: UInt64,
+        bufferMs: Double
+    ) {
+        guard isWaitingForFirstPlayablePlayback else { return }
+        isWaitingForFirstPlayablePlayback = false
+
+        let context = PlaybackStartContext(
+            kind: .video,
+            trackName: activeTrack.trackName,
+            sourceTimestampUs: sourceTimestampUs,
+            targetBufferingMs: activeTrack.targetBufferingUs / 1_000,
+            isSwitch: activeTrack.isSwitch
+        )
+        let observer = VideoPlaybackObserver(
+            layer: layer,
+            timing: timing,
+            context: context,
+            presentationTimeUs: presentationTimeUs,
+            bufferMs: bufferMs,
+            tracker: tracker
+        )
+        pendingPlaybackObserver = observer
+        DispatchQueue.main.async {
+            observer.start()
+        }
     }
 
     private func startClockIfReady() -> Bool {
@@ -402,12 +447,12 @@ final class VideoRenderer: @unchecked Sendable {
             let delaySec = max(0, CMTimeGetSeconds(remaining))
             let workItem = DispatchWorkItem { [weak self] in
                 self?.pendingStallCheck = nil
-                self?.metrics.videoStallBegan()
+                self?.tracker.videoStallBegan()
             }
             pendingStallCheck = workItem
             enqueueQueue.asyncAfter(deadline: .now() + delaySec, execute: workItem)
         } else {
-            metrics.videoStallBegan()
+            tracker.videoStallBegan()
         }
     }
 
@@ -484,6 +529,9 @@ final class VideoRenderer: @unchecked Sendable {
         activeTrack = newTrack
         pendingTrack = nil
         pendingPhase = nil
+        pendingPlaybackObserver?.cancel()
+        pendingPlaybackObserver = nil
+        isWaitingForFirstPlayablePlayback = true
         newTrack.setOnDataAvailable(makeDataAvailableCallback())
         // Current rendition switching assumes all video tracks share one timestamp domain.
         // If future renditions do not, MediaTimestampAligner needs per-video-track live
@@ -496,13 +544,13 @@ final class VideoRenderer: @unchecked Sendable {
     /// Returns the closure registered with each track's `setOnDataAvailable`.
     private func makeDataAvailableCallback() -> () -> Void {
         let queue = enqueueQueue
-        let metricsRef = metrics
+        let trackerRef = tracker
         return { [weak self] in
             queue.async {
                 guard let self else { return }
                 self.pendingStallCheck?.cancel()
                 self.pendingStallCheck = nil
-                metricsRef.videoStallEnded()
+                trackerRef.videoStallEnded()
                 self.armVideoEnqueue()
             }
         }
@@ -579,5 +627,93 @@ final class VideoRenderer: @unchecked Sendable {
         let key = Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque()
         let value = Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
         CFDictionarySetValue(mutableDict, key, value)
+    }
+}
+
+private final class VideoPlaybackObserver: NSObject, @unchecked Sendable {
+    private weak var layer: AVSampleBufferDisplayLayer?
+    private let timing: any MediaClock
+    private let context: PlaybackStartContext
+    private let presentationTimeUs: UInt64
+    private let bufferMs: Double
+    private let tracker: PlaybackStatsTracker
+    private let lock = UnfairLock()
+    private var displayLink: CADisplayLink?
+    private var canceled = false
+
+    init(
+        layer: AVSampleBufferDisplayLayer,
+        timing: any MediaClock,
+        context: PlaybackStartContext,
+        presentationTimeUs: UInt64,
+        bufferMs: Double,
+        tracker: PlaybackStatsTracker
+    ) {
+        self.layer = layer
+        self.timing = timing
+        self.context = context
+        self.presentationTimeUs = presentationTimeUs
+        self.bufferMs = bufferMs
+        self.tracker = tracker
+    }
+
+    func start() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.start() }
+            return
+        }
+
+        let shouldStart = lock.withLock { () -> Bool in
+            guard !canceled, self.displayLink == nil else { return false }
+            return true
+        }
+        guard shouldStart else { return }
+
+        let displayLink = CADisplayLink(target: self, selector: #selector(tick))
+        lock.withLock {
+            self.displayLink = displayLink
+        }
+        displayLink.add(to: .main, forMode: .common)
+        tick()
+    }
+
+    func cancel() {
+        let displayLink = lock.withLock { () -> CADisplayLink? in
+            canceled = true
+            let displayLink = self.displayLink
+            self.displayLink = nil
+            return displayLink
+        }
+
+        guard let displayLink else { return }
+        DispatchQueue.main.async {
+            displayLink.invalidate()
+        }
+    }
+
+    @objc private func tick() {
+        if lock.withLock({ canceled }) {
+            cancel()
+            return
+        }
+
+        guard let layer else {
+            cancel()
+            return
+        }
+
+        if #available(iOS 17.4, *) {
+            guard layer.isReadyForDisplay else { return }
+        }
+        let clockTimeUs = timing.currentTimeUs
+        guard clockTimeUs >= presentationTimeUs else { return }
+
+        tracker.videoPlaybackStarted(
+            context: context,
+            presentationTimeUs: presentationTimeUs,
+            clockTimeUs: clockTimeUs,
+            bufferMs: bufferMs
+        )
+        cancel()
     }
 }

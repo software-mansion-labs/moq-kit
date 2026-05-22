@@ -34,12 +34,16 @@ let package = Package(
         .library(name: "MoQKit", targets: ["MoQKit"])
     ],
     dependencies: [
-        .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.5")
+        .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.5"),
+        .package(url: "https://github.com/apple/swift-atomics", from: "1.2.0")
     ],
     targets: [
         .target(
             name: "MoQKit",
-            dependencies: ["MoQKitFFI"],
+            dependencies: [
+                "MoQKitFFI",
+                .product(name: "Atomics", package: "swift-atomics")
+            ],
             path: "ios/Sources/MoQKit"
         ),
         .target(

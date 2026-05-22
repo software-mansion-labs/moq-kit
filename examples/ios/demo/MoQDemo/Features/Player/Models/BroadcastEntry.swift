@@ -20,6 +20,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var isPlaying = false
     @Published var isPaused = false
     @Published var playbackStats: PlaybackStats?
+    @Published var startupDiagnostics = PlayerStartupDiagnostics()
     @Published var targetLatencyMs: Double
     @Published var volume: Double = 1.0
 
@@ -31,8 +32,8 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         selectedAudioTrack != nil
     }
 
-    private var eventTask: Task<Void, Never>?
-    private var statsTimer: Timer?
+    private var eventsSubscription: PlayerEventSubscription?
+    private var statsSubscription: PlayerEventSubscription?
     private var pendingVideoTrackName: String?
     private var lastNonZeroVolume: Double = 1.0
 
@@ -65,7 +66,10 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             "Attaching player path=\(self.broadcastPath), video=\(self.selectedVideoTrackName ?? "none"), audio=\(self.selectedAudioTrackName ?? "none")"
         )
         self.player = player
-        observeEvents(of: player.events)
+        eventsSubscription?.cancel()
+        eventsSubscription = player.subscribeEvents { [weak self] event in
+            self?.handleEvent(event)
+        }
     }
 
     func switchVideoTrack(to trackName: String) {
@@ -74,9 +78,9 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         Task { try? await player?.switchTrack(to: trackName) }
     }
 
-    // TODO: expose audio-track switching parity with switchVideoTrack — wire through
-    // `player?.switchAudioTrack(to:)` and update `selectedAudioTrackName` on
-    // `.trackSwitched(.audio)`. The field is currently set once in `init`.
+    // TODO: expose audio-track switching parity with switchVideoTrack - wire through
+    // `player?.switchAudioTrack(to:)` and update `selectedAudioTrackName` from
+    // `track.select` / `quality.change`. The field is currently set once in `init`.
 
     func updateTargetLatency(ms: UInt64) {
         targetLatencyMs = Double(ms)
@@ -104,72 +108,265 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         broadcastEntryLogger.debug(
             "Stopping broadcast entry path=\(self.broadcastPath), reason=\(reason), hasPlayer=\(self.player != nil), isPlaying=\(self.isPlaying), isPaused=\(self.isPaused), offline=\(self.offline)"
         )
-        eventTask?.cancel()
-        eventTask = nil
-        stopStatsPolling()
+        eventsSubscription?.cancel()
+        eventsSubscription = nil
+        stopStatsSubscription()
         await player?.stopAll(reason: reason)
         player = nil
         isPlaying = false
     }
 
-    private func observeEvents(of events: AsyncStream<PlayerEvent>) {
-        eventTask?.cancel()
-        eventTask = Task {
-            for await event in events {
-                broadcastEntryLogger.debug(
-                    "Player event path=\(self.broadcastPath), event=\(Self.eventLogDescription(event))"
-                )
-                switch event {
-                case .trackPlaying:
-                    isPlaying = true
-                    startStatsPolling()
-                case .trackSwitched(.video):
-                    if let pendingVideoTrackName {
-                        selectedVideoTrackName = pendingVideoTrackName
-                        self.pendingVideoTrackName = nil
-                    }
-                case .allTracksStopped:
-                    isPlaying = false
-                    offline = true
-                    stopStatsPolling()
-                default:
-                    break
+    private func handleEvent(_ event: PlayerEvent) {
+        broadcastEntryLogger.debug(
+            "Player event path=\(self.broadcastPath), event=\(event.name.rawValue), attributes=\(Self.eventAttributesDescription(event.attributes))"
+        )
+
+        startupDiagnostics.record(event)
+
+        switch event.name {
+        case .playbackStart:
+            isPlaying = true
+            isPaused = false
+            startStatsSubscription()
+        case .playbackPause:
+            isPaused = true
+        case .playbackResume:
+            isPaused = false
+        case .qualityChange:
+            if event.string("kind") == "video" {
+                if let trackName = event.string("trackName") {
+                    selectedVideoTrackName = trackName
+                    self.pendingVideoTrackName = nil
+                } else if let pendingVideoTrackName {
+                    selectedVideoTrackName = pendingVideoTrackName
+                    self.pendingVideoTrackName = nil
                 }
             }
+        case .playbackEnd:
+            isPlaying = false
+            isPaused = false
+            offline = true
+            stopStatsSubscription()
+        default:
+            break
         }
     }
 
-    private static func eventLogDescription(_ event: PlayerEvent) -> String {
-        switch event {
-        case .trackPlaying(let kind):
-            return "trackPlaying(\(kind.rawValue))"
-        case .trackPaused(let kind):
-            return "trackPaused(\(kind.rawValue))"
-        case .trackStopped(let kind):
-            return "trackStopped(\(kind.rawValue))"
-        case .allTracksStopped:
-            return "allTracksStopped"
-        case .error(let kind, let message):
-            return "error(\(kind.rawValue), \(message))"
-        case .trackSwitched(let kind):
-            return "trackSwitched(\(kind.rawValue))"
+    private func startStatsSubscription() {
+        guard statsSubscription == nil, let player else { return }
+
+        statsSubscription = player.subscribeStats { [weak self] stats in
+            self?.playbackStats = stats
         }
     }
 
-    private func startStatsPolling() {
-        guard statsTimer == nil else { return }
-
-        statsTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                playbackStats = player?.stats
-            }
-        }
-    }
-
-    private func stopStatsPolling() {
-        statsTimer?.invalidate()
-        statsTimer = nil
+    private func stopStatsSubscription() {
+        statsSubscription?.cancel()
+        statsSubscription = nil
         playbackStats = nil
     }
+
+    private static func eventAttributesDescription(
+        _ attributes: [String: PlayerEventValue]
+    ) -> String {
+        guard !attributes.isEmpty else { return "{}" }
+        return attributes.keys.sorted().map { key in
+            "\(key)=\(eventValueDescription(attributes[key]))"
+        }.joined(separator: ",")
+    }
+
+    private static func eventValueDescription(_ value: PlayerEventValue?) -> String {
+        switch value {
+        case .some(.string(let value)):
+            return value
+        case .some(.int(let value)):
+            return String(value)
+        case .some(.uint(let value)):
+            return String(value)
+        case .some(.double(let value)):
+            return String(value)
+        case .some(.bool(let value)):
+            return String(value)
+        case nil:
+            return "nil"
+        }
+    }
 }
+
+struct PlayerStartupDiagnostics {
+    var playerInitAtMs: Double?
+    var playRequestedAtMs: Double?
+    var playbackStartedAtMs: Double?
+    var playbackEndedAtMs: Double?
+    var playbackStartedByKind: String?
+    private var tracks: [TrackStartupDiagnostics] = []
+
+    var initToPlayRequestMs: Double? {
+        elapsed(from: playerInitAtMs, to: playRequestedAtMs)
+    }
+
+    var playRequestToPlaybackStartMs: Double? {
+        elapsed(from: playRequestedAtMs, to: playbackStartedAtMs)
+    }
+
+    var orderedTracks: [TrackStartupDiagnostics] {
+        tracks
+    }
+
+    mutating func record(_ event: PlayerEvent) {
+        switch event.name {
+        case .playerInit:
+            playerInitAtMs = playerInitAtMs ?? event.timestampMs
+        case .playbackRequest:
+            playRequestedAtMs = event.timestampMs
+            playbackStartedAtMs = nil
+            playbackEndedAtMs = nil
+            playbackStartedByKind = nil
+            tracks.removeAll()
+        case .playbackStart:
+            playbackStartedAtMs = playbackStartedAtMs ?? event.timestampMs
+            playbackStartedByKind = event.string("kind") ?? playbackStartedByKind
+        case .playbackEnd:
+            playbackEndedAtMs = event.timestampMs
+        case .trackSubscribeStart:
+            startTrack(event)
+        case .trackSubscribeReady:
+            updateTrack(event) { track in
+                track.trackName = event.string("trackName") ?? track.trackName
+                track.subscribeReadyAtMs = track.subscribeReadyAtMs ?? event.timestampMs
+                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+            }
+        case .trackFrameReady:
+            updateTrack(event) { track in
+                track.trackName = event.string("trackName") ?? track.trackName
+                track.frameReadyAtMs = track.frameReadyAtMs ?? event.timestampMs
+                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+            }
+        case .trackPlaying:
+            updateTrack(event) { track in
+                track.trackName = event.string("trackName") ?? track.trackName
+                track.playingAtMs = track.playingAtMs ?? event.timestampMs
+                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+            }
+        case .trackSubscribeError:
+            updateTrack(event) { track in
+                track.trackName = event.string("trackName") ?? track.trackName
+                track.errorAtMs = event.timestampMs
+                track.errorMessage = event.string("message")
+                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+            }
+        case .trackSubscribeEnd:
+            updateTrack(event) { track in
+                track.trackName = event.string("trackName") ?? track.trackName
+                track.endedAtMs = event.timestampMs
+            }
+        case .qualityChange:
+            updateTrack(event) { track in
+                track.trackName = event.string("trackName") ?? track.trackName
+                track.activeAtMs = track.activeAtMs ?? event.timestampMs
+                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+            }
+        default:
+            break
+        }
+    }
+
+    func elapsed(from start: Double?, to end: Double?) -> Double? {
+        guard let start, let end else { return nil }
+        return max(0, end - start)
+    }
+
+    private mutating func startTrack(_ event: PlayerEvent) {
+        guard let kind = event.string("kind") else { return }
+        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: kind)
+        track.trackName = event.string("trackName")
+        track.subscribeStartedAtMs = event.timestampMs
+        track.isSwitch = event.bool("isSwitch") ?? false
+        tracks.append(track)
+    }
+
+    private mutating func updateTrack(
+        _ event: PlayerEvent,
+        _ update: (inout TrackStartupDiagnostics) -> Void
+    ) {
+        guard let kind = event.string("kind") else { return }
+        let trackName = event.string("trackName")
+        let isSwitch = event.bool("isSwitch")
+
+        if let index = tracks.indices.reversed().first(where: { index in
+            let track = tracks[index]
+            guard track.kind == kind else { return false }
+            if let trackName, let existingName = track.trackName, existingName != trackName {
+                return false
+            }
+            if let isSwitch, track.isSwitch != isSwitch {
+                return false
+            }
+            return true
+        }) {
+            update(&tracks[index])
+            return
+        }
+
+        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: kind)
+        update(&track)
+        tracks.append(track)
+    }
+}
+
+struct TrackStartupDiagnostics: Identifiable {
+    let id: String
+    let kind: String
+    var trackName: String?
+    var subscribeStartedAtMs: Double?
+    var subscribeReadyAtMs: Double?
+    var frameReadyAtMs: Double?
+    var playingAtMs: Double?
+    var activeAtMs: Double?
+    var errorAtMs: Double?
+    var errorMessage: String?
+    var endedAtMs: Double?
+    var isSwitch = false
+
+    var operationLabel: String {
+        isSwitch ? "Switch" : "Play request"
+    }
+
+    func subscribeToReadyMs() -> Double? {
+        elapsed(from: subscribeStartedAtMs, to: subscribeReadyAtMs)
+    }
+
+    func operationToReadyMs(playRequestedAtMs: Double?) -> Double? {
+        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: subscribeReadyAtMs)
+    }
+
+    func readyToFrameMs() -> Double? {
+        elapsed(from: subscribeReadyAtMs, to: frameReadyAtMs)
+    }
+
+    func operationToFrameMs(playRequestedAtMs: Double?) -> Double? {
+        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: frameReadyAtMs)
+    }
+
+    func frameToPlayingMs() -> Double? {
+        elapsed(from: frameReadyAtMs, to: playingAtMs)
+    }
+
+    func operationToPlayingMs(playRequestedAtMs: Double?) -> Double? {
+        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: playingAtMs)
+    }
+
+    func operationToActiveMs(playRequestedAtMs: Double?) -> Double? {
+        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: activeAtMs)
+    }
+
+    private func operationStartedAtMs(playRequestedAtMs: Double?) -> Double? {
+        isSwitch ? subscribeStartedAtMs : playRequestedAtMs
+    }
+
+    private func elapsed(from start: Double?, to end: Double?) -> Double? {
+        guard let start, let end else { return nil }
+        return max(0, end - start)
+    }
+}
+

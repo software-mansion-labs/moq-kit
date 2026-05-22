@@ -25,12 +25,25 @@ public struct PlaybackStats: Sendable {
     /// Video bitrate of the incoming stream in kilobits per second. `nil` when no video track is active.
     public let videoBitrateKbps: Double?
 
-    /// Time from ``Player/play()`` to the first decoded audio frame, in milliseconds.
+    /// Time from ``Player/play()`` to the first decoded audio frame accepted for playback,
+    /// in milliseconds.
     /// `nil` before the first frame arrives or when no audio track is active.
     public let timeToFirstAudioFrameMs: Double?
-    /// Time from ``Player/play()`` to the first decoded video frame, in milliseconds.
+    /// Time from ``Player/play()`` to the first video frame accepted for playback,
+    /// in milliseconds.
     /// `nil` before the first frame arrives or when no video track is active.
     public let timeToFirstVideoFrameMs: Double?
+    /// Time from ``Player/play()`` until the first audio sample reaches the audio render
+    /// callback, in milliseconds. Corresponds to ``PlayerEventName/trackPlaying`` for
+    /// `kind == "audio"`: the first sample has reached the device output mix.
+    /// `nil` before audio starts playing or when no audio track is active.
+    public let timeToFirstAudioPlayingMs: Double?
+    /// Time from ``Player/play()`` until the first video frame is on screen, in
+    /// milliseconds. Corresponds to ``PlayerEventName/trackPlaying`` for `kind == "video"`:
+    /// the display layer reports `isReadyForDisplay` and the clock has reached the frame's
+    /// presentation time.
+    /// `nil` before video starts playing or when no video track is active.
+    public let timeToFirstVideoPlayingMs: Double?
 
     /// Current video frame rate in frames per second. `nil` when no video track is active.
     public let videoFps: Double?
@@ -49,6 +62,11 @@ public struct PlaybackStats: Sendable {
     public let audioArrival: FrameArrivalStats?
     /// Video frame arrival diagnostics. `nil` before video frames arrive.
     public let videoArrival: FrameArrivalStats?
+
+    /// Audio track switch diagnostics. `nil` until an audio switch is requested.
+    public let audioSwitches: TrackSwitchStats?
+    /// Video track switch diagnostics. `nil` until a video switch is requested.
+    public let videoSwitches: TrackSwitchStats?
 }
 
 extension PlaybackStats {
@@ -61,13 +79,17 @@ extension PlaybackStats {
         videoBitrateKbps: nil,
         timeToFirstAudioFrameMs: nil,
         timeToFirstVideoFrameMs: nil,
+        timeToFirstAudioPlayingMs: nil,
+        timeToFirstVideoPlayingMs: nil,
         videoFps: nil,
         audioFramesDropped: nil,
         videoFramesDropped: nil,
         audioRingBufferMs: nil,
         videoJitterBufferMs: nil,
         audioArrival: nil,
-        videoArrival: nil
+        videoArrival: nil,
+        audioSwitches: nil,
+        videoSwitches: nil
     )
 }
 
@@ -89,10 +111,10 @@ public struct FrameArrivalStats: Sendable {
     public let averageInterarrivalMs: Double?
     /// Maximum wall-clock interval between received frames over the recent rolling window.
     public let maxInterarrivalMs: Double?
-    /// Number of intervals where wall-clock arrival lagged PTS spacing by the gap threshold.
-    public let arrivalGapCount: UInt64
-    /// Number of intervals where frames arrived much faster than their PTS spacing.
-    public let burstCount: UInt64
+    /// Number of intervals where wall-clock arrival was much slower than PTS spacing.
+    public let slowArrivalCount: UInt64
+    /// Number of intervals where wall-clock arrival was much faster than PTS spacing.
+    public let fastArrivalCount: UInt64
     /// Number of frames whose timestamp was lower than the highest timestamp previously seen.
     public let outOfOrderCount: UInt64
     /// Largest timestamp regression observed for an out-of-order frame.
@@ -103,31 +125,36 @@ public struct FrameArrivalStats: Sendable {
     public let maxDiscontinuityGapMs: Double?
 }
 
-// MARK: - PlayerEvent
+/// Quality switch diagnostics for one media kind.
+public struct TrackSwitchStats: Sendable {
+    /// Number of switch attempts requested since the current playback session started.
+    public let requestedCount: UInt64
+    /// Number of switch attempts that became active since the current playback session started.
+    public let completedCount: UInt64
+    /// Latest switch attempt, including in-progress and failed attempts.
+    public let latest: TrackSwitch?
+}
 
-/// Events emitted on ``Player/events`` during playback.
-public enum PlayerEvent: Sendable {
-    /// The first frame of the given track kind was successfully decoded and rendered.
-    case trackPlaying(TrackKind)
-    /// Playback of the given track kind was paused via ``Player/pause()``.
-    case trackPaused(TrackKind)
-    /// The remote sender stopped the given track (the track stream ended).
-    case trackStopped(TrackKind)
-    /// All active tracks have stopped. The events stream completes immediately after this event.
-    case allTracksStopped
-    /// A non-fatal error occurred on the given track. Playback of other tracks continues.
-    case error(TrackKind, String)
-    /// The first frame from a newly selected rendition was rendered after a successful
-    /// track switch.
-    case trackSwitched(TrackKind)
-
-    /// Identifies which type of media track an event relates to.
-    public enum TrackKind: String, Sendable {
-        /// Video track events.
-        case video
-        /// Audio track events.
-        case audio
-    }
+/// Milestones for a single quality switch attempt.
+public struct TrackSwitch: Sendable {
+    /// Track name requested by the latest switch attempt.
+    public let trackName: String?
+    /// Whether this switch has emitted ``PlayerEventName/qualityChange``.
+    public let isCompleted: Bool
+    /// Error message from ``PlayerEventName/trackSubscribeError``, if the switch failed.
+    public let errorMessage: String?
+    /// Time from switch request to successful raw track subscription.
+    public let switchToReadyMs: Double?
+    /// Time from switch request to the first accepted or decoded frame.
+    public let switchToFrameMs: Double?
+    /// Time from subscription success to the first accepted or decoded frame.
+    public let readyToFrameMs: Double?
+    /// Time from the first accepted or decoded frame to playback.
+    public let frameToPlayingMs: Double?
+    /// Time from switch request to playback.
+    public let switchToPlayingMs: Double?
+    /// Time from switch request to the switched rendition becoming active.
+    public let switchToActiveMs: Double?
 }
 
 // MARK: - Player
@@ -162,21 +189,17 @@ public final class Player {
     ///
     /// Add this layer to your view hierarchy before calling ``play()``.
     public let videoLayer: AVSampleBufferDisplayLayer
-    /// Emits ``PlayerEvent`` values as playback progresses.
-    ///
-    /// The stream completes after ``PlayerEvent/allTracksStopped`` is emitted or after
-    /// ``Player/stopAll(reason:)`` is called.
-    public let events: AsyncStream<PlayerEvent>
-
     private let catalog: Catalog
     private var selectedVideoTrack: VideoTrackInfo?
     private var selectedAudioTrack: AudioTrackInfo?
     private var targetBufferingMs: UInt64
     private var storedAudioVolume: Float
-    private let eventsContinuation: AsyncStream<PlayerEvent>.Continuation
+    private let events: PlayerEventHub
+    private let tracker: PlaybackStatsTracker
 
     private var playbackPipeline: PlaybackPipeline?
-    private var lastStats: PlaybackStats = .empty
+    private var statsSamplingTask: Task<Void, Never>?
+    private var isPaused = false
 
     private var hasVideoTrack: Bool { selectedVideoTrack != nil }
 
@@ -188,7 +211,7 @@ public final class Player {
     ///   - catalog: The catalog to play.
     ///   - videoTrackName: The selected video track name, or `nil` to disable video.
     ///   - audioTrackName: The selected audio track name, or `nil` to disable audio.
-    ///   - targetBufferingMs: Target playout delay in milliseconds. Higher values improve
+    ///   - targetBufferingMs: Target playback delay in milliseconds. Higher values improve
     ///     resilience to network jitter at the cost of increased end-to-end latency. Defaults
     ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(ms:)``.
     ///   - volume: Initial per-player audio output volume, clamped to `0...1`.
@@ -214,10 +237,12 @@ public final class Player {
         self.targetBufferingMs = targetBufferingMs
         self.storedAudioVolume = Self.clampedVolume(volume)
         self.videoLayer = AVSampleBufferDisplayLayer()
+        let events = PlayerEventHub()
+        self.events = events
+        self.tracker = PlaybackStatsTracker(events: events)
 
-        var cont: AsyncStream<PlayerEvent>.Continuation!
-        self.events = AsyncStream { cont = $0 }
-        self.eventsContinuation = cont
+        events.emit(.playerInit, attributes: sessionEventAttributes)
+        emitSelectedTrackSelect()
     }
 
     // MARK: - Public API
@@ -237,7 +262,7 @@ public final class Player {
         playbackPipeline?.setVolume(clamped)
     }
 
-    /// Adjusts the target playout delay without interrupting playback.
+    /// Adjusts the target playback delay without interrupting playback.
     ///
     /// The change takes effect immediately on both the audio ring buffer and the video jitter
     /// buffer. Lowering the value reduces latency but increases the risk of stalls on lossy
@@ -255,16 +280,38 @@ public final class Player {
     /// Values are sampled over the most recent one-second window. See ``PlaybackStats``
     /// for field-level documentation.
     public var stats: PlaybackStats {
-        guard let playbackPipeline else { return lastStats }
-        let stats = playbackPipeline.getStats()
-        lastStats = stats
-        return stats
+        tracker.currentStats()
+    }
+
+    /// Subscribes to player lifecycle events.
+    ///
+    /// Events represent transitions: subscribe lifecycle, frame-ready, playing,
+    /// quality changes, stalls, rebuffer, errors. Subscribe before calling ``play()``
+    /// when startup events are needed — events emitted before subscription are not
+    /// replayed. Periodic samples (bitrate, latency, buffer fill, fps) are not events;
+    /// use ``subscribeStats(_:)`` for those. The returned subscription must be retained
+    /// for as long as events are needed.
+    public func subscribeEvents(
+        _ listener: @escaping @MainActor @Sendable (PlayerEvent) -> Void
+    ) -> PlayerEventSubscription {
+        events.subscribe(listener)
+    }
+
+    /// Subscribes to pushed ``PlaybackStats`` snapshots.
+    ///
+    /// The listener is invoked on the main actor when the next sample is published.
+    /// Naive consumers cannot distinguish an "empty" initial snapshot from real data,
+    /// so the first push is deferred until a real sample is available.
+    public func subscribeStats(
+        _ listener: @escaping @MainActor @Sendable (PlaybackStats) -> Void
+    ) -> PlayerEventSubscription {
+        tracker.subscribeStats(listener)
     }
 
     /// Subscribes to the selected tracks and begins decoding and rendering.
     ///
-    /// Playback events are emitted on ``events``. Call ``pause()`` to temporarily suspend
-    /// rendering without releasing the track subscriptions, or
+    /// Call ``pause()`` to temporarily suspend rendering without releasing the track
+    /// subscriptions, or
     /// ``Player/stopAll(reason:)`` to fully tear down.
     /// Calling `play()` while the player is already running is a no-op.
     ///
@@ -278,32 +325,37 @@ public final class Player {
         try validateSelectedTracks()
 
         KitLogger.player.debug("Starting real-time player for \(self.playbackLogDescription), targetBufferingMs=\(self.targetBufferingMs)")
+        let requestEvent = events.emit(.playbackRequest, attributes: sessionEventAttributes)
+        tracker.beginSession(
+            rebufferKind: selectedAudioTrack != nil ? .audio : .video,
+            at: requestEvent.timestampMs
+        )
+        let shouldEmitResume = isPaused
         playbackPipeline = try makePlaybackPipeline()
+        if shouldEmitResume {
+            events.emit(.playbackResume, attributes: sessionEventAttributes)
+        }
+        isPaused = false
+        startStatsSampling()
+        publishStatsSample()
     }
 
     /// Pauses playback and cancels all track subscriptions.
     ///
-    /// Emits ``PlayerEvent/trackPaused(_:)`` for each active track. To resume, call
-    /// ``play()`` again — it will re-subscribe to the tracks and restart rendering from the
-    /// current live position.
+    /// Emits ``PlayerEventName/playbackPause``. To resume, call ``play()`` again —
+    /// it will re-subscribe to the tracks and restart rendering from the current live
+    /// position.
     public func pause() async {
-        let hadVideoTrack = hasVideoTrack
-        let hadAudioTrack = hasAudioTrack
         KitLogger.player.debug("Pausing real-time player for \(self.playbackLogDescription)")
         teardown(permanent: false, reason: "pause()")
-
-        if hadVideoTrack {
-            eventsContinuation.yield(.trackPaused(.video))
-        }
-        if hadAudioTrack {
-            eventsContinuation.yield(.trackPaused(.audio))
-        }
+        events.emit(.playbackPause, attributes: sessionEventAttributes)
+        isPaused = true
     }
 
     /// Stops playback, closes all track subscriptions, and releases all rendering resources.
     ///
-    /// The ``events`` stream completes after this call. The player cannot be reused — create a
-    /// new ``Player`` instance to start playback again.
+    /// The player cannot be reused after this call — create a new ``Player`` instance to
+    /// start playback again.
     public func stopAll(reason: String = "caller requested stopAll") async {
         KitLogger.player.debug("Stopping real-time player for \(self.playbackLogDescription), reason=\(reason)")
         teardown(permanent: true, reason: reason)
@@ -315,7 +367,9 @@ public final class Player {
     /// old track alive until the new one starts rendering. Switching video on from `nil`,
     /// or turning it off, may require a full playback restart and cause a brief gap.
     ///
-    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the new rendition starts rendering.
+    /// Emits ``PlayerEventName/trackSelect`` when the selected track is committed,
+    /// and ``PlayerEventName/qualityChange`` when an active rendition switch starts
+    /// rendering.
     ///
     /// - Parameter trackName: A video track name from the current catalog, or `nil`
     ///   to disable video playback.
@@ -332,6 +386,7 @@ public final class Player {
 
         guard let playbackPipeline else {
             selectedVideoTrack = newTrack
+            emitTrackSelect(kind: "video", trackName: newTrack?.name)
             return
         }
 
@@ -339,6 +394,7 @@ public final class Player {
             switch try playbackPipeline.switchVideo(to: newTrack) {
             case .handled:
                 selectedVideoTrack = newTrack
+                emitTrackSelect(kind: "video", trackName: newTrack.name)
                 return
             case .restartRequired:
                 break
@@ -346,6 +402,7 @@ public final class Player {
         }
 
         selectedVideoTrack = newTrack
+        emitTrackSelect(kind: "video", trackName: newTrack?.name)
         try await restartPlaybackForSelectionChange()
     }
 
@@ -355,7 +412,9 @@ public final class Player {
     /// over in place. Switching audio on from `nil`, or turning it off, may require a full
     /// playback restart and cause a brief gap.
     ///
-    /// Emits ``PlayerEvent/trackSwitched(_:)`` when the new rendition starts rendering.
+    /// Emits ``PlayerEventName/trackSelect`` when the selected track is committed,
+    /// and ``PlayerEventName/qualityChange`` when an active rendition switch starts
+    /// rendering.
     ///
     /// - Parameter trackName: An audio track name from the current catalog, or `nil`
     ///   to disable audio playback.
@@ -372,6 +431,7 @@ public final class Player {
 
         guard let playbackPipeline else {
             selectedAudioTrack = newTrack
+            emitTrackSelect(kind: "audio", trackName: newTrack?.name)
             return
         }
 
@@ -379,6 +439,7 @@ public final class Player {
             switch try playbackPipeline.switchAudio(to: newTrack) {
             case .handled:
                 selectedAudioTrack = newTrack
+                emitTrackSelect(kind: "audio", trackName: newTrack.name)
                 return
             case .restartRequired:
                 break
@@ -386,30 +447,34 @@ public final class Player {
         }
 
         selectedAudioTrack = newTrack
+        emitTrackSelect(kind: "audio", trackName: newTrack?.name)
         try await restartPlaybackForSelectionChange()
     }
 
     deinit {
         KitLogger.player.debug("Player deinit; stopping any active playback pipeline")
+        statsSamplingTask?.cancel()
         playbackPipeline?.stop(reason: "Player deinit")
-        eventsContinuation.finish()
+        events.emit(.playerDestroy)
     }
 
     // MARK: - Private: teardown
 
     private func teardown(permanent: Bool, reason: String) {
         if let playbackPipeline {
-            lastStats = playbackPipeline.getStats()
+            tracker.publishSample(playbackPipeline.sampleStats())
         } else {
             KitLogger.player.debug("Player teardown requested with no active pipeline for \(self.playbackLogDescription), permanent=\(permanent), reason=\(reason)")
         }
+        stopStatsSampling()
         playbackPipeline?.stop(reason: "Player teardown permanent=\(permanent), reason=\(reason)")
         playbackPipeline = nil
+        tracker.closeOutInFlightStalls()
 
         if permanent {
-            lastStats = .empty
-
-            eventsContinuation.finish()
+            tracker.emitPlaybackEnd(reason: reason)
+            tracker.reset()
+            isPaused = false
         }
     }
 
@@ -431,8 +496,29 @@ public final class Player {
             targetBufferingMs: targetBufferingMs,
             volume: storedAudioVolume,
             videoLayer: videoLayer,
-            eventContinuation: eventsContinuation
+            tracker: tracker
         )
+    }
+
+    private func startStatsSampling() {
+        statsSamplingTask?.cancel()
+        statsSamplingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled else { break }
+                self?.publishStatsSample()
+            }
+        }
+    }
+
+    private func stopStatsSampling() {
+        statsSamplingTask?.cancel()
+        statsSamplingTask = nil
+    }
+
+    private func publishStatsSample() {
+        guard let playbackPipeline else { return }
+        tracker.publishSample(playbackPipeline.sampleStats())
     }
 
     // MARK: - Private: helpers
@@ -444,6 +530,39 @@ public final class Player {
 
     private var playbackLogDescription: String {
         "catalog=\(catalog.path), video=\(selectedVideoTrack?.name ?? "none"), audio=\(selectedAudioTrack?.name ?? "none")"
+    }
+
+    private var sessionEventAttributes: [String: PlayerEventValue] {
+        var attributes: [String: PlayerEventValue] = [
+            "catalogPath": .string(catalog.path),
+            "targetBufferingMs": .uint(targetBufferingMs)
+        ]
+        if let selectedVideoTrack {
+            attributes["videoTrackName"] = .string(selectedVideoTrack.name)
+        }
+        if let selectedAudioTrack {
+            attributes["audioTrackName"] = .string(selectedAudioTrack.name)
+        }
+        return attributes
+    }
+
+    private func emitSelectedTrackSelect() {
+        if let selectedVideoTrack {
+            emitTrackSelect(kind: "video", trackName: selectedVideoTrack.name)
+        }
+        if let selectedAudioTrack {
+            emitTrackSelect(kind: "audio", trackName: selectedAudioTrack.name)
+        }
+    }
+
+    private func emitTrackSelect(kind: String, trackName: String?) {
+        var attributes: [String: PlayerEventValue] = ["kind": .string(kind)]
+        if let trackName {
+            attributes["trackName"] = .string(trackName)
+        } else {
+            attributes["enabled"] = .bool(false)
+        }
+        events.emit(.trackSelect, attributes: attributes)
     }
 
     private func validateSelectedTracks() throws {
@@ -504,3 +623,4 @@ public final class Player {
         return track
     }
 }
+
