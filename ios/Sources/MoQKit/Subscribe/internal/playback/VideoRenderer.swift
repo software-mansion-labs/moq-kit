@@ -187,7 +187,7 @@ final class VideoRenderer: @unchecked Sendable {
         }
     }
 
-    var bufferFillMs: Double { syncOnEnqueueQueue { activeTrack.depthMs } }
+    var bufferFill: Duration { .millisecondsClamped(syncOnEnqueueQueue { activeTrack.depthMs }) }
 
     var hasPendingTrack: Bool { syncOnEnqueueQueue { pendingTrack != nil } }
 
@@ -363,7 +363,7 @@ final class VideoRenderer: @unchecked Sendable {
             kind: .video,
             trackName: activeTrack.trackName,
             sourceTimestampUs: sourceTimestampUs,
-            targetBufferingMs: activeTrack.targetBufferingUs / 1_000,
+            targetBuffering: .microsecondsClamped(activeTrack.targetBufferingUs),
             trackEpoch: activeTrack.trackEpoch
         )
 

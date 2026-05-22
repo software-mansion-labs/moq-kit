@@ -11,11 +11,11 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         clock.advance(ms: 200)
         tracker.onMediaFrame(kind: .audio, frame: mediaFrame(payloadSize: 100, timestampUs: 200_000))
 
-        let stats = tracker.sampleStats(
-            audioLatencyMs: nil,
-            videoLatencyMs: nil,
-            audioRingBufferMs: nil,
-            videoJitterBufferMs: nil
+        let stats = tracker.getStats(
+            audioLatency: nil,
+            videoLatency: nil,
+            audioRingBuffer: nil,
+            videoJitterBuffer: nil
         )
 
         XCTAssertEqual(stats.audioBitrateKbps ?? 0, 8.0, accuracy: 0.001)
@@ -32,17 +32,17 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         clock.advance(ms: 100)
         tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 200_000))
 
-        let stats = tracker.sampleStats(
-            audioLatencyMs: nil,
-            videoLatencyMs: nil,
-            audioRingBufferMs: nil,
-            videoJitterBufferMs: nil
+        let stats = tracker.getStats(
+            audioLatency: nil,
+            videoLatency: nil,
+            audioRingBuffer: nil,
+            videoJitterBuffer: nil
         )
 
         let arrival = try XCTUnwrap(stats.videoArrival)
         XCTAssertEqual(arrival.receivedFramesPerSecond ?? 0, 15.0, accuracy: 0.001)
-        XCTAssertEqual(arrival.averageInterarrivalMs ?? 0, 100.0, accuracy: 0.001)
-        XCTAssertEqual(arrival.maxInterarrivalMs ?? 0, 100.0, accuracy: 0.001)
+        XCTAssertEqual(arrival.averageInterarrival?.milliseconds ?? 0, 100.0, accuracy: 0.001)
+        XCTAssertEqual(arrival.maxInterarrival?.milliseconds ?? 0, 100.0, accuracy: 0.001)
     }
 
     func testArrivalDiagnosticsTrackSlowFastAndOutOfOrderFrames() throws {
@@ -59,18 +59,18 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         clock.advance(ms: 10)
         tracker.onMediaFrame(kind: .audio, frame: mediaFrame(timestampUs: 250_000))
 
-        let stats = tracker.sampleStats(
-            audioLatencyMs: nil,
-            videoLatencyMs: nil,
-            audioRingBufferMs: nil,
-            videoJitterBufferMs: nil
+        let stats = tracker.getStats(
+            audioLatency: nil,
+            videoLatency: nil,
+            audioRingBuffer: nil,
+            videoJitterBuffer: nil
         )
 
         let arrival = try XCTUnwrap(stats.audioArrival)
         XCTAssertEqual(arrival.slowArrivalCount, 1)
         XCTAssertEqual(arrival.fastArrivalCount, 1)
         XCTAssertEqual(arrival.outOfOrderCount, 1)
-        XCTAssertEqual(arrival.maxOutOfOrderDeltaMs ?? 0, 50.0, accuracy: 0.001)
+        XCTAssertEqual(arrival.maxOutOfOrderDelta?.milliseconds ?? 0, 50.0, accuracy: 0.001)
     }
 
     func testFrameDiscontinuityResetsBaselineAndTracksGap() throws {
@@ -82,18 +82,18 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         clock.advance(ms: 700)
         tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 700_000, keyframe: true))
 
-        let stats = tracker.sampleStats(
-            audioLatencyMs: nil,
-            videoLatencyMs: nil,
-            audioRingBufferMs: nil,
-            videoJitterBufferMs: nil
+        let stats = tracker.getStats(
+            audioLatency: nil,
+            videoLatency: nil,
+            audioRingBuffer: nil,
+            videoJitterBuffer: nil
         )
 
         let arrival = try XCTUnwrap(stats.videoArrival)
         XCTAssertEqual(arrival.discontinuityCount, 1)
-        XCTAssertEqual(arrival.maxDiscontinuityGapMs ?? 0, 700.0, accuracy: 0.001)
+        XCTAssertEqual(arrival.maxDiscontinuityGap?.milliseconds ?? 0, 700.0, accuracy: 0.001)
         XCTAssertEqual(arrival.slowArrivalCount, 0)
-        XCTAssertNil(arrival.averageInterarrivalMs)
+        XCTAssertNil(arrival.averageInterarrival)
     }
 
     func testTrackStartedResetsArrivalBaseline() throws {
@@ -106,18 +106,18 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         tracker.onMediaTrackStarted(kind: .video)
         tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 100_000))
 
-        let stats = tracker.sampleStats(
-            audioLatencyMs: nil,
-            videoLatencyMs: nil,
-            audioRingBufferMs: nil,
-            videoJitterBufferMs: nil
+        let stats = tracker.getStats(
+            audioLatency: nil,
+            videoLatency: nil,
+            audioRingBuffer: nil,
+            videoJitterBuffer: nil
         )
 
         // Track baseline was reset on the second `onMediaTrackStarted`, so the
         // 1_000_000us → 100_000us PTS regression is not compared as out-of-order.
         let arrival = try XCTUnwrap(stats.videoArrival)
         XCTAssertEqual(arrival.outOfOrderCount, 0)
-        XCTAssertNil(arrival.averageInterarrivalMs)
+        XCTAssertNil(arrival.averageInterarrival)
     }
 }
 
@@ -126,22 +126,21 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         let hub = PlayerEventHub()
         let tracker = PlaybackStatsTracker(events: hub)
 
-        let session = PlayerEventHub.timestampMs()
-        tracker.beginSession(rebufferKind: .audio, at: session)
+        tracker.beginSession(rebufferKind: .audio)
 
         tracker.emitTrackReady(
             kind: .audio,
             trackName: "audio",
             trackEpoch: 1,
             sourceTimestampUs: 0,
-            targetBufferingMs: 100,
+            targetBuffering: .milliseconds(100),
             keyframe: false,
             payloadBytes: 64
         )
         tracker.expectAudioPlaybackStart(
             trackName: "audio",
             sourceTimestampUs: 0,
-            targetBufferingMs: 100,
+            targetBuffering: .milliseconds(100),
             trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
@@ -151,8 +150,8 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         )
 
         let stats = tracker.currentStats()
-        XCTAssertNotNil(stats.timeToFirst.audioFrameMs)
-        XCTAssertNotNil(stats.timeToFirst.audioPlayingMs)
+        XCTAssertNotNil(stats.timeToFirst.audioFrame)
+        XCTAssertNotNil(stats.timeToFirst.audioPlaying)
         XCTAssertNotNil(stats.audioStalls)
         XCTAssertNil(stats.videoStalls)
     }
@@ -165,13 +164,13 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         let subscription = hub.subscribeInternal { recorder.record($0) }
         defer { subscription.cancel() }
 
-        tracker.beginSession(rebufferKind: .audio, at: PlayerEventHub.timestampMs())
+        tracker.beginSession(rebufferKind: .audio)
 
         // Video starts playing first — must not emit playbackStart because rebufferKind=audio.
         tracker.videoPlaybackStarted(
             context: PlaybackStartContext(
                 kind: .video, trackName: "video", sourceTimestampUs: 0,
-                targetBufferingMs: 100, trackEpoch: 1
+                targetBuffering: .milliseconds(100), trackEpoch: 1
             ),
             presentationTimeUs: 0,
             clockTimeUs: 0,
@@ -182,7 +181,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         tracker.expectAudioPlaybackStart(
             trackName: "audio",
             sourceTimestampUs: 0,
-            targetBufferingMs: 100,
+            targetBuffering: .milliseconds(100),
             trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
@@ -201,12 +200,12 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         let subscription = hub.subscribeInternal { recorder.record($0) }
         defer { subscription.cancel() }
 
-        tracker.beginSession(rebufferKind: .audio, at: PlayerEventHub.timestampMs())
+        tracker.beginSession(rebufferKind: .audio)
 
-        // First playing call seeds readyAtMs so stall stats can be reported.
+        // First playing call seeds readyAt so stall stats can be reported.
         tracker.expectAudioPlaybackStart(
             trackName: "audio", sourceTimestampUs: 0,
-            targetBufferingMs: 100, trackEpoch: 1
+            targetBuffering: .milliseconds(100), trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
             renderedTimestampUs: 0, outputHostTime: nil, outputPresentationLatencyMs: nil
@@ -228,21 +227,53 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         XCTAssertEqual(stats.audioStalls?.count, 1)
     }
 
+    func testCloseOutInFlightStallsDoesNotCreateIdleStallStats() {
+        let clock = TestPlaybackWallClock()
+        let tracker = makeTracker(clock: clock)
+
+        tracker.beginSession(rebufferKind: .audio)
+        tracker.closeOutInFlightStalls()
+
+        XCTAssertNil(tracker.currentStats().audioStalls)
+    }
+
+    func testCloseOutInFlightStallsEndsActiveStall() throws {
+        let clock = TestPlaybackWallClock()
+        let tracker = makeTracker(clock: clock)
+
+        tracker.beginSession(rebufferKind: .audio)
+        tracker.expectAudioPlaybackStart(
+            trackName: "audio", sourceTimestampUs: 0,
+            targetBuffering: .milliseconds(100), trackEpoch: 1
+        )
+        tracker.audioPlaybackStartedIfExpected(
+            renderedTimestampUs: 0, outputHostTime: nil, outputPresentationLatencyMs: nil
+        )
+
+        tracker.audioStallBegan()
+        clock.advance(ms: 250)
+        tracker.closeOutInFlightStalls()
+
+        let stats = try XCTUnwrap(tracker.currentStats().audioStalls)
+        XCTAssertEqual(stats.count, 1)
+        XCTAssertEqual(stats.totalDuration.milliseconds, 250, accuracy: 0.001)
+    }
+
     func testSwitchLifecycleAggregatesMilestones() throws {
         let hub = PlayerEventHub()
         let tracker = PlaybackStatsTracker(events: hub)
 
-        tracker.beginSession(rebufferKind: .video, at: PlayerEventHub.timestampMs())
+        tracker.beginSession(rebufferKind: .video)
 
         tracker.emitSubscribeStart(kind: .video, trackName: "video-high", trackEpoch: 2)
         tracker.emitTrackReady(
             kind: .video, trackName: "video-high", trackEpoch: 2,
-            sourceTimestampUs: 0, targetBufferingMs: 100, keyframe: true, payloadBytes: 64
+            sourceTimestampUs: 0, targetBuffering: .milliseconds(100), keyframe: true, payloadBytes: 64
         )
         tracker.videoPlaybackStarted(
             context: PlaybackStartContext(
                 kind: .video, trackName: "video-high", sourceTimestampUs: 0,
-                targetBufferingMs: 100, trackEpoch: 2
+                targetBuffering: .milliseconds(100), trackEpoch: 2
             ),
             presentationTimeUs: 0,
             clockTimeUs: 0,
@@ -256,16 +287,16 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         XCTAssertEqual(switches.completedCount, 1)
         XCTAssertEqual(latest.trackName, "video-high")
         XCTAssertTrue(latest.isCompleted)
-        XCTAssertNotNil(latest.switchToReadyMs)
-        XCTAssertNotNil(latest.readyToPlayingMs)
-        XCTAssertNotNil(latest.switchToActiveMs)
+        XCTAssertNotNil(latest.switchToReady)
+        XCTAssertNotNil(latest.readyToPlaying)
+        XCTAssertNotNil(latest.switchToActive)
     }
 
     func testFailedSwitchRecordsErrorWithoutCompletion() throws {
         let hub = PlayerEventHub()
         let tracker = PlaybackStatsTracker(events: hub)
 
-        tracker.beginSession(rebufferKind: .audio, at: PlayerEventHub.timestampMs())
+        tracker.beginSession(rebufferKind: .audio)
         tracker.emitSubscribeStart(kind: .audio, trackName: "audio-alt", trackEpoch: 2)
         tracker.emitSubscribeError(
             kind: .audio, trackName: "audio-alt",

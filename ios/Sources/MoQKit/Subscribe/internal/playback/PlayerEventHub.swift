@@ -66,9 +66,9 @@ enum PlayerEventAttributes {
         kind: MediaFrameKind,
         trackName: String? = nil,
         message: String? = nil,
-        trackEpoch: UInt64? = nil,
+        trackEpoch: TrackEpoch? = nil,
         sourceTimestampUs: UInt64? = nil,
-        targetBufferingMs: UInt64? = nil,
+        targetBuffering: Duration? = nil,
         keyframe: Bool? = nil,
         payloadBytes: Int? = nil
     ) -> [String: PlayerEventValue] {
@@ -85,8 +85,8 @@ enum PlayerEventAttributes {
         if let sourceTimestampUs {
             attributes["sourceTimestampUs"] = .uint(sourceTimestampUs)
         }
-        if let targetBufferingMs {
-            attributes["targetBufferingMs"] = .uint(targetBufferingMs)
+        if let targetBuffering {
+            attributes["targetBufferingMs"] = .uint(targetBuffering.millisecondsUInt64Clamped)
         }
         if let keyframe {
             attributes["keyframe"] = .bool(keyframe)

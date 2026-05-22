@@ -170,7 +170,7 @@ final class PlayerDemoViewModel: ObservableObject {
                 catalog: catalog,
                 videoTrackName: selectedTracks.videoTrackName,
                 audioTrackName: selectedTracks.audioTrackName,
-                targetBufferingMs: targetLatencyMs,
+                targetBuffering: .milliseconds(Int64(min(targetLatencyMs, UInt64(Int64.max)))),
                 volume: Float(entry.volume)
             )
         else {

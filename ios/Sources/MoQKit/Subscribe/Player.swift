@@ -8,12 +8,12 @@ import MoQKitFFI
 ///
 /// Obtain the current snapshot via ``Player/stats``.
 public struct PlaybackStats: Sendable {
-    /// Estimated end-to-end audio latency in milliseconds (wall-clock delay from sender to speaker).
+    /// Estimated end-to-end audio latency (wall-clock delay from sender to speaker).
     /// `nil` when no audio track is active.
-    public let audioLatencyMs: Double?
-    /// Estimated end-to-end video latency in milliseconds.
+    public let audioLatency: Duration?
+    /// Estimated end-to-end video latency.
     /// `nil` when no video track is active.
-    public let videoLatencyMs: Double?
+    public let videoLatency: Duration?
 
     /// Audio stall statistics since playback started. `nil` when no audio track is active.
     public let audioStalls: StallStats?
@@ -37,11 +37,11 @@ public struct PlaybackStats: Sendable {
     /// Total video frames dropped since playback started. `nil` when no video track is active.
     public let videoFramesDropped: UInt64?
 
-    /// Current audio ring buffer fill level in milliseconds. Reflects how much audio is
+    /// Current audio ring buffer fill level. Reflects how much audio is
     /// buffered ahead of the playhead. `nil` when no audio track is active.
-    public let audioRingBufferMs: Double?
-    /// Current video jitter buffer fill level in milliseconds. `nil` when no video track is active.
-    public let videoJitterBufferMs: Double?
+    public let audioRingBuffer: Duration?
+    /// Current video jitter buffer fill level. `nil` when no video track is active.
+    public let videoJitterBuffer: Duration?
     /// Audio frame arrival diagnostics. `nil` before audio frames arrive.
     public let audioArrival: FrameArrivalStats?
     /// Video frame arrival diagnostics. `nil` before video frames arrive.
@@ -55,8 +55,8 @@ public struct PlaybackStats: Sendable {
 
 extension PlaybackStats {
     static let empty = PlaybackStats(
-        audioLatencyMs: nil,
-        videoLatencyMs: nil,
+        audioLatency: nil,
+        videoLatency: nil,
         audioStalls: nil,
         videoStalls: nil,
         audioBitrateKbps: nil,
@@ -65,8 +65,8 @@ extension PlaybackStats {
         videoFps: nil,
         audioFramesDropped: nil,
         videoFramesDropped: nil,
-        audioRingBufferMs: nil,
-        videoJitterBufferMs: nil,
+        audioRingBuffer: nil,
+        videoJitterBuffer: nil,
         audioArrival: nil,
         videoArrival: nil,
         audioSwitches: nil,
@@ -77,21 +77,21 @@ extension PlaybackStats {
 /// Startup timing milestones from ``Player/play()``.
 public struct TimeToFirstPlaybackStats: Sendable {
     /// Time to the first decoded audio frame accepted for playback.
-    public let audioFrameMs: Double?
+    public let audioFrame: Duration?
     /// Time to the first video frame accepted for playback.
-    public let videoFrameMs: Double?
+    public let videoFrame: Duration?
     /// Time until the first audio sample reaches the audio render callback.
-    public let audioPlayingMs: Double?
+    public let audioPlaying: Duration?
     /// Time until the first video frame is reported as playing.
-    public let videoPlayingMs: Double?
+    public let videoPlaying: Duration?
 }
 
 extension TimeToFirstPlaybackStats {
     static let empty = TimeToFirstPlaybackStats(
-        audioFrameMs: nil,
-        videoFrameMs: nil,
-        audioPlayingMs: nil,
-        videoPlayingMs: nil
+        audioFrame: nil,
+        videoFrame: nil,
+        audioPlaying: nil,
+        videoPlaying: nil
     )
 }
 
@@ -99,9 +99,9 @@ extension TimeToFirstPlaybackStats {
 public struct StallStats: Sendable {
     /// Number of stall events (playback interruptions) since playback started.
     public let count: UInt64
-    /// Total cumulative duration of all stall events in milliseconds.
-    public let totalDurationMs: Double
-    /// Fraction of playback time spent stalling: `totalDurationMs / totalPlaybackDurationMs`.
+    /// Total cumulative duration of all stall events.
+    public let totalDuration: Duration
+    /// Fraction of playback time spent stalling: `totalDuration / totalPlaybackDuration`.
     public let rebufferingRatio: Double
 }
 
@@ -110,9 +110,9 @@ public struct FrameArrivalStats: Sendable {
     /// Received compressed frames per second over the recent rolling window.
     public let receivedFramesPerSecond: Double?
     /// Average wall-clock interval between received frames over the recent rolling window.
-    public let averageInterarrivalMs: Double?
+    public let averageInterarrival: Duration?
     /// Maximum wall-clock interval between received frames over the recent rolling window.
-    public let maxInterarrivalMs: Double?
+    public let maxInterarrival: Duration?
     /// Number of intervals where wall-clock arrival was much slower than PTS spacing.
     public let slowArrivalCount: UInt64
     /// Number of intervals where wall-clock arrival was much faster than PTS spacing.
@@ -120,11 +120,11 @@ public struct FrameArrivalStats: Sendable {
     /// Number of frames whose timestamp was lower than the highest timestamp previously seen.
     public let outOfOrderCount: UInt64
     /// Largest timestamp regression observed for an out-of-order frame.
-    public let maxOutOfOrderDeltaMs: Double?
+    public let maxOutOfOrderDelta: Duration?
     /// Number of player-detected timestamp discontinuities.
     public let discontinuityCount: UInt64
     /// Largest player-detected timestamp discontinuity.
-    public let maxDiscontinuityGapMs: Double?
+    public let maxDiscontinuityGap: Duration?
 }
 
 /// Track switch diagnostics for one media kind.
@@ -146,13 +146,13 @@ public struct TrackSwitch: Sendable {
     /// Error message from ``PlayerEventName/trackSubscribeError``, if the switch failed.
     public let errorMessage: String?
     /// Time from switch request to the first accepted or decoded frame.
-    public let switchToReadyMs: Double?
+    public let switchToReady: Duration?
     /// Time from the first accepted or decoded frame to playback.
-    public let readyToPlayingMs: Double?
+    public let readyToPlaying: Duration?
     /// Time from switch request to playback.
-    public let switchToPlayingMs: Double?
+    public let switchToPlaying: Duration?
     /// Time from switch request to the switched rendition becoming active.
-    public let switchToActiveMs: Double?
+    public let switchToActive: Duration?
 }
 
 // MARK: - Player
@@ -190,7 +190,7 @@ public final class Player {
     private let catalog: Catalog
     private var selectedVideoTrack: VideoTrackInfo?
     private var selectedAudioTrack: AudioTrackInfo?
-    private var targetBufferingMs: UInt64
+    private var targetBuffering: Duration
     private var storedAudioVolume: Float
     private let events: PlayerEventHub
     private let tracker: PlaybackStatsTracker
@@ -209,9 +209,9 @@ public final class Player {
     ///   - catalog: The catalog to play.
     ///   - videoTrackName: The selected video track name, or `nil` to disable video.
     ///   - audioTrackName: The selected audio track name, or `nil` to disable audio.
-    ///   - targetBufferingMs: Target playback delay in milliseconds. Higher values improve
+    ///   - targetBuffering: Target playback delay. Higher values improve
     ///     resilience to network jitter at the cost of increased end-to-end latency. Defaults
-    ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(ms:)``.
+    ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(_:)``.
     ///   - volume: Initial per-player audio output volume, clamped to `0...1`.
     /// - Throws: ``SessionError/noTracksSelected`` if both media types are disabled.
     /// - Throws: ``SessionError/invalidConfiguration(_:)`` if a requested track name does
@@ -220,7 +220,7 @@ public final class Player {
         catalog: Catalog,
         videoTrackName: String? = nil,
         audioTrackName: String? = nil,
-        targetBufferingMs: UInt64 = 100,
+        targetBuffering: Duration = .milliseconds(100),
         volume: Float = 1.0
     ) throws {
         let selection = try Self.resolveSelection(
@@ -232,7 +232,7 @@ public final class Player {
         self.catalog = catalog
         self.selectedVideoTrack = selection.videoTrack
         self.selectedAudioTrack = selection.audioTrack
-        self.targetBufferingMs = targetBufferingMs
+        self.targetBuffering = targetBuffering
         self.storedAudioVolume = Self.clampedVolume(volume)
         self.videoLayer = AVSampleBufferDisplayLayer()
         let events = PlayerEventHub()
@@ -266,10 +266,10 @@ public final class Player {
     /// buffer. Lowering the value reduces latency but increases the risk of stalls on lossy
     /// networks; raising it improves resilience.
     ///
-    /// - Parameter ms: New target buffering depth in milliseconds.
-    public func updateTargetLatency(ms: UInt64) {
-        targetBufferingMs = ms
-        playbackPipeline?.updateTargetLatency(ms: ms)
+    /// - Parameter latency: New target buffering depth.
+    public func updateTargetLatency(_ latency: Duration) {
+        targetBuffering = latency
+        playbackPipeline?.updateTargetLatency(latency)
     }
 
     /// A snapshot of current playback quality metrics.
@@ -322,11 +322,10 @@ public final class Player {
 
         try validateSelectedTracks()
 
-        KitLogger.player.debug("Starting real-time player for \(self.playbackLogDescription), targetBufferingMs=\(self.targetBufferingMs)")
-        let requestEvent = events.emit(.playbackRequest, attributes: sessionEventAttributes)
+        KitLogger.player.debug("Starting real-time player for \(self.playbackLogDescription), targetBufferingMs=\(self.targetBuffering.milliseconds)")
+        events.emit(.playbackRequest, attributes: sessionEventAttributes)
         tracker.beginSession(
-            rebufferKind: selectedAudioTrack != nil ? .audio : .video,
-            at: requestEvent.timestampMs
+            rebufferKind: selectedAudioTrack != nil ? .audio : .video
         )
         let shouldEmitResume = isPaused
         playbackPipeline = try makePlaybackPipeline()
@@ -460,7 +459,7 @@ public final class Player {
 
     private func teardown(permanent: Bool, reason: String) {
         if let playbackPipeline {
-            tracker.publishSample(playbackPipeline.sampleStats())
+            tracker.publishSample(playbackPipeline.getStats())
         } else {
             KitLogger.player.debug("Player teardown requested with no active pipeline for \(self.playbackLogDescription), permanent=\(permanent), reason=\(reason)")
         }
@@ -491,7 +490,7 @@ public final class Player {
             catalog: catalog,
             videoTrack: selectedVideoTrack,
             audioTrack: selectedAudioTrack,
-            targetBufferingMs: targetBufferingMs,
+            targetBuffering: targetBuffering,
             volume: storedAudioVolume,
             videoLayer: videoLayer,
             tracker: tracker
@@ -516,7 +515,7 @@ public final class Player {
 
     private func publishStatsSample() {
         guard let playbackPipeline else { return }
-        tracker.publishSample(playbackPipeline.sampleStats())
+        tracker.publishSample(playbackPipeline.getStats())
     }
 
     // MARK: - Private: helpers
@@ -533,7 +532,7 @@ public final class Player {
     private var sessionEventAttributes: [String: PlayerEventValue] {
         var attributes: [String: PlayerEventValue] = [
             "catalogPath": .string(catalog.path),
-            "targetBufferingMs": .uint(targetBufferingMs)
+            "targetBufferingMs": .uint(targetBuffering.millisecondsUInt64Clamped)
         ]
         if let selectedVideoTrack {
             attributes["videoTrackName"] = .string(selectedVideoTrack.name)

@@ -21,7 +21,7 @@ final class AudioRenderer: @unchecked Sendable {
     private let engine: AVAudioEngine
     private let sourceNode: AVAudioSourceNode
     private let ringState: RingState
-    private let renderEvents: AudioRenderEventBridge
+    private let eventBridge: AudioRenderEventBridge
     private var volume: Float
 
     init(
@@ -53,11 +53,11 @@ final class AudioRenderer: @unchecked Sendable {
         }
 
         let latencyProbe = AudioOutputLatencyProbe()
-        let renderEvents = AudioRenderEventBridge(
+        let eventBridge = AudioRenderEventBridge(
             tracker: tracker,
             latencyProbe: latencyProbe
         )
-        self.renderEvents = renderEvents
+        self.eventBridge = eventBridge
         let sourceNode = AVAudioSourceNode(format: formatDecoder.outputFormat) {
             _, timestamp, frameCount, audioBufferList -> OSStatus in
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
@@ -93,7 +93,7 @@ final class AudioRenderer: @unchecked Sendable {
                 clock.setTimeUs(ts)
                 let outputHostTime =
                     timestamp.pointee.mHostTime > 0 ? timestamp.pointee.mHostTime : nil
-                renderEvents.recordRenderedAudio(
+                eventBridge.recordRenderedAudio(
                     renderedTimestampUs: ts,
                     outputHostTime: outputHostTime
                 )
@@ -102,14 +102,14 @@ final class AudioRenderer: @unchecked Sendable {
                 if !clockStarted {
                     clockStarted = true
                     clock.setRate(1.0)
-                    renderEvents.recordStallState(isStalled: false)
+                    eventBridge.recordStall(stalled: false)
                 }
             } else {
                 // Full underflow: pause clock to prevent drift
                 if clockStarted {
                     clockStarted = false
                     clock.setRate(0)
-                    renderEvents.recordStallState(isStalled: true)
+                    eventBridge.recordStall(stalled: true)
                 }
             }
 
@@ -142,13 +142,13 @@ final class AudioRenderer: @unchecked Sendable {
     func expectPlaybackStart(
         trackName: String,
         sourceTimestampUs: UInt64,
-        targetBufferingMs: UInt64,
-        trackEpoch: UInt64
+        targetBuffering: Duration,
+        trackEpoch: TrackEpoch
     ) {
-        renderEvents.expectPlaybackStart(
+        eventBridge.expectPlaybackStart(
             trackName: trackName,
             sourceTimestampUs: sourceTimestampUs,
-            targetBufferingMs: targetBufferingMs,
+            targetBuffering: targetBuffering,
             trackEpoch: trackEpoch
         )
     }
@@ -160,7 +160,7 @@ final class AudioRenderer: @unchecked Sendable {
 
     func stop() {
         engine.stop()
-        renderEvents.close()
+        eventBridge.close()
         KitLogger.player.debug("AudioRenderer stopped")
     }
 
@@ -176,20 +176,15 @@ final class AudioRenderer: @unchecked Sendable {
 
     func flush() {
         ringState.reset()
-        renderEvents.clearExpectedPlaybackStart()
+        eventBridge.clearExpectedPlaybackStart()
     }
 
-    var bufferFillMs: Double { ringState.fillMs }
+    var bufferFill: Duration { .millisecondsClamped(ringState.fillMs) }
 
     private static func clampedVolume(_ volume: Float) -> Float {
         guard !volume.isNaN else { return 0 }
         return min(max(volume, 0), 1)
     }
-}
-
-private struct AudioPlaybackStartedRender {
-    let renderedTimestampUs: UInt64
-    let outputHostTime: UInt64?
 }
 
 private final class AudioOutputLatencyProbe: @unchecked Sendable {
@@ -205,24 +200,24 @@ private final class AudioOutputLatencyProbe: @unchecked Sendable {
 
 /// Moves telemetry emission out of the AVAudioSourceNode render callback.
 ///
-/// The render callback only records primitive state under a tiny lock. A timer on a normal
-/// Dispatch queue drains that state and calls into `PlaybackStatsTracker`, where events,
-/// listener fan-out, and AVAudio property reads are allowed.
+/// The render callback only claims a pending first-audio-start context or reports a stall
+/// transition. The actual tracker calls, listener fan-out, and AVAudio property reads run
+/// on `queue`.
 private final class AudioRenderEventBridge: @unchecked Sendable {
     private let tracker: PlaybackStatsTracker
     private let latencyProbe: AudioOutputLatencyProbe
-    private let lock: UnsafeMutablePointer<os_unfair_lock>
-    private let timer: DispatchSourceTimer
+    private let lock = UnfairLock()
+    private let queue = DispatchQueue(
+        label: "com.swmansion.MoQKit.AudioRenderEventBridge",
+        qos: .utility
+    )
 
     private var pendingPlaybackStart: PlaybackStartContext?
-    private var playbackStartedRender: AudioPlaybackStartedRender?
-    private var pendingStallTransitions: [Bool] = []
-    private var isClosed = false
 
-    /// Fast-path probes consulted lock-free from the render thread (`recordRenderedAudio`)
-    /// and the drain timer. Mutated only while `lock` is held.
+    /// Fast-path probe consulted lock-free from the render thread (`recordRenderedAudio`).
+    /// Mutated only while `lock` is held.
     private let hasPendingPlaybackStart = ManagedAtomic<Bool>(false)
-    private let hasPendingStallTransition = ManagedAtomic<Bool>(false)
+    private let isClosed = ManagedAtomic<Bool>(false)
 
     init(
         tracker: PlaybackStatsTracker,
@@ -230,64 +225,43 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
     ) {
         self.tracker = tracker
         self.latencyProbe = latencyProbe
-        self.lock = .allocate(capacity: 1)
-        self.lock.initialize(to: os_unfair_lock())
-
-        let queue = DispatchQueue(label: "com.swmansion.MoQKit.AudioRenderEvents", qos: .utility)
-        let timer = DispatchSource.makeTimerSource(queue: queue)
-        self.timer = timer
-        timer.schedule(deadline: .now() + .milliseconds(25), repeating: .milliseconds(25))
-        timer.setEventHandler { [weak self] in
-            self?.drain()
-        }
-        timer.resume()
     }
 
     deinit {
         close()
-        lock.deinitialize(count: 1)
-        lock.deallocate()
     }
 
     /// Arms the bridge to emit an audio first-frame playback-started event when the audio
     /// render callback observes a rendered timestamp at or beyond `sourceTimestampUs`.
     ///
     /// The `renderedTimestampUs` and `outputHostTime` measurements are captured precisely
-    /// on the audio render thread inside `recordRenderedAudio`. The *event emission* is
-    /// deferred up to ~25 ms (one drain-timer tick) so that locks, Obj-C calls, and listener
-    /// fan-out stay off the realtime audio thread. Consumers using `renderedTimestampUs` as
-    /// a precise wall-clock anchor are unaffected; consumers using the event's own
-    /// `timestampMs` for TTFF gain a bounded skew of ≤25 ms relative to the actual
-    /// first-rendered moment.
+    /// on the audio render thread inside `recordRenderedAudio`. The event emission is
+    /// queued so Obj-C calls and listener fan-out stay off the realtime audio thread.
     func expectPlaybackStart(
         trackName: String,
         sourceTimestampUs: UInt64,
-        targetBufferingMs: UInt64,
-        trackEpoch: UInt64
+        targetBuffering: Duration,
+        trackEpoch: TrackEpoch
     ) {
-        os_unfair_lock_lock(lock)
-        guard !isClosed else {
-            os_unfair_lock_unlock(lock)
-            return
+        guard !isClosed.load(ordering: .relaxed) else { return }
+        lock.withLock {
+            guard !isClosed.load(ordering: .relaxed) else { return }
+            pendingPlaybackStart = PlaybackStartContext(
+                kind: .audio,
+                trackName: trackName,
+                sourceTimestampUs: sourceTimestampUs,
+                targetBuffering: targetBuffering,
+                trackEpoch: trackEpoch
+            )
+            hasPendingPlaybackStart.store(true, ordering: .relaxed)
         }
-        pendingPlaybackStart = PlaybackStartContext(
-            kind: .audio,
-            trackName: trackName,
-            sourceTimestampUs: sourceTimestampUs,
-            targetBufferingMs: targetBufferingMs,
-            trackEpoch: trackEpoch
-        )
-        playbackStartedRender = nil
-        hasPendingPlaybackStart.store(true, ordering: .relaxed)
-        os_unfair_lock_unlock(lock)
     }
 
     func clearExpectedPlaybackStart() {
-        os_unfair_lock_lock(lock)
-        pendingPlaybackStart = nil
-        playbackStartedRender = nil
-        hasPendingPlaybackStart.store(false, ordering: .relaxed)
-        os_unfair_lock_unlock(lock)
+        lock.withLock {
+            pendingPlaybackStart = nil
+            hasPendingPlaybackStart.store(false, ordering: .relaxed)
+        }
     }
 
     func recordRenderedAudio(
@@ -295,93 +269,40 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         outputHostTime: UInt64?
     ) {
         guard hasPendingPlaybackStart.load(ordering: .relaxed) else { return }
-        os_unfair_lock_lock(lock)
-        defer { os_unfair_lock_unlock(lock) }
-
-        guard !isClosed,
-              playbackStartedRender == nil,
-              let sourceTimestampUs = pendingPlaybackStart?.sourceTimestampUs,
-              renderedTimestampUs >= sourceTimestampUs
-        else { return }
-
-        playbackStartedRender = AudioPlaybackStartedRender(
-            renderedTimestampUs: renderedTimestampUs,
-            outputHostTime: outputHostTime
-        )
-        hasPendingPlaybackStart.store(false, ordering: .relaxed)
-    }
-
-    func recordStallState(isStalled: Bool) {
-        os_unfair_lock_lock(lock)
-        defer { os_unfair_lock_unlock(lock) }
-
-        guard !isClosed else { return }
-        pendingStallTransitions.append(isStalled)
-        hasPendingStallTransition.store(true, ordering: .relaxed)
-    }
-
-    func close() {
-        let shouldDrain: Bool
-        os_unfair_lock_lock(lock)
-        shouldDrain = !isClosed
-        isClosed = true
-        hasPendingPlaybackStart.store(false, ordering: .relaxed)
-        os_unfair_lock_unlock(lock)
-
-        guard shouldDrain else { return }
-        drain()
-        timer.cancel()
-    }
-
-    private func drain() {
-        if !hasPendingPlaybackStart.load(ordering: .relaxed),
-           !hasPendingStallTransition.load(ordering: .relaxed) {
+        guard let context = lock.withLock({ () -> PlaybackStartContext? in
+            guard !isClosed.load(ordering: .relaxed),
+                  let context = pendingPlaybackStart,
+                  renderedTimestampUs >= context.sourceTimestampUs
+            else { return nil }
+            pendingPlaybackStart = nil
+            hasPendingPlaybackStart.store(false, ordering: .relaxed)
+            return context
+        }) else {
             return
         }
 
-        let snapshot = takeSnapshot()
-
-        for isStalled in snapshot.stallTransitions {
-            if isStalled {
-                tracker.audioStallBegan()
-            } else {
-                tracker.audioStallEnded()
-            }
-        }
-
-        if let playbackStart = snapshot.playbackStart {
-            tracker.audioPlaybackStarted(
-                context: playbackStart.context,
-                renderedTimestampUs: playbackStart.render.renderedTimestampUs,
-                outputHostTime: playbackStart.render.outputHostTime,
-                outputPresentationLatencyMs: latencyProbe.outputPresentationLatencyMs()
+        queue.async { [weak self] in
+            guard let self, !self.isClosed.load(ordering: .relaxed) else { return }
+            self.tracker.audioPlaybackStarted(
+                context: context,
+                renderedTimestampUs: renderedTimestampUs,
+                outputHostTime: outputHostTime,
+                outputPresentationLatencyMs: self.latencyProbe.outputPresentationLatencyMs()
             )
         }
     }
 
-    private func takeSnapshot()
-        -> (
-            playbackStart: (context: PlaybackStartContext, render: AudioPlaybackStartedRender)?,
-            stallTransitions: [Bool]
-        )
-    {
-        os_unfair_lock_lock(lock)
-
-        let playbackStart: (PlaybackStartContext, AudioPlaybackStartedRender)?
-        if let context = pendingPlaybackStart, let render = playbackStartedRender {
-            playbackStart = (context, render)
-            pendingPlaybackStart = nil
-            playbackStartedRender = nil
-        } else {
-            playbackStart = nil
+    func recordStall(stalled: Bool) {
+        guard !isClosed.load(ordering: .relaxed) else { return }
+        queue.async { [weak self] in
+            guard let self, !self.isClosed.load(ordering: .relaxed) else { return }
+            stalled ? self.tracker.audioStallBegan() : self.tracker.audioStallEnded()
         }
+    }
 
-        let stallTransitions = pendingStallTransitions
-        pendingStallTransitions.removeAll(keepingCapacity: true)
-        hasPendingStallTransition.store(false, ordering: .relaxed)
-
-        os_unfair_lock_unlock(lock)
-        return (playbackStart, stallTransitions)
+    func close() {
+        guard !isClosed.exchange(true, ordering: .relaxed) else { return }
+        clearExpectedPlaybackStart()
     }
 }
 

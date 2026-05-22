@@ -1,6 +1,14 @@
 import MoQKit
 import SwiftUI
 
+private extension Duration {
+    var milliseconds: Double {
+        let components = components
+        return Double(components.seconds) * 1_000.0
+            + Double(components.attoseconds) / 1_000_000_000_000_000.0
+    }
+}
+
 struct SessionPlayerView: View {
     @ObservedObject var viewModel: PlayerDemoViewModel
 
@@ -226,9 +234,9 @@ private struct DiagnosticsCardView: View {
                 Text("start \(formatMs(ms))")
                     .foregroundStyle(.secondary)
             }
-            if let ms = entry.playbackStats?.videoLatencyMs {
-                Text("\(Int(ms)) ms")
-                    .foregroundStyle(latencyColor(ms))
+            if let latency = entry.playbackStats?.videoLatency {
+                Text(formatMs(latency))
+                    .foregroundStyle(latencyColor(latency))
             }
             if let fps = entry.playbackStats?.videoFps {
                 Text(formatFps(fps))
@@ -256,16 +264,16 @@ private struct DiagnosticsCardView: View {
                 StatRow(label: "Playback start trigger", value: kind)
             }
             if let stats = entry.playbackStats {
-                if let ms = stats.timeToFirst.videoFrameMs {
+                if let ms = stats.timeToFirst.videoFrame {
                     StatRow(label: "Play request -> video playable", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = stats.timeToFirst.audioFrameMs {
+                if let ms = stats.timeToFirst.audioFrame {
                     StatRow(label: "Play request -> audio playable", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = stats.timeToFirst.videoPlayingMs {
+                if let ms = stats.timeToFirst.videoPlaying {
                     StatRow(label: "Play request -> video playing", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = stats.timeToFirst.audioPlayingMs {
+                if let ms = stats.timeToFirst.audioPlaying {
                     StatRow(label: "Play request -> audio playing", value: formatMs(ms), color: startupColor(ms))
                 }
             }
@@ -316,23 +324,23 @@ private struct DiagnosticsCardView: View {
 
     @ViewBuilder
     private func liveStatsSections(_ stats: PlaybackStats) -> some View {
-        if stats.videoLatencyMs != nil || stats.audioLatencyMs != nil {
+        if stats.videoLatency != nil || stats.audioLatency != nil {
             StatsSection(title: "Latency") {
-                if let ms = stats.videoLatencyMs {
+                if let ms = stats.videoLatency {
                     StatRow(label: "Video live latency", value: formatMs(ms), color: latencyColor(ms))
                 }
-                if let ms = stats.audioLatencyMs {
+                if let ms = stats.audioLatency {
                     StatRow(label: "Audio live latency", value: formatMs(ms), color: latencyColor(ms))
                 }
             }
         }
 
-        if stats.audioRingBufferMs != nil || stats.videoJitterBufferMs != nil {
+        if stats.audioRingBuffer != nil || stats.videoJitterBuffer != nil {
             StatsSection(title: "Buffers") {
-                if let ms = stats.videoJitterBufferMs {
+                if let ms = stats.videoJitterBuffer {
                     StatRow(label: "Video jitter buffer", value: formatMs(ms), color: bufferColor(ms))
                 }
-                if let ms = stats.audioRingBufferMs {
+                if let ms = stats.audioRingBuffer {
                     StatRow(label: "Audio ring buffer", value: formatMs(ms), color: bufferColor(ms))
                 }
                 StatRow(label: "Target buffer", value: formatMs(entry.targetLatencyMs))
@@ -416,10 +424,18 @@ private struct DiagnosticsCardView: View {
         return .red
     }
 
+    private func latencyColor(_ duration: Duration) -> Color {
+        latencyColor(duration.milliseconds)
+    }
+
     private func startupColor(_ ms: Double) -> Color {
         if ms < 250 { return .green }
         if ms < 1000 { return .orange }
         return .red
+    }
+
+    private func startupColor(_ duration: Duration) -> Color {
+        startupColor(duration.milliseconds)
     }
 
     private func bufferColor(_ ms: Double) -> Color {
@@ -427,6 +443,10 @@ private struct DiagnosticsCardView: View {
         if ms < target * 0.25 { return .orange }
         if ms > target * 2 { return .orange }
         return .primary
+    }
+
+    private func bufferColor(_ duration: Duration) -> Color {
+        bufferColor(duration.milliseconds)
     }
 
     private func stallColor(_ stats: StallStats) -> Color {
@@ -438,6 +458,10 @@ private struct DiagnosticsCardView: View {
             return String(format: "%.2f s", ms / 1000)
         }
         return "\(Int(ms.rounded())) ms"
+    }
+
+    private func formatMs(_ duration: Duration) -> String {
+        formatMs(duration.milliseconds)
     }
 
     private func formatBitrate(_ kbps: Double) -> String {
@@ -459,7 +483,7 @@ private struct DiagnosticsCardView: View {
     }
 
     private func formatStalls(_ stats: StallStats) -> String {
-        "\(stats.count) / \(formatMs(stats.totalDurationMs)) / \(formatPercent(stats.rebufferingRatio))"
+        "\(stats.count) / \(formatMs(stats.totalDuration)) / \(formatPercent(stats.rebufferingRatio))"
     }
 
     private func formatPercent(_ ratio: Double) -> String {
@@ -546,8 +570,8 @@ private struct TrackStartupView: View {
 private struct TrackSwitchStatsView: View {
     let kind: String
     let switches: TrackSwitchStats
-    let formatMs: (Double) -> String
-    let startupColor: (Double) -> Color
+    let formatMs: (Duration) -> String
+    let startupColor: (Duration) -> Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -564,16 +588,16 @@ private struct TrackSwitchStatsView: View {
                     value: latestStatus(latest),
                     color: latestStatusColor(latest)
                 )
-                if let ms = latest.switchToReadyMs {
+                if let ms = latest.switchToReady {
                     StatRow(label: "Switch -> ready", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = latest.readyToPlayingMs {
+                if let ms = latest.readyToPlaying {
                     StatRow(label: "Ready -> playing", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = latest.switchToPlayingMs {
+                if let ms = latest.switchToPlaying {
                     StatRow(label: "Switch -> playing", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = latest.switchToActiveMs {
+                if let ms = latest.switchToActive {
                     StatRow(label: "Switch -> active", value: formatMs(ms), color: startupColor(ms))
                 }
                 if let errorMessage = latest.errorMessage {
@@ -587,14 +611,14 @@ private struct TrackSwitchStatsView: View {
     private func latestStatus(_ latest: TrackSwitch) -> String {
         if latest.errorMessage != nil { return "error" }
         if latest.isCompleted { return "active" }
-        if latest.switchToPlayingMs != nil { return "playing" }
-        if latest.switchToReadyMs != nil { return "ready" }
+        if latest.switchToPlaying != nil { return "playing" }
+        if latest.switchToReady != nil { return "ready" }
         return "pending"
     }
 
     private func latestStatusColor(_ latest: TrackSwitch) -> Color {
         if latest.errorMessage != nil { return .red }
-        if latest.isCompleted || latest.switchToPlayingMs != nil || latest.switchToReadyMs != nil {
+        if latest.isCompleted || latest.switchToPlaying != nil || latest.switchToReady != nil {
             return .green
         }
         return .orange
@@ -613,10 +637,10 @@ private struct ArrivalStatsView: View {
             if let fps = arrival.receivedFramesPerSecond {
                 StatRow(label: "Received rate", value: formatFps(fps))
             }
-            if let average = arrival.averageInterarrivalMs {
+            if let average = arrival.averageInterarrival {
                 StatRow(label: "Average interarrival", value: formatMs(average))
             }
-            if let max = arrival.maxInterarrivalMs {
+            if let max = arrival.maxInterarrival {
                 StatRow(label: "Max interarrival", value: formatMs(max))
             }
             StatRow(label: "Slow arrivals", value: "\(arrival.slowArrivalCount)", color: arrival.slowArrivalCount > 0 ? .orange : .primary)
@@ -628,14 +652,14 @@ private struct ArrivalStatsView: View {
     }
 
     private var outOfOrderValue: String {
-        guard let delta = arrival.maxOutOfOrderDeltaMs else {
+        guard let delta = arrival.maxOutOfOrderDelta else {
             return "\(arrival.outOfOrderCount)"
         }
         return "\(arrival.outOfOrderCount) / max \(formatMs(delta))"
     }
 
     private var discontinuityValue: String {
-        guard let gap = arrival.maxDiscontinuityGapMs else {
+        guard let gap = arrival.maxDiscontinuityGap else {
             return "\(arrival.discontinuityCount)"
         }
         return "\(arrival.discontinuityCount) / max \(formatMs(gap))"
@@ -646,6 +670,10 @@ private struct ArrivalStatsView: View {
             return String(format: "%.2f s", ms / 1000)
         }
         return "\(Int(ms.rounded())) ms"
+    }
+
+    private func formatMs(_ duration: Duration) -> String {
+        formatMs(duration.milliseconds)
     }
 
     private func formatFps(_ fps: Double) -> String {

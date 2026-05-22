@@ -84,7 +84,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     func updateTargetLatency(ms: UInt64) {
         targetLatencyMs = Double(ms)
-        player?.updateTargetLatency(ms: ms)
+        player?.updateTargetLatency(.milliseconds(Int64(min(ms, UInt64(Int64.max)))))
     }
 
     func updateVolume(_ newVolume: Double) {
