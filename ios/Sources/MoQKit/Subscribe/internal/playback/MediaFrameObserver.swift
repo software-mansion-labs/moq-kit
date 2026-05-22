@@ -17,9 +17,9 @@ extension MediaFrameKind {
 }
 
 protocol MediaFrameObserver: Sendable {
-    func onMediaTrackStarted(kind: MediaFrameKind, trackName: String)
-    func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind, trackName: String)
-    func onFrameDiscontinuity(kind: MediaFrameKind, trackName: String, gapUs: UInt64)
+    func onMediaTrackStarted(kind: MediaFrameKind)
+    func onMediaFrame(kind: MediaFrameKind, frame: MediaFrame)
+    func onMediaDiscontinuity(kind: MediaFrameKind, gapUs: UInt64)
 }
 
 final class CompositeMediaFrameObserver: MediaFrameObserver {
@@ -29,21 +29,21 @@ final class CompositeMediaFrameObserver: MediaFrameObserver {
         self.observers = observers
     }
 
-    func onMediaTrackStarted(kind: MediaFrameKind, trackName: String) {
+    func onMediaTrackStarted(kind: MediaFrameKind) {
         for observer in observers {
-            observer.onMediaTrackStarted(kind: kind, trackName: trackName)
+            observer.onMediaTrackStarted(kind: kind)
         }
     }
 
-    func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind, trackName: String) {
+    func onMediaFrame(kind: MediaFrameKind, frame: MediaFrame) {
         for observer in observers {
-            observer.onMediaFrame(frame, kind: kind, trackName: trackName)
+            observer.onMediaFrame(kind: kind, frame: frame)
         }
     }
 
-    func onFrameDiscontinuity(kind: MediaFrameKind, trackName: String, gapUs: UInt64) {
+    func onMediaDiscontinuity(kind: MediaFrameKind, gapUs: UInt64) {
         for observer in observers {
-            observer.onFrameDiscontinuity(kind: kind, trackName: trackName, gapUs: gapUs)
+            observer.onMediaDiscontinuity(kind: kind, gapUs: gapUs)
         }
     }
 }

@@ -143,13 +143,13 @@ final class AudioRenderer: @unchecked Sendable {
         trackName: String,
         sourceTimestampUs: UInt64,
         targetBufferingMs: UInt64,
-        isSwitch: Bool
+        trackEpoch: UInt64
     ) {
         renderEvents.expectPlaybackStart(
             trackName: trackName,
             sourceTimestampUs: sourceTimestampUs,
             targetBufferingMs: targetBufferingMs,
-            isSwitch: isSwitch
+            trackEpoch: trackEpoch
         )
     }
 
@@ -263,7 +263,7 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         trackName: String,
         sourceTimestampUs: UInt64,
         targetBufferingMs: UInt64,
-        isSwitch: Bool
+        trackEpoch: UInt64
     ) {
         os_unfair_lock_lock(lock)
         guard !isClosed else {
@@ -275,7 +275,7 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
             trackName: trackName,
             sourceTimestampUs: sourceTimestampUs,
             targetBufferingMs: targetBufferingMs,
-            isSwitch: isSwitch
+            trackEpoch: trackEpoch
         )
         playbackStartedRender = nil
         hasPendingPlaybackStart.store(true, ordering: .relaxed)

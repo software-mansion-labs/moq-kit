@@ -25,25 +25,9 @@ public struct PlaybackStats: Sendable {
     /// Video bitrate of the incoming stream in kilobits per second. `nil` when no video track is active.
     public let videoBitrateKbps: Double?
 
-    /// Time from ``Player/play()`` to the first decoded audio frame accepted for playback,
-    /// in milliseconds.
-    /// `nil` before the first frame arrives or when no audio track is active.
-    public let timeToFirstAudioFrameMs: Double?
-    /// Time from ``Player/play()`` to the first video frame accepted for playback,
-    /// in milliseconds.
-    /// `nil` before the first frame arrives or when no video track is active.
-    public let timeToFirstVideoFrameMs: Double?
-    /// Time from ``Player/play()`` until the first audio sample reaches the audio render
-    /// callback, in milliseconds. Corresponds to ``PlayerEventName/trackPlaying`` for
-    /// `kind == "audio"`: the first sample has reached the device output mix.
-    /// `nil` before audio starts playing or when no audio track is active.
-    public let timeToFirstAudioPlayingMs: Double?
-    /// Time from ``Player/play()`` until the first video frame is on screen, in
-    /// milliseconds. Corresponds to ``PlayerEventName/trackPlaying`` for `kind == "video"`:
-    /// the display layer reports `isReadyForDisplay` and the clock has reached the frame's
-    /// presentation time.
-    /// `nil` before video starts playing or when no video track is active.
-    public let timeToFirstVideoPlayingMs: Double?
+    /// Startup timing milestones from ``Player/play()`` to the first accepted/playing
+    /// audio and video frames.
+    public let timeToFirst: TimeToFirstPlaybackStats
 
     /// Current video frame rate in frames per second. `nil` when no video track is active.
     public let videoFps: Double?
@@ -77,10 +61,7 @@ extension PlaybackStats {
         videoStalls: nil,
         audioBitrateKbps: nil,
         videoBitrateKbps: nil,
-        timeToFirstAudioFrameMs: nil,
-        timeToFirstVideoFrameMs: nil,
-        timeToFirstAudioPlayingMs: nil,
-        timeToFirstVideoPlayingMs: nil,
+        timeToFirst: .empty,
         videoFps: nil,
         audioFramesDropped: nil,
         videoFramesDropped: nil,
@@ -90,6 +71,27 @@ extension PlaybackStats {
         videoArrival: nil,
         audioSwitches: nil,
         videoSwitches: nil
+    )
+}
+
+/// Startup timing milestones from ``Player/play()``.
+public struct TimeToFirstPlaybackStats: Sendable {
+    /// Time to the first decoded audio frame accepted for playback.
+    public let audioFrameMs: Double?
+    /// Time to the first video frame accepted for playback.
+    public let videoFrameMs: Double?
+    /// Time until the first audio sample reaches the audio render callback.
+    public let audioPlayingMs: Double?
+    /// Time until the first video frame is reported as playing.
+    public let videoPlayingMs: Double?
+}
+
+extension TimeToFirstPlaybackStats {
+    static let empty = TimeToFirstPlaybackStats(
+        audioFrameMs: nil,
+        videoFrameMs: nil,
+        audioPlayingMs: nil,
+        videoPlayingMs: nil
     )
 }
 
@@ -125,7 +127,7 @@ public struct FrameArrivalStats: Sendable {
     public let maxDiscontinuityGapMs: Double?
 }
 
-/// Quality switch diagnostics for one media kind.
+/// Track switch diagnostics for one media kind.
 public struct TrackSwitchStats: Sendable {
     /// Number of switch attempts requested since the current playback session started.
     public let requestedCount: UInt64
@@ -135,22 +137,18 @@ public struct TrackSwitchStats: Sendable {
     public let latest: TrackSwitch?
 }
 
-/// Milestones for a single quality switch attempt.
+/// Milestones for a single track switch attempt.
 public struct TrackSwitch: Sendable {
     /// Track name requested by the latest switch attempt.
     public let trackName: String?
-    /// Whether this switch has emitted ``PlayerEventName/qualityChange``.
+    /// Whether this switch has emitted ``PlayerEventName/trackSwitch``.
     public let isCompleted: Bool
     /// Error message from ``PlayerEventName/trackSubscribeError``, if the switch failed.
     public let errorMessage: String?
-    /// Time from switch request to successful raw track subscription.
-    public let switchToReadyMs: Double?
     /// Time from switch request to the first accepted or decoded frame.
-    public let switchToFrameMs: Double?
-    /// Time from subscription success to the first accepted or decoded frame.
-    public let readyToFrameMs: Double?
+    public let switchToReadyMs: Double?
     /// Time from the first accepted or decoded frame to playback.
-    public let frameToPlayingMs: Double?
+    public let readyToPlayingMs: Double?
     /// Time from switch request to playback.
     public let switchToPlayingMs: Double?
     /// Time from switch request to the switched rendition becoming active.
@@ -368,7 +366,7 @@ public final class Player {
     /// or turning it off, may require a full playback restart and cause a brief gap.
     ///
     /// Emits ``PlayerEventName/trackSelect`` when the selected track is committed,
-    /// and ``PlayerEventName/qualityChange`` when an active rendition switch starts
+    /// and ``PlayerEventName/trackSwitch`` when an active rendition switch starts
     /// rendering.
     ///
     /// - Parameter trackName: A video track name from the current catalog, or `nil`
@@ -413,7 +411,7 @@ public final class Player {
     /// playback restart and cause a brief gap.
     ///
     /// Emits ``PlayerEventName/trackSelect`` when the selected track is committed,
-    /// and ``PlayerEventName/qualityChange`` when an active rendition switch starts
+    /// and ``PlayerEventName/trackSwitch`` when an active rendition switch starts
     /// rendering.
     ///
     /// - Parameter trackName: An audio track name from the current catalog, or `nil`
@@ -623,4 +621,3 @@ public final class Player {
         return track
     }
 }
-

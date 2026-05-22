@@ -22,7 +22,7 @@ struct VideoRendererSample {
 /// with callers that re-enter under the same lock.
 final class VideoRendererTrack: @unchecked Sendable {
     let trackName: String
-    let isSwitch: Bool
+    let trackEpoch: UInt64
     let processor: VideoFrameProcessor
 
     private var buffer: JitterBuffer<VideoRendererSample>
@@ -31,12 +31,12 @@ final class VideoRendererTrack: @unchecked Sendable {
 
     init(
         trackName: String,
-        isSwitch: Bool,
+        trackEpoch: UInt64,
         config: MoqVideo,
         targetBufferingMs: UInt64
     ) throws {
         self.trackName = trackName
-        self.isSwitch = isSwitch
+        self.trackEpoch = trackEpoch
         self.processor = try VideoFrameProcessor(config: config)
         self.buffer = JitterBuffer<VideoRendererSample>(
             targetBufferingUs: targetBufferingMs * 1_000)

@@ -256,16 +256,16 @@ private struct DiagnosticsCardView: View {
                 StatRow(label: "Playback start trigger", value: kind)
             }
             if let stats = entry.playbackStats {
-                if let ms = stats.timeToFirstVideoFrameMs {
+                if let ms = stats.timeToFirst.videoFrameMs {
                     StatRow(label: "Play request -> video playable", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = stats.timeToFirstAudioFrameMs {
+                if let ms = stats.timeToFirst.audioFrameMs {
                     StatRow(label: "Play request -> audio playable", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = stats.timeToFirstVideoPlayingMs {
+                if let ms = stats.timeToFirst.videoPlayingMs {
                     StatRow(label: "Play request -> video playing", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = stats.timeToFirstAudioPlayingMs {
+                if let ms = stats.timeToFirst.audioPlayingMs {
                     StatRow(label: "Play request -> audio playing", value: formatMs(ms), color: startupColor(ms))
                 }
             }
@@ -354,7 +354,7 @@ private struct DiagnosticsCardView: View {
         }
 
         if stats.videoSwitches != nil || stats.audioSwitches != nil {
-            StatsSection(title: "Quality Switches") {
+            StatsSection(title: "Track Switches") {
                 if let switches = stats.videoSwitches {
                     TrackSwitchStatsView(
                         kind: "Video",
@@ -480,15 +480,14 @@ private struct TrackStartupView: View {
     let startupColor: (Double) -> Color
 
     private var title: String {
-        track.isSwitch ? "\(track.kind.capitalized) switch" : "\(track.kind.capitalized) startup"
+        track.isTrackSwitch ? "\(track.kind.capitalized) switch" : "\(track.kind.capitalized) startup"
     }
 
     private var status: (text: String, color: Color) {
         if track.errorAtMs != nil { return ("error", .red) }
         if track.activeAtMs != nil { return ("active", .green) }
         if track.playingAtMs != nil { return ("playing", .green) }
-        if track.frameReadyAtMs != nil { return ("playable", .green) }
-        if track.subscribeReadyAtMs != nil { return ("ready", .green) }
+        if track.readyAtMs != nil { return ("ready", .green) }
         if track.subscribeStartedAtMs != nil { return ("subscribing", .orange) }
         return ("pending", .secondary)
     }
@@ -511,7 +510,7 @@ private struct TrackStartupView: View {
             if let trackName = track.trackName {
                 StatRow(label: "Track", value: trackName)
             }
-            if track.isSwitch {
+            if track.isTrackSwitch {
                 if let ms = track.operationToReadyMs(playRequestedAtMs: playRequestedAtMs) {
                     StatRow(label: "Switch -> ready", value: formatMs(ms), color: startupColor(ms))
                 } else if track.subscribeStartedAtMs != nil, track.errorAtMs == nil {
@@ -527,14 +526,8 @@ private struct TrackStartupView: View {
                     StatRow(label: "Play request -> ready", value: formatMs(ms), color: startupColor(ms))
                 }
             }
-            if let ms = track.readyToFrameMs() {
-                StatRow(label: "Ready -> playable frame", value: formatMs(ms), color: startupColor(ms))
-            }
-            if let ms = track.operationToFrameMs(playRequestedAtMs: playRequestedAtMs) {
-                StatRow(label: "\(track.operationLabel) -> playable frame", value: formatMs(ms), color: startupColor(ms))
-            }
-            if let ms = track.frameToPlayingMs() {
-                StatRow(label: "Playable frame -> playing", value: formatMs(ms), color: startupColor(ms))
+            if let ms = track.readyToPlayingMs() {
+                StatRow(label: "Ready -> playing", value: formatMs(ms), color: startupColor(ms))
             }
             if let ms = track.operationToPlayingMs(playRequestedAtMs: playRequestedAtMs) {
                 StatRow(label: "\(track.operationLabel) -> playing", value: formatMs(ms), color: startupColor(ms))
@@ -574,14 +567,8 @@ private struct TrackSwitchStatsView: View {
                 if let ms = latest.switchToReadyMs {
                     StatRow(label: "Switch -> ready", value: formatMs(ms), color: startupColor(ms))
                 }
-                if let ms = latest.readyToFrameMs {
-                    StatRow(label: "Ready -> playable frame", value: formatMs(ms), color: startupColor(ms))
-                }
-                if let ms = latest.switchToFrameMs {
-                    StatRow(label: "Switch -> playable frame", value: formatMs(ms), color: startupColor(ms))
-                }
-                if let ms = latest.frameToPlayingMs {
-                    StatRow(label: "Playable frame -> playing", value: formatMs(ms), color: startupColor(ms))
+                if let ms = latest.readyToPlayingMs {
+                    StatRow(label: "Ready -> playing", value: formatMs(ms), color: startupColor(ms))
                 }
                 if let ms = latest.switchToPlayingMs {
                     StatRow(label: "Switch -> playing", value: formatMs(ms), color: startupColor(ms))
@@ -601,14 +588,13 @@ private struct TrackSwitchStatsView: View {
         if latest.errorMessage != nil { return "error" }
         if latest.isCompleted { return "active" }
         if latest.switchToPlayingMs != nil { return "playing" }
-        if latest.switchToFrameMs != nil { return "playable" }
         if latest.switchToReadyMs != nil { return "ready" }
         return "pending"
     }
 
     private func latestStatusColor(_ latest: TrackSwitch) -> Color {
         if latest.errorMessage != nil { return .red }
-        if latest.isCompleted || latest.switchToPlayingMs != nil || latest.switchToFrameMs != nil {
+        if latest.isCompleted || latest.switchToPlayingMs != nil || latest.switchToReadyMs != nil {
             return .green
         }
         return .orange

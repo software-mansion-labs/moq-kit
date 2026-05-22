@@ -66,7 +66,7 @@ enum PlayerEventAttributes {
         kind: MediaFrameKind,
         trackName: String? = nil,
         message: String? = nil,
-        isSwitch: Bool? = nil,
+        trackEpoch: UInt64? = nil,
         sourceTimestampUs: UInt64? = nil,
         targetBufferingMs: UInt64? = nil,
         keyframe: Bool? = nil,
@@ -79,8 +79,8 @@ enum PlayerEventAttributes {
         if let message {
             attributes["message"] = .string(message)
         }
-        if let isSwitch {
-            attributes["isSwitch"] = .bool(isSwitch)
+        if let trackEpoch {
+            attributes["trackEpoch"] = .uint(trackEpoch)
         }
         if let sourceTimestampUs {
             attributes["sourceTimestampUs"] = .uint(sourceTimestampUs)

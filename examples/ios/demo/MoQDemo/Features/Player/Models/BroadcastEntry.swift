@@ -80,7 +80,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
     // TODO: expose audio-track switching parity with switchVideoTrack - wire through
     // `player?.switchAudioTrack(to:)` and update `selectedAudioTrackName` from
-    // `track.select` / `quality.change`. The field is currently set once in `init`.
+    // `track.select` / `track.switch`. The field is currently set once in `init`.
 
     func updateTargetLatency(ms: UInt64) {
         targetLatencyMs = Double(ms)
@@ -132,7 +132,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             isPaused = true
         case .playbackResume:
             isPaused = false
-        case .qualityChange:
+        case .trackSwitch:
             if event.string("kind") == "video" {
                 if let trackName = event.string("trackName") {
                     selectedVideoTrackName = trackName
@@ -230,41 +230,36 @@ struct PlayerStartupDiagnostics {
             playbackEndedAtMs = event.timestampMs
         case .trackSubscribeStart:
             startTrack(event)
-        case .trackSubscribeReady:
+        case .trackReady:
             updateTrack(event) { track in
                 track.trackName = event.string("trackName") ?? track.trackName
-                track.subscribeReadyAtMs = track.subscribeReadyAtMs ?? event.timestampMs
-                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
-            }
-        case .trackFrameReady:
-            updateTrack(event) { track in
-                track.trackName = event.string("trackName") ?? track.trackName
-                track.frameReadyAtMs = track.frameReadyAtMs ?? event.timestampMs
-                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+                track.readyAtMs = track.readyAtMs ?? event.timestampMs
+                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
             }
         case .trackPlaying:
             updateTrack(event) { track in
                 track.trackName = event.string("trackName") ?? track.trackName
                 track.playingAtMs = track.playingAtMs ?? event.timestampMs
-                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
             }
         case .trackSubscribeError:
             updateTrack(event) { track in
                 track.trackName = event.string("trackName") ?? track.trackName
                 track.errorAtMs = event.timestampMs
                 track.errorMessage = event.string("message")
-                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
             }
         case .trackSubscribeEnd:
             updateTrack(event) { track in
                 track.trackName = event.string("trackName") ?? track.trackName
                 track.endedAtMs = event.timestampMs
+                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
             }
-        case .qualityChange:
+        case .trackSwitch:
             updateTrack(event) { track in
                 track.trackName = event.string("trackName") ?? track.trackName
                 track.activeAtMs = track.activeAtMs ?? event.timestampMs
-                track.isSwitch = event.bool("isSwitch") ?? track.isSwitch
+                track.trackEpoch = event.uint("trackEpoch") ?? track.trackEpoch
             }
         default:
             break
@@ -281,7 +276,7 @@ struct PlayerStartupDiagnostics {
         var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: kind)
         track.trackName = event.string("trackName")
         track.subscribeStartedAtMs = event.timestampMs
-        track.isSwitch = event.bool("isSwitch") ?? false
+        track.trackEpoch = event.uint("trackEpoch") ?? 1
         tracks.append(track)
     }
 
@@ -291,7 +286,7 @@ struct PlayerStartupDiagnostics {
     ) {
         guard let kind = event.string("kind") else { return }
         let trackName = event.string("trackName")
-        let isSwitch = event.bool("isSwitch")
+        let trackEpoch = event.uint("trackEpoch")
 
         if let index = tracks.indices.reversed().first(where: { index in
             let track = tracks[index]
@@ -299,7 +294,7 @@ struct PlayerStartupDiagnostics {
             if let trackName, let existingName = track.trackName, existingName != trackName {
                 return false
             }
-            if let isSwitch, track.isSwitch != isSwitch {
+            if let trackEpoch, track.trackEpoch != trackEpoch {
                 return false
             }
             return true
@@ -309,6 +304,7 @@ struct PlayerStartupDiagnostics {
         }
 
         var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: kind)
+        track.trackEpoch = trackEpoch ?? 1
         update(&track)
         tracks.append(track)
     }
@@ -319,37 +315,32 @@ struct TrackStartupDiagnostics: Identifiable {
     let kind: String
     var trackName: String?
     var subscribeStartedAtMs: Double?
-    var subscribeReadyAtMs: Double?
-    var frameReadyAtMs: Double?
+    var readyAtMs: Double?
     var playingAtMs: Double?
     var activeAtMs: Double?
     var errorAtMs: Double?
     var errorMessage: String?
     var endedAtMs: Double?
-    var isSwitch = false
+    var trackEpoch: UInt64 = 1
+
+    var isTrackSwitch: Bool {
+        trackEpoch > 1
+    }
 
     var operationLabel: String {
-        isSwitch ? "Switch" : "Play request"
+        isTrackSwitch ? "Switch" : "Play request"
     }
 
     func subscribeToReadyMs() -> Double? {
-        elapsed(from: subscribeStartedAtMs, to: subscribeReadyAtMs)
+        elapsed(from: subscribeStartedAtMs, to: readyAtMs)
     }
 
     func operationToReadyMs(playRequestedAtMs: Double?) -> Double? {
-        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: subscribeReadyAtMs)
+        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: readyAtMs)
     }
 
-    func readyToFrameMs() -> Double? {
-        elapsed(from: subscribeReadyAtMs, to: frameReadyAtMs)
-    }
-
-    func operationToFrameMs(playRequestedAtMs: Double?) -> Double? {
-        elapsed(from: operationStartedAtMs(playRequestedAtMs: playRequestedAtMs), to: frameReadyAtMs)
-    }
-
-    func frameToPlayingMs() -> Double? {
-        elapsed(from: frameReadyAtMs, to: playingAtMs)
+    func readyToPlayingMs() -> Double? {
+        elapsed(from: readyAtMs, to: playingAtMs)
     }
 
     func operationToPlayingMs(playRequestedAtMs: Double?) -> Double? {
@@ -361,7 +352,7 @@ struct TrackStartupDiagnostics: Identifiable {
     }
 
     private func operationStartedAtMs(playRequestedAtMs: Double?) -> Double? {
-        isSwitch ? subscribeStartedAtMs : playRequestedAtMs
+        isTrackSwitch ? subscribeStartedAtMs : playRequestedAtMs
     }
 
     private func elapsed(from start: Double?, to end: Double?) -> Double? {
@@ -369,4 +360,3 @@ struct TrackStartupDiagnostics: Identifiable {
         return max(0, end - start)
     }
 }
-

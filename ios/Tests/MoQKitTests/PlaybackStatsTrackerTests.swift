@@ -7,9 +7,9 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         let clock = TestPlaybackWallClock()
         let tracker = makeTracker(clock: clock)
 
-        tracker.onMediaFrame(mediaFrame(payloadSize: 100, timestampUs: 0), kind: .audio, trackName: "audio-0")
+        tracker.onMediaFrame(kind: .audio, frame: mediaFrame(payloadSize: 100, timestampUs: 0))
         clock.advance(ms: 200)
-        tracker.onMediaFrame(mediaFrame(payloadSize: 100, timestampUs: 200_000), kind: .audio, trackName: "audio-0")
+        tracker.onMediaFrame(kind: .audio, frame: mediaFrame(payloadSize: 100, timestampUs: 200_000))
 
         let stats = tracker.sampleStats(
             audioLatencyMs: nil,
@@ -26,11 +26,11 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         let clock = TestPlaybackWallClock()
         let tracker = makeTracker(clock: clock)
 
-        tracker.onMediaFrame(mediaFrame(timestampUs: 0), kind: .video, trackName: "video-0")
+        tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 0))
         clock.advance(ms: 100)
-        tracker.onMediaFrame(mediaFrame(timestampUs: 100_000), kind: .video, trackName: "video-0")
+        tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 100_000))
         clock.advance(ms: 100)
-        tracker.onMediaFrame(mediaFrame(timestampUs: 200_000), kind: .video, trackName: "video-0")
+        tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 200_000))
 
         let stats = tracker.sampleStats(
             audioLatencyMs: nil,
@@ -49,15 +49,15 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         let clock = TestPlaybackWallClock()
         let tracker = makeTracker(clock: clock)
 
-        tracker.onMediaFrame(mediaFrame(timestampUs: 0), kind: .audio, trackName: "audio-0")
+        tracker.onMediaFrame(kind: .audio, frame: mediaFrame(timestampUs: 0))
         clock.advance(ms: 100)
-        tracker.onMediaFrame(mediaFrame(timestampUs: 100_000), kind: .audio, trackName: "audio-0")
+        tracker.onMediaFrame(kind: .audio, frame: mediaFrame(timestampUs: 100_000))
         clock.advance(ms: 250)
-        tracker.onMediaFrame(mediaFrame(timestampUs: 200_000), kind: .audio, trackName: "audio-0")
+        tracker.onMediaFrame(kind: .audio, frame: mediaFrame(timestampUs: 200_000))
         clock.advance(ms: 10)
-        tracker.onMediaFrame(mediaFrame(timestampUs: 300_000), kind: .audio, trackName: "audio-0")
+        tracker.onMediaFrame(kind: .audio, frame: mediaFrame(timestampUs: 300_000))
         clock.advance(ms: 10)
-        tracker.onMediaFrame(mediaFrame(timestampUs: 250_000), kind: .audio, trackName: "audio-0")
+        tracker.onMediaFrame(kind: .audio, frame: mediaFrame(timestampUs: 250_000))
 
         let stats = tracker.sampleStats(
             audioLatencyMs: nil,
@@ -77,10 +77,10 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         let clock = TestPlaybackWallClock()
         let tracker = makeTracker(clock: clock)
 
-        tracker.onMediaFrame(mediaFrame(timestampUs: 0), kind: .video, trackName: "video-0")
-        tracker.onFrameDiscontinuity(kind: .video, trackName: "video-0", gapUs: 700_000)
+        tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 0))
+        tracker.onMediaDiscontinuity(kind: .video, gapUs: 700_000)
         clock.advance(ms: 700)
-        tracker.onMediaFrame(mediaFrame(timestampUs: 700_000, keyframe: true), kind: .video, trackName: "video-0")
+        tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 700_000, keyframe: true))
 
         let stats = tracker.sampleStats(
             audioLatencyMs: nil,
@@ -100,11 +100,11 @@ final class PlaybackStatsTrackerSampleTests: XCTestCase {
         let clock = TestPlaybackWallClock()
         let tracker = makeTracker(clock: clock)
 
-        tracker.onMediaTrackStarted(kind: .video, trackName: "high")
-        tracker.onMediaFrame(mediaFrame(timestampUs: 1_000_000), kind: .video, trackName: "high")
+        tracker.onMediaTrackStarted(kind: .video)
+        tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 1_000_000))
         clock.advance(ms: 50)
-        tracker.onMediaTrackStarted(kind: .video, trackName: "low")
-        tracker.onMediaFrame(mediaFrame(timestampUs: 100_000), kind: .video, trackName: "low")
+        tracker.onMediaTrackStarted(kind: .video)
+        tracker.onMediaFrame(kind: .video, frame: mediaFrame(timestampUs: 100_000))
 
         let stats = tracker.sampleStats(
             audioLatencyMs: nil,
@@ -129,10 +129,10 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         let session = PlayerEventHub.timestampMs()
         tracker.beginSession(rebufferKind: .audio, at: session)
 
-        tracker.emitFrameReady(
+        tracker.emitTrackReady(
             kind: .audio,
             trackName: "audio",
-            isSwitch: false,
+            trackEpoch: 1,
             sourceTimestampUs: 0,
             targetBufferingMs: 100,
             keyframe: false,
@@ -142,7 +142,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             trackName: "audio",
             sourceTimestampUs: 0,
             targetBufferingMs: 100,
-            isSwitch: false
+            trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
             renderedTimestampUs: 0,
@@ -151,8 +151,8 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         )
 
         let stats = tracker.currentStats()
-        XCTAssertNotNil(stats.timeToFirstAudioFrameMs)
-        XCTAssertNotNil(stats.timeToFirstAudioPlayingMs)
+        XCTAssertNotNil(stats.timeToFirst.audioFrameMs)
+        XCTAssertNotNil(stats.timeToFirst.audioPlayingMs)
         XCTAssertNotNil(stats.audioStalls)
         XCTAssertNil(stats.videoStalls)
     }
@@ -171,7 +171,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         tracker.videoPlaybackStarted(
             context: PlaybackStartContext(
                 kind: .video, trackName: "video", sourceTimestampUs: 0,
-                targetBufferingMs: 100, isSwitch: false
+                targetBufferingMs: 100, trackEpoch: 1
             ),
             presentationTimeUs: 0,
             clockTimeUs: 0,
@@ -183,7 +183,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             trackName: "audio",
             sourceTimestampUs: 0,
             targetBufferingMs: 100,
-            isSwitch: false
+            trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
             renderedTimestampUs: 0,
@@ -206,7 +206,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         // First playing call seeds readyAtMs so stall stats can be reported.
         tracker.expectAudioPlaybackStart(
             trackName: "audio", sourceTimestampUs: 0,
-            targetBufferingMs: 100, isSwitch: false
+            targetBufferingMs: 100, trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
             renderedTimestampUs: 0, outputHostTime: nil, outputPresentationLatencyMs: nil
@@ -234,22 +234,21 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
 
         tracker.beginSession(rebufferKind: .video, at: PlayerEventHub.timestampMs())
 
-        tracker.emitSubscribeStart(kind: .video, trackName: "video-high", isSwitch: true)
-        tracker.emitSubscribeReady(kind: .video, trackName: "video-high", isSwitch: true)
-        tracker.emitFrameReady(
-            kind: .video, trackName: "video-high", isSwitch: true,
+        tracker.emitSubscribeStart(kind: .video, trackName: "video-high", trackEpoch: 2)
+        tracker.emitTrackReady(
+            kind: .video, trackName: "video-high", trackEpoch: 2,
             sourceTimestampUs: 0, targetBufferingMs: 100, keyframe: true, payloadBytes: 64
         )
         tracker.videoPlaybackStarted(
             context: PlaybackStartContext(
                 kind: .video, trackName: "video-high", sourceTimestampUs: 0,
-                targetBufferingMs: 100, isSwitch: true
+                targetBufferingMs: 100, trackEpoch: 2
             ),
             presentationTimeUs: 0,
             clockTimeUs: 0,
             bufferMs: 0
         )
-        tracker.emitQualityChange(kind: .video, trackName: "video-high")
+        tracker.emitTrackSwitch(kind: .video, trackName: "video-high", trackEpoch: 2)
 
         let switches = try XCTUnwrap(tracker.currentStats().videoSwitches)
         let latest = try XCTUnwrap(switches.latest)
@@ -258,8 +257,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         XCTAssertEqual(latest.trackName, "video-high")
         XCTAssertTrue(latest.isCompleted)
         XCTAssertNotNil(latest.switchToReadyMs)
-        XCTAssertNotNil(latest.switchToFrameMs)
-        XCTAssertNotNil(latest.frameToPlayingMs)
+        XCTAssertNotNil(latest.readyToPlayingMs)
         XCTAssertNotNil(latest.switchToActiveMs)
     }
 
@@ -268,10 +266,10 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         let tracker = PlaybackStatsTracker(events: hub)
 
         tracker.beginSession(rebufferKind: .audio, at: PlayerEventHub.timestampMs())
-        tracker.emitSubscribeStart(kind: .audio, trackName: "audio-alt", isSwitch: true)
+        tracker.emitSubscribeStart(kind: .audio, trackName: "audio-alt", trackEpoch: 2)
         tracker.emitSubscribeError(
             kind: .audio, trackName: "audio-alt",
-            message: "subscribe failed", isSwitch: true
+            message: "subscribe failed", trackEpoch: 2
         )
 
         let switches = try XCTUnwrap(tracker.currentStats().audioSwitches)
@@ -322,8 +320,8 @@ final class PlayerEventHubTests: XCTestCase {
 
 final class PlayerEventNameTests: XCTestCase {
     func testTrackEventRawValues() {
-        XCTAssertEqual(PlayerEventName.trackSubscribeReady.rawValue, "track.subscribe.ready")
-        XCTAssertEqual(PlayerEventName.trackFrameReady.rawValue, "track.frame.ready")
+        XCTAssertEqual(PlayerEventName.trackReady.rawValue, "track.ready")
+        XCTAssertEqual(PlayerEventName.trackSwitch.rawValue, "track.switch")
         XCTAssertEqual(PlayerEventName.trackPlaying.rawValue, "track.playing")
         XCTAssertEqual(PlayerEventName.decodeError.rawValue, "decode.error")
     }

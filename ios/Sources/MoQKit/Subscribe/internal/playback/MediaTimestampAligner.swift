@@ -57,9 +57,9 @@ final class MediaTimestampAligner: @unchecked Sendable {
 }
 
 extension MediaTimestampAligner: MediaFrameObserver {
-    func onMediaTrackStarted(kind: MediaFrameKind, trackName: String) {}
+    func onMediaTrackStarted(kind: MediaFrameKind) {}
 
-    func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind, trackName: String) {
+    func onMediaFrame(kind: MediaFrameKind, frame: MediaFrame) {
         switch kind {
         case .audio:
             audioLiveEdge.recordTimestamp(frame.timestampUs)
@@ -68,7 +68,7 @@ extension MediaTimestampAligner: MediaFrameObserver {
         }
     }
 
-    func onFrameDiscontinuity(kind: MediaFrameKind, trackName: String, gapUs: UInt64) {
+    func onMediaDiscontinuity(kind: MediaFrameKind, gapUs: UInt64) {
         switch kind {
         case .audio:
             audioLiveEdge.reset()
