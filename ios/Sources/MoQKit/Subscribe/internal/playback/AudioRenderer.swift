@@ -6,6 +6,21 @@ import Foundation
 
 // MARK: - AudioRenderer
 
+protocol AudioRendererDelegate: AnyObject, Sendable {
+    func audioRendererHasPendingPlaybackStart(_ renderer: AudioRenderer) -> Bool
+    func audioRenderer(_ renderer: AudioRenderer, didPreparePlaybackStart context: PlaybackStartContext)
+    func audioRendererDidClearExpectedPlaybackStart(_ renderer: AudioRenderer)
+    func audioRenderer(
+        _ renderer: AudioRenderer,
+        didRenderAudioAt timestampUs: UInt64,
+        hostTime: UInt64?,
+        outputPresentationLatency: Duration?
+    )
+    func audioRendererDidBeginStall(_ renderer: AudioRenderer)
+    func audioRendererDidEndStall(_ renderer: AudioRenderer)
+    func audioRenderer(_ renderer: AudioRenderer, didDropFrames count: Int)
+}
+
 /// Audio playback pipeline: ring buffer, AVAudioEngine, and external `AudioDrivenClock`.
 ///
 /// Always acts as the master clock — the render callback drives the shared clock
@@ -22,6 +37,7 @@ final class AudioRenderer: @unchecked Sendable {
     private let sourceNode: AVAudioSourceNode
     private let ringState: RingState
     private let eventBridge: AudioRenderEventBridge
+    private weak var delegate: (any AudioRendererDelegate)?
     private var volume: Float
 
     init(
@@ -29,19 +45,19 @@ final class AudioRenderer: @unchecked Sendable {
         clock: AudioDrivenClock,
         targetLatency: Duration,
         initialVolume: Float = 1.0,
-        tracker: PlaybackStatsTracker
+        delegate: any AudioRendererDelegate
     ) throws {
         // Create a temporary decoder only to discover the output format for AVAudioEngine setup.
         let formatDecoder = try AudioDecoder(config: config)
         self.clock = clock
         self.volume = Self.clampedVolume(initialVolume)
+        self.delegate = delegate
 
         let channelCount = Int(config.channelCount)
         let sampleRate = Int(config.sampleRate)
 
         let ringState = RingState(
-            rate: sampleRate, channels: channelCount, latency: targetLatency,
-            tracker: tracker)
+            rate: sampleRate, channels: channelCount, latency: targetLatency)
         self.ringState = ringState
 
         let bytesPerSample = MemoryLayout<Float32>.size
@@ -54,7 +70,7 @@ final class AudioRenderer: @unchecked Sendable {
 
         let latencyProbe = AudioOutputLatencyProbe()
         let eventBridge = AudioRenderEventBridge(
-            tracker: tracker,
+            delegate: delegate,
             latencyProbe: latencyProbe
         )
         self.eventBridge = eventBridge
@@ -125,6 +141,7 @@ final class AudioRenderer: @unchecked Sendable {
         engine.connect(sourceNode, to: engine.mainMixerNode, format: formatDecoder.outputFormat)
         engine.prepare()
         self.engine = engine
+        eventBridge.renderer = self
 
         KitLogger.player.debug(
             "AudioRenderer created, format = \(formatDecoder.outputFormat)")
@@ -135,8 +152,11 @@ final class AudioRenderer: @unchecked Sendable {
         let frameCount = Int(pcm.frameLength)
         guard frameCount > 0, let channelData = pcm.floatChannelData else { return }
         ringState.decodeFrameSize = frameCount
-        ringState.write(
+        let droppedFrames = ringState.write(
             timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
+        if droppedFrames > 0 {
+            delegate?.audioRenderer(self, didDropFrames: droppedFrames)
+        }
     }
 
     func expectPlaybackStart(
@@ -146,10 +166,13 @@ final class AudioRenderer: @unchecked Sendable {
         trackEpoch: TrackEpoch
     ) {
         eventBridge.expectPlaybackStart(
-            trackName: trackName,
-            sourceTimestampUs: sourceTimestampUs,
-            targetBuffering: targetBuffering,
-            trackEpoch: trackEpoch
+            PlaybackStartContext(
+                kind: .audio,
+                trackName: trackName,
+                sourceTimestampUs: sourceTimestampUs,
+                targetBuffering: targetBuffering,
+                trackEpoch: trackEpoch
+            )
         )
     }
 
@@ -200,13 +223,15 @@ private final class AudioOutputLatencyProbe: @unchecked Sendable {
     }
 }
 
-/// Moves telemetry emission out of the AVAudioSourceNode render callback.
+/// Moves render event emission out of the AVAudioSourceNode render callback.
 ///
 /// The render callback only claims a pending first-audio-start context or reports a stall
-/// transition. The actual tracker calls, listener fan-out, and AVAudio property reads run
+/// transition. Delegate callbacks, listener fan-out, and AVAudio property reads run
 /// on `queue`.
 private final class AudioRenderEventBridge: @unchecked Sendable {
-    private let tracker: PlaybackStatsTracker
+    private weak var delegate: (any AudioRendererDelegate)?
+    weak var renderer: AudioRenderer?
+
     private let latencyProbe: AudioOutputLatencyProbe
     private let queue = DispatchQueue(
         label: "com.swmansion.MoQKit.AudioRenderEventBridge",
@@ -216,10 +241,10 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
     private let isClosed = ManagedAtomic<Bool>(false)
 
     init(
-        tracker: PlaybackStatsTracker,
+        delegate: any AudioRendererDelegate,
         latencyProbe: AudioOutputLatencyProbe
     ) {
-        self.tracker = tracker
+        self.delegate = delegate
         self.latencyProbe = latencyProbe
     }
 
@@ -227,37 +252,34 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         close()
     }
 
-    /// Arms the tracker to emit an audio first-frame playback-started event when the audio
+    /// Arms the delegate to emit an audio first-frame playback-started event when the audio
     /// render callback observes a timestamp at or beyond `sourceTimestampUs`.
-    func expectPlaybackStart(
-        trackName: String,
-        sourceTimestampUs: UInt64,
-        targetBuffering: Duration,
-        trackEpoch: TrackEpoch
-    ) {
-        guard !isClosed.load(ordering: .relaxed) else { return }
-        tracker.expectAudioPlaybackStart(
-            trackName: trackName,
-            sourceTimestampUs: sourceTimestampUs,
-            targetBuffering: targetBuffering,
-            trackEpoch: trackEpoch
-        )
+    func expectPlaybackStart(_ context: PlaybackStartContext) {
+        guard !isClosed.load(ordering: .relaxed), let renderer else { return }
+        delegate?.audioRenderer(renderer, didPreparePlaybackStart: context)
     }
 
     func clearExpectedPlaybackStart() {
-        tracker.clearExpectedAudioPlaybackStart()
+        guard let renderer else { return }
+        delegate?.audioRendererDidClearExpectedPlaybackStart(renderer)
     }
 
     func recordRenderedAudio(
         timestampUs: UInt64,
         hostTime: UInt64?
     ) {
-        guard tracker.hasExpectedAudioPlaybackStart else { return }
+        guard let renderer,
+              delegate?.audioRendererHasPendingPlaybackStart(renderer) == true
+        else { return }
 
         queue.async { [weak self] in
-            guard let self, !self.isClosed.load(ordering: .relaxed) else { return }
-            self.tracker.audioPlaybackStartedIfExpected(
-                timestampUs: timestampUs,
+            guard let self,
+                  let renderer = self.renderer,
+                  !self.isClosed.load(ordering: .relaxed)
+            else { return }
+            self.delegate?.audioRenderer(
+                renderer,
+                didRenderAudioAt: timestampUs,
                 hostTime: hostTime,
                 outputPresentationLatency: self.latencyProbe.outputPresentationLatency()
             )
@@ -267,8 +289,13 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
     func recordStall(stalled: Bool) {
         guard !isClosed.load(ordering: .relaxed) else { return }
         queue.async { [weak self] in
-            guard let self, !self.isClosed.load(ordering: .relaxed) else { return }
-            stalled ? self.tracker.audioStallBegan() : self.tracker.audioStallEnded()
+            guard let self,
+                  let renderer = self.renderer,
+                  !self.isClosed.load(ordering: .relaxed)
+            else { return }
+            stalled
+                ? self.delegate?.audioRendererDidBeginStall(renderer)
+                : self.delegate?.audioRendererDidEndStall(renderer)
         }
     }
 
@@ -285,15 +312,13 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
 private final class RingState: @unchecked Sendable {
     private var ringBuffer: AudioRingBuffer
     private let lock: UnsafeMutablePointer<os_unfair_lock>
-    private let tracker: PlaybackStatsTracker
 
     let channels: Int
     /// Approximate number of samples per decoded frame (set once from first decode).
     var decodeFrameSize: Int = 1024
 
-    init(rate: Int, channels: Int, latency: Duration, tracker: PlaybackStatsTracker) {
+    init(rate: Int, channels: Int, latency: Duration) {
         self.channels = channels
-        self.tracker = tracker
         self.ringBuffer = AudioRingBuffer(
             rate: rate,
             channels: channels,
@@ -312,16 +337,13 @@ private final class RingState: @unchecked Sendable {
         timestampUs: UInt64,
         channelData: UnsafePointer<UnsafeMutablePointer<Float32>>,
         frameCount: Int
-    ) {
+    ) -> Int {
         os_unfair_lock_lock(lock)
         let discarded = ringBuffer.write(
             timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
         os_unfair_lock_unlock(lock)
 
-        if discarded > 0 {
-            let droppedFrames = discarded / max(decodeFrameSize, 1)
-            tracker.recordAudioFramesDropped(droppedFrames)
-        }
+        return discarded / max(decodeFrameSize, 1)
     }
 
     func read(

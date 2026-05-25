@@ -94,7 +94,7 @@ final class PlaybackPipeline {
                 clock: audioClock,
                 targetLatency: targetBuffering,
                 initialVolume: volume,
-                tracker: tracker
+                delegate: tracker
             )
             try renderer.start()
             self.audioRenderer = renderer
@@ -115,7 +115,7 @@ final class PlaybackPipeline {
                 timestampAligner: aligner,
                 track: track,
                 layer: videoLayer,
-                tracker: tracker
+                delegate: tracker
             )
             renderer.start()
             self.videoRenderer = renderer

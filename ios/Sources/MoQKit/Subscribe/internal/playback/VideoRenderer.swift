@@ -5,6 +5,20 @@ import MoQKitFFI
 
 // MARK: - VideoRenderer
 
+protocol VideoRendererDelegate: AnyObject, Sendable {
+    func videoRendererDidBeginStall(_ renderer: VideoRenderer)
+    func videoRendererDidEndStall(_ renderer: VideoRenderer)
+    func videoRendererDidDisplayFrame(_ renderer: VideoRenderer)
+    func videoRendererDidDropFrame(_ renderer: VideoRenderer)
+    func videoRenderer(
+        _ renderer: VideoRenderer,
+        didStartPlayback context: PlaybackStartContext,
+        presentationTimeUs: UInt64,
+        clockTimeUs: UInt64,
+        buffer: Duration
+    )
+}
+
 /// Video playback pipeline: drains compressed frames from a `VideoRendererTrack` into
 /// `AVSampleBufferDisplayLayer` (which handles VideoToolbox decoding internally).
 ///
@@ -55,7 +69,7 @@ final class VideoRenderer: @unchecked Sendable {
     private let timing: any MediaPlaybackClock
     private let timestampAligner: MediaTimestampAligner?
     private var timelineStarted: Bool
-    private let tracker: PlaybackStatsTracker
+    private weak var delegate: (any VideoRendererDelegate)?
     private var lastEnqueuedPTS: CMTime = .invalid
     private var lastKnownClockTimeUs: UInt64 = 0
     private var pendingStallCheck: DispatchWorkItem?
@@ -80,12 +94,12 @@ final class VideoRenderer: @unchecked Sendable {
         timestampAligner: MediaTimestampAligner? = nil,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
-        tracker: PlaybackStatsTracker
+        delegate: any VideoRendererDelegate
     ) {
         self.layer = layer
         self.timing = timing
         self.timestampAligner = timestampAligner
-        self.tracker = tracker
+        self.delegate = delegate
         self.activeTrack = track
         let enqueueQueue = DispatchQueue(
             label: "com.swmansion.MoQKit.VideoEnqueue", qos: .userInteractive)
@@ -319,9 +333,9 @@ final class VideoRenderer: @unchecked Sendable {
         guard let entry else { return false }
 
         if playable {
-            tracker.recordVideoFrameDisplayed()
+            delegate?.videoRendererDidDisplayFrame(self)
         } else {
-            tracker.recordVideoFrameDropped()
+            delegate?.videoRendererDidDropFrame(self)
         }
 
         let displaySample = displaySampleBuffer(
@@ -367,8 +381,9 @@ final class VideoRenderer: @unchecked Sendable {
             trackEpoch: activeTrack.trackEpoch
         )
 
-        tracker.videoPlaybackStarted(
-            context: context,
+        delegate?.videoRenderer(
+            self,
+            didStartPlayback: context,
             presentationTimeUs: presentationTimeUs,
             clockTimeUs: max(timing.currentTimeUs, presentationTimeUs),
             buffer: buffer
@@ -437,12 +452,13 @@ final class VideoRenderer: @unchecked Sendable {
             let delaySec = max(0, CMTimeGetSeconds(remaining))
             let workItem = DispatchWorkItem { [weak self] in
                 self?.pendingStallCheck = nil
-                self?.tracker.videoStallBegan()
+                guard let self else { return }
+                self.delegate?.videoRendererDidBeginStall(self)
             }
             pendingStallCheck = workItem
             enqueueQueue.asyncAfter(deadline: .now() + delaySec, execute: workItem)
         } else {
-            tracker.videoStallBegan()
+            delegate?.videoRendererDidBeginStall(self)
         }
     }
 
@@ -532,13 +548,12 @@ final class VideoRenderer: @unchecked Sendable {
     /// Returns the closure registered with each track's `setOnDataAvailable`.
     private func makeDataAvailableCallback() -> () -> Void {
         let queue = enqueueQueue
-        let trackerRef = tracker
         return { [weak self] in
             queue.async {
                 guard let self else { return }
                 self.pendingStallCheck?.cancel()
                 self.pendingStallCheck = nil
-                trackerRef.videoStallEnded()
+                self.delegate?.videoRendererDidEndStall(self)
                 self.armVideoEnqueue()
             }
         }
