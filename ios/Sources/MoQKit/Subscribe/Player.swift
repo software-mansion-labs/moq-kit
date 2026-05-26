@@ -459,7 +459,7 @@ public final class Player {
 
     private func teardown(permanent: Bool, reason: String) {
         if let playbackPipeline {
-            tracker.publishSample(playbackPipeline.getStats())
+            tracker.publishStats(playbackPipeline.getStats())
         } else {
             KitLogger.player.debug("Player teardown requested with no active pipeline for \(self.playbackLogDescription), permanent=\(permanent), reason=\(reason)")
         }
@@ -515,7 +515,7 @@ public final class Player {
 
     private func publishStatsSample() {
         guard let playbackPipeline else { return }
-        tracker.publishSample(playbackPipeline.getStats())
+        tracker.publishStats(playbackPipeline.getStats())
     }
 
     // MARK: - Private: helpers

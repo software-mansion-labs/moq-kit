@@ -137,13 +137,13 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             keyframe: false,
             payloadBytes: 64
         )
-        tracker.expectAudioPlaybackStart(
+        tracker.armAudioPlaybackStart(
             trackName: "audio",
             sourceTimestampUs: 0,
             targetBuffering: .milliseconds(100),
             trackEpoch: 1
         )
-        tracker.audioPlaybackStartedIfExpected(
+        tracker.audioPlaybackStarted(
             timestampUs: 0,
             hostTime: nil
         )
@@ -177,13 +177,13 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         )
         XCTAssertFalse(recorder.names.contains(.playbackStart))
 
-        tracker.expectAudioPlaybackStart(
+        tracker.armAudioPlaybackStart(
             trackName: "audio",
             sourceTimestampUs: 0,
             targetBuffering: .milliseconds(100),
             trackEpoch: 1
         )
-        tracker.audioPlaybackStartedIfExpected(
+        tracker.audioPlaybackStarted(
             timestampUs: 0,
             hostTime: nil
         )
@@ -201,17 +201,17 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         tracker.beginSession(rebufferKind: .audio)
 
         // First playing call seeds readyAt so stall stats can be reported.
-        tracker.expectAudioPlaybackStart(
+        tracker.armAudioPlaybackStart(
             trackName: "audio", sourceTimestampUs: 0,
             targetBuffering: .milliseconds(100), trackEpoch: 1
         )
-        tracker.audioPlaybackStartedIfExpected(
+        tracker.audioPlaybackStarted(
             timestampUs: 0, hostTime: nil
         )
 
-        tracker.audioStallBegan()
-        tracker.audioStallBegan() // de-duped
-        tracker.audioStallEnded()
+        tracker.noteStall(kind: .audio, stalled: true)
+        tracker.noteStall(kind: .audio, stalled: true) // de-duped
+        tracker.noteStall(kind: .audio, stalled: false)
 
         XCTAssertEqual(
             recorder.names.filter { $0 == .trackStallStart || $0 == .trackStallEnd }.count,
@@ -240,15 +240,15 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         let tracker = makeTracker(clock: clock)
 
         tracker.beginSession(rebufferKind: .audio)
-        tracker.expectAudioPlaybackStart(
+        tracker.armAudioPlaybackStart(
             trackName: "audio", sourceTimestampUs: 0,
             targetBuffering: .milliseconds(100), trackEpoch: 1
         )
-        tracker.audioPlaybackStartedIfExpected(
+        tracker.audioPlaybackStarted(
             timestampUs: 0, hostTime: nil
         )
 
-        tracker.audioStallBegan()
+        tracker.noteStall(kind: .audio, stalled: true)
         clock.advance(ms: 250)
         tracker.closeOutInFlightStalls()
 
