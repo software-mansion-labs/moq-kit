@@ -176,7 +176,7 @@ internal class JitterBuffer<T>(
     }
 
     /**
-     * Current desired playout PTS (`estimatedLivePTS - targetBufferingUs`).
+     * Current desired playback PTS (`estimatedLivePTS - targetBufferingUs`).
      */
     fun targetPlaybackPTS(): Long? {
         val estimated = estimatedLivePTS() ?: return null

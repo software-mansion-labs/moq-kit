@@ -313,7 +313,7 @@ final class BoyDemoViewModel: ObservableObject {
                 catalog: catalog,
                 videoTrackName: selectedTracks.videoTrackName,
                 audioTrackName: selectedTracks.audioTrackName,
-                targetBufferingMs: UInt64(targetLatencyMs)
+                targetBuffering: .milliseconds(Int64(targetLatencyMs.rounded()))
             )
             entry.attach(player: player)
             try await player.play()

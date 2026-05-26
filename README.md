@@ -216,7 +216,7 @@ for await broadcast in subscription.broadcasts {
                 catalog: catalog,
                 videoTrackName: videoTrack,
                 audioTrackName: audioTrack,
-                targetBufferingMs: 100
+                targetBuffering: .milliseconds(100)
             )
         }
 

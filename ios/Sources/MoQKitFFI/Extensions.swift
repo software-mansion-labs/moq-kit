@@ -22,6 +22,8 @@ extension Container: CustomStringConvertible {
             return "legacy"
         case .cmaf(let initData):
             return "cmaf{initBytes=\(initData.count)}"
+        case .loc:
+            return "loc"
         }
     }
 }

@@ -1,8 +1,23 @@
 import AVFoundation
 import CoreMedia
+import QuartzCore
 import MoQKitFFI
 
 // MARK: - VideoRenderer
+
+protocol VideoRendererDelegate: AnyObject, Sendable {
+    func videoRendererDidBeginStall(_ renderer: VideoRenderer)
+    func videoRendererDidEndStall(_ renderer: VideoRenderer)
+    func videoRendererDidDisplayFrame(_ renderer: VideoRenderer)
+    func videoRendererDidDropFrame(_ renderer: VideoRenderer)
+    func videoRenderer(
+        _ renderer: VideoRenderer,
+        didStartPlayback context: PlaybackStartContext,
+        presentationTimeUs: UInt64,
+        clockTimeUs: UInt64,
+        buffer: Duration
+    )
+}
 
 /// Video playback pipeline: drains compressed frames from a `VideoRendererTrack` into
 /// `AVSampleBufferDisplayLayer` (which handles VideoToolbox decoding internally).
@@ -51,14 +66,15 @@ final class VideoRenderer: @unchecked Sendable {
     private var onTrackActivated: (() -> Void)?
 
     private let enqueueQueue: DispatchQueue
-    private let timing: any MediaClock
+    private let timing: any MediaPlaybackClock
     private let timestampAligner: MediaTimestampAligner?
     private var timelineStarted: Bool
-    private let metrics: PlaybackStatsTracker
+    private weak var delegate: (any VideoRendererDelegate)?
     private var lastEnqueuedPTS: CMTime = .invalid
     private var lastKnownClockTimeUs: UInt64 = 0
     private var pendingStallCheck: DispatchWorkItem?
     private var pendingDrainWakeup: DispatchWorkItem?
+    private var isPlaybackStartEventArmed = true
     private var hasLoggedFirstEnqueue = false
     private var hasLoggedNoActiveFrame = false
 
@@ -74,16 +90,16 @@ final class VideoRenderer: @unchecked Sendable {
     private let clockRetargetToleranceUs: UInt64 = 20_000
 
     init(
-        timing: any MediaClock,
+        timing: any MediaPlaybackClock,
         timestampAligner: MediaTimestampAligner? = nil,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
-        metrics: PlaybackStatsTracker
+        delegate: any VideoRendererDelegate
     ) {
         self.layer = layer
         self.timing = timing
         self.timestampAligner = timestampAligner
-        self.metrics = metrics
+        self.delegate = delegate
         self.activeTrack = track
         let enqueueQueue = DispatchQueue(
             label: "com.swmansion.MoQKit.VideoEnqueue", qos: .userInteractive)
@@ -131,6 +147,7 @@ final class VideoRenderer: @unchecked Sendable {
             pendingDrainWakeup = nil
             lastEnqueuedPTS = .invalid
             lastKnownClockTimeUs = 0
+            isPlaybackStartEventArmed = true
             hasLoggedFirstEnqueue = false
             hasLoggedNoActiveFrame = false
         }
@@ -148,6 +165,7 @@ final class VideoRenderer: @unchecked Sendable {
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
             lastEnqueuedPTS = .invalid
+            isPlaybackStartEventArmed = true
             hasLoggedNoActiveFrame = false
         }
     }
@@ -170,10 +188,10 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     /// Update the target buffering depth for the active track.
-    func updateTargetBuffering(ms: UInt64) {
+    func updateTargetBuffering(_ targetBuffering: Duration) {
         enqueueQueue.async {
-            let activeBecamePlayable = self.activeTrack.updateTargetBuffering(ms: ms)
-            self.pendingTrack?.updateTargetBuffering(ms: ms)
+            let activeBecamePlayable = self.activeTrack.updateTargetBuffering(targetBuffering)
+            self.pendingTrack?.updateTargetBuffering(targetBuffering)
             if self.timing.isVideoDriven, self.timelineStarted {
                 self.syncClockToTargetLatency()
             }
@@ -183,7 +201,7 @@ final class VideoRenderer: @unchecked Sendable {
         }
     }
 
-    var bufferFillMs: Double { syncOnEnqueueQueue { activeTrack.depthMs } }
+    var bufferFill: Duration { syncOnEnqueueQueue { activeTrack.depth } }
 
     var hasPendingTrack: Bool { syncOnEnqueueQueue { pendingTrack != nil } }
 
@@ -315,9 +333,9 @@ final class VideoRenderer: @unchecked Sendable {
         guard let entry else { return false }
 
         if playable {
-            metrics.recordVideoFrameDisplayed()
+            delegate?.videoRendererDidDisplayFrame(self)
         } else {
-            metrics.recordVideoFrameDropped()
+            delegate?.videoRendererDidDropFrame(self)
         }
 
         let displaySample = displaySampleBuffer(
@@ -331,6 +349,13 @@ final class VideoRenderer: @unchecked Sendable {
         layer.enqueue(displaySample.sampleBuffer)
         lastEnqueuedPTS = displaySample.presentationTime
         hasLoggedNoActiveFrame = false
+        if playable {
+            emitPlaybackStartIfArmed(
+                sourceTimestampUs: entry.timestampUs,
+                presentationTimeUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
+                buffer: activeTrack.depth
+            )
+        }
         if !hasLoggedFirstEnqueue {
             hasLoggedFirstEnqueue = true
             KitLogger.player.debug(
@@ -338,6 +363,31 @@ final class VideoRenderer: @unchecked Sendable {
             )
         }
         return true
+    }
+
+    private func emitPlaybackStartIfArmed(
+        sourceTimestampUs: UInt64,
+        presentationTimeUs: UInt64,
+        buffer: Duration
+    ) {
+        guard isPlaybackStartEventArmed else { return }
+        isPlaybackStartEventArmed = false
+
+        let context = PlaybackStartContext(
+            kind: .video,
+            trackName: activeTrack.trackName,
+            sourceTimestampUs: sourceTimestampUs,
+            targetBuffering: activeTrack.targetBuffering,
+            trackEpoch: activeTrack.trackEpoch
+        )
+
+        delegate?.videoRenderer(
+            self,
+            didStartPlayback: context,
+            presentationTimeUs: presentationTimeUs,
+            clockTimeUs: max(timing.currentTimeUs, presentationTimeUs),
+            buffer: buffer
+        )
     }
 
     private func startClockIfReady() -> Bool {
@@ -402,12 +452,13 @@ final class VideoRenderer: @unchecked Sendable {
             let delaySec = max(0, CMTimeGetSeconds(remaining))
             let workItem = DispatchWorkItem { [weak self] in
                 self?.pendingStallCheck = nil
-                self?.metrics.videoStallBegan()
+                guard let self else { return }
+                self.delegate?.videoRendererDidBeginStall(self)
             }
             pendingStallCheck = workItem
             enqueueQueue.asyncAfter(deadline: .now() + delaySec, execute: workItem)
         } else {
-            metrics.videoStallBegan()
+            delegate?.videoRendererDidBeginStall(self)
         }
     }
 
@@ -484,6 +535,7 @@ final class VideoRenderer: @unchecked Sendable {
         activeTrack = newTrack
         pendingTrack = nil
         pendingPhase = nil
+        isPlaybackStartEventArmed = true
         newTrack.setOnDataAvailable(makeDataAvailableCallback())
         // Current rendition switching assumes all video tracks share one timestamp domain.
         // If future renditions do not, MediaTimestampAligner needs per-video-track live
@@ -496,13 +548,12 @@ final class VideoRenderer: @unchecked Sendable {
     /// Returns the closure registered with each track's `setOnDataAvailable`.
     private func makeDataAvailableCallback() -> () -> Void {
         let queue = enqueueQueue
-        let metricsRef = metrics
         return { [weak self] in
             queue.async {
                 guard let self else { return }
                 self.pendingStallCheck?.cancel()
                 self.pendingStallCheck = nil
-                metricsRef.videoStallEnded()
+                self.delegate?.videoRendererDidEndStall(self)
                 self.armVideoEnqueue()
             }
         }

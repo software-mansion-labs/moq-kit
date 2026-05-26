@@ -21,7 +21,7 @@ enum MediaClockTime {
     }
 }
 
-// MARK: - MediaClock
+// MARK: - MediaPlaybackClock
 
 /// Abstraction over a Core Media-backed playback clock.
 ///
@@ -33,7 +33,7 @@ enum MediaClockTime {
 ///
 /// `isVideoDriven` lets the video renderer decide whether it must start/pause the clock
 /// (video-only mode) or just observe it (audio-driven mode).
-protocol MediaClock: AnyObject, Sendable {
+protocol MediaPlaybackClock: AnyObject, Sendable {
     var currentTimeUs: UInt64 { get }
     var isVideoDriven: Bool { get }
     func currentTime() -> CMTime
@@ -47,7 +47,7 @@ protocol MediaClock: AnyObject, Sendable {
 // MARK: - AudioDrivenClock
 
 /// Shared playback clock.
-final class AudioDrivenClock: MediaClock, @unchecked Sendable {
+final class AudioDrivenClock: MediaPlaybackClock, @unchecked Sendable {
     private let cmTimebase: CMTimebase
 
     convenience init() throws {
@@ -112,7 +112,7 @@ final class AudioDrivenClock: MediaClock, @unchecked Sendable {
 // MARK: - VideoDrivenClock
 
 /// Video-only playback clock backed by `AVSampleBufferRenderSynchronizer`.
-final class VideoDrivenClock: MediaClock, @unchecked Sendable {
+final class VideoDrivenClock: MediaPlaybackClock, @unchecked Sendable {
     private let synchronizer: AVSampleBufferRenderSynchronizer
     private weak var attachedLayer: AVSampleBufferDisplayLayer?
 

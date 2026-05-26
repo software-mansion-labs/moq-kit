@@ -122,7 +122,7 @@ final class JitterBuffer<T> {
         return result.partialValue
     }
 
-    /// Current desired playout PTS (`estimatedLivePTS - targetBuffering`).
+    /// Current desired playback PTS (`estimatedLivePTS - targetBuffering`).
     ///
     /// Returns `nil` when the result would be negative — callers (e.g. the video clock
     /// anchor in `VideoRenderer.startClockIfReady`) must fall back to the front-frame PTS

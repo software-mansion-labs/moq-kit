@@ -5,9 +5,21 @@ enum MediaFrameKind: Sendable {
     case video
 }
 
+extension MediaFrameKind {
+    var eventName: String {
+        switch self {
+        case .audio:
+            return "audio"
+        case .video:
+            return "video"
+        }
+    }
+}
+
 protocol MediaFrameObserver: Sendable {
-    func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind)
-    func onFrameDiscontinuity(kind: MediaFrameKind, gapUs: UInt64)
+    func onMediaTrackStarted(kind: MediaFrameKind)
+    func onMediaFrame(kind: MediaFrameKind, frame: MediaFrame)
+    func onMediaDiscontinuity(kind: MediaFrameKind, gapUs: UInt64)
 }
 
 final class CompositeMediaFrameObserver: MediaFrameObserver {
@@ -17,15 +29,21 @@ final class CompositeMediaFrameObserver: MediaFrameObserver {
         self.observers = observers
     }
 
-    func onMediaFrame(_ frame: MediaFrame, kind: MediaFrameKind) {
+    func onMediaTrackStarted(kind: MediaFrameKind) {
         for observer in observers {
-            observer.onMediaFrame(frame, kind: kind)
+            observer.onMediaTrackStarted(kind: kind)
         }
     }
 
-    func onFrameDiscontinuity(kind: MediaFrameKind, gapUs: UInt64) {
+    func onMediaFrame(kind: MediaFrameKind, frame: MediaFrame) {
         for observer in observers {
-            observer.onFrameDiscontinuity(kind: kind, gapUs: gapUs)
+            observer.onMediaFrame(kind: kind, frame: frame)
+        }
+    }
+
+    func onMediaDiscontinuity(kind: MediaFrameKind, gapUs: UInt64) {
+        for observer in observers {
+            observer.onMediaDiscontinuity(kind: kind, gapUs: gapUs)
         }
     }
 }

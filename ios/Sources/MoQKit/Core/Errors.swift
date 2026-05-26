@@ -48,6 +48,7 @@ extension MoqError {
         case .Protocol(message: let value),
              .Media(message: let value),
              .Mux(message: let value),
+             .Audio(message: let value),
              .Url(message: let value),
              .TimeOverflow(message: let value),
              .LogLevel(message: let value),
@@ -55,6 +56,9 @@ extension MoqError {
              .Cancelled(message: let value),
              .Closed(message: let value),
              .Connect(message: let value),
+             .Bind(message: let value),
+             .Reject(message: let value),
+             .AlreadyResponded(message: let value),
              .Codec(message: let value),
              .Unauthorized(message: let value),
              .Log(message: let value):
