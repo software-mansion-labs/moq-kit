@@ -13,8 +13,7 @@ protocol AudioRendererDelegate: AnyObject, Sendable {
     func audioRenderer(
         _ renderer: AudioRenderer,
         didRenderAudioAt timestampUs: UInt64,
-        hostTime: UInt64?,
-        outputPresentationLatency: Duration?
+        hostTime: UInt64?
     )
     func audioRendererDidBeginStall(_ renderer: AudioRenderer)
     func audioRendererDidEndStall(_ renderer: AudioRenderer)
@@ -68,10 +67,8 @@ final class AudioRenderer: @unchecked Sendable {
             [Float32](repeating: 0, count: 1024)
         }
 
-        let latencyProbe = AudioOutputLatencyProbe()
         let eventBridge = AudioRenderEventBridge(
-            delegate: delegate,
-            latencyProbe: latencyProbe
+            delegate: delegate
         )
         self.eventBridge = eventBridge
         let sourceNode = AVAudioSourceNode(format: formatDecoder.outputFormat) {
@@ -132,7 +129,6 @@ final class AudioRenderer: @unchecked Sendable {
             return noErr
         }
         sourceNode.volume = volume
-        latencyProbe.sourceNode = sourceNode
         self.sourceNode = sourceNode
 
         // AVAudioEngine setup
@@ -210,19 +206,6 @@ final class AudioRenderer: @unchecked Sendable {
     }
 }
 
-private final class AudioOutputLatencyProbe: @unchecked Sendable {
-    weak var sourceNode: AVAudioSourceNode?
-
-    func outputPresentationLatency() -> Duration? {
-        guard let sourceNode else { return nil }
-        let latency = sourceNode.outputPresentationLatency
-        guard latency.isFinite, latency >= 0 else { return nil }
-        let nanoseconds = latency * 1_000_000_000
-        guard nanoseconds < Double(Int64.max) else { return .nanoseconds(Int64.max) }
-        return .nanoseconds(Int64(nanoseconds.rounded()))
-    }
-}
-
 /// Moves render event emission out of the AVAudioSourceNode render callback.
 ///
 /// The render callback only claims a pending first-audio-start context or reports a stall
@@ -232,7 +215,6 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
     private weak var delegate: (any AudioRendererDelegate)?
     weak var renderer: AudioRenderer?
 
-    private let latencyProbe: AudioOutputLatencyProbe
     private let queue = DispatchQueue(
         label: "com.swmansion.MoQKit.AudioRenderEventBridge",
         qos: .utility
@@ -240,12 +222,8 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
 
     private let isClosed = ManagedAtomic<Bool>(false)
 
-    init(
-        delegate: any AudioRendererDelegate,
-        latencyProbe: AudioOutputLatencyProbe
-    ) {
+    init(delegate: any AudioRendererDelegate) {
         self.delegate = delegate
-        self.latencyProbe = latencyProbe
     }
 
     deinit {
@@ -280,8 +258,7 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
             self.delegate?.audioRenderer(
                 renderer,
                 didRenderAudioAt: timestampUs,
-                hostTime: hostTime,
-                outputPresentationLatency: self.latencyProbe.outputPresentationLatency()
+                hostTime: hostTime
             )
         }
     }

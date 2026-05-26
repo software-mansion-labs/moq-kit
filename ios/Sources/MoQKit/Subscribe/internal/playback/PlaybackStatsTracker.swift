@@ -534,8 +534,7 @@ where C.Instant: Sendable, C.Instant.Duration == Duration {
     /// this from non-test code.
     func audioPlaybackStartedIfExpected(
         timestampUs: UInt64,
-        hostTime: UInt64?,
-        outputPresentationLatency: Duration?
+        hostTime: UInt64?
     ) {
         guard hasPendingAudioStart else { return }
         let context = lock.withLock { () -> PlaybackStartContext? in
@@ -551,8 +550,7 @@ where C.Instant: Sendable, C.Instant.Duration == Duration {
         audioPlaybackStarted(
             context: context,
             timestampUs: timestampUs,
-            hostTime: hostTime,
-            outputPresentationLatency: outputPresentationLatency
+            hostTime: hostTime
         )
     }
 
@@ -563,16 +561,14 @@ where C.Instant: Sendable, C.Instant.Duration == Duration {
     func audioPlaybackStarted(
         context: PlaybackStartContext,
         timestampUs: UInt64,
-        hostTime: UInt64?,
-        outputPresentationLatency: Duration?
+        hostTime: UInt64?
     ) {
         emitTrackPlaying(
             context: context,
             output: .audio(
                 PlayerAudioPlaybackOutput(
                     timestampUs: timestampUs,
-                    hostTime: hostTime,
-                    outputPresentationLatency: outputPresentationLatency
+                    hostTime: hostTime
                 )
             )
         )
@@ -1021,13 +1017,11 @@ extension ClockedPlaybackStatsTracker: AudioRendererDelegate {
     func audioRenderer(
         _ renderer: AudioRenderer,
         didRenderAudioAt timestampUs: UInt64,
-        hostTime: UInt64?,
-        outputPresentationLatency: Duration?
+        hostTime: UInt64?
     ) {
         audioPlaybackStartedIfExpected(
             timestampUs: timestampUs,
-            hostTime: hostTime,
-            outputPresentationLatency: outputPresentationLatency
+            hostTime: hostTime
         )
     }
 

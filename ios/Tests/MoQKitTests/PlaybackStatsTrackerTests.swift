@@ -144,9 +144,8 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
-            renderedTimestampUs: 0,
-            outputHostTime: nil,
-            outputPresentationLatencyMs: nil
+            timestampUs: 0,
+            hostTime: nil
         )
 
         let stats = tracker.currentStats()
@@ -174,7 +173,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             ),
             presentationTimeUs: 0,
             clockTimeUs: 0,
-            bufferMs: 0
+            buffer: .zero
         )
         XCTAssertFalse(recorder.names.contains(.playbackStart))
 
@@ -185,9 +184,8 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
-            renderedTimestampUs: 0,
-            outputHostTime: nil,
-            outputPresentationLatencyMs: nil
+            timestampUs: 0,
+            hostTime: nil
         )
 
         XCTAssertEqual(recorder.names.filter { $0 == .playbackStart }.count, 1)
@@ -208,7 +206,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             targetBuffering: .milliseconds(100), trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
-            renderedTimestampUs: 0, outputHostTime: nil, outputPresentationLatencyMs: nil
+            timestampUs: 0, hostTime: nil
         )
 
         tracker.audioStallBegan()
@@ -247,7 +245,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             targetBuffering: .milliseconds(100), trackEpoch: 1
         )
         tracker.audioPlaybackStartedIfExpected(
-            renderedTimestampUs: 0, outputHostTime: nil, outputPresentationLatencyMs: nil
+            timestampUs: 0, hostTime: nil
         )
 
         tracker.audioStallBegan()
@@ -277,7 +275,7 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
             ),
             presentationTimeUs: 0,
             clockTimeUs: 0,
-            bufferMs: 0
+            buffer: .zero
         )
         tracker.emitTrackSwitch(kind: .video, trackName: "video-high", trackEpoch: 2)
 
@@ -328,11 +326,11 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
 final class PlayerEventHubTests: XCTestCase {
     func testSubscribeInternalDoesNotReplayPastEvents() {
         let hub = PlayerEventHub()
-        hub.emit(.playerInit)
+        hub.emit(.playerInit(sessionEvent()))
 
         let recorder = EventRecorder()
         let subscription = hub.subscribeInternal { recorder.record($0) }
-        hub.emit(.playbackRequest)
+        hub.emit(.playbackRequest(sessionEvent()))
 
         XCTAssertEqual(recorder.names, [.playbackRequest])
         subscription.cancel()
@@ -341,8 +339,8 @@ final class PlayerEventHubTests: XCTestCase {
     func testSequenceNumbersIncrement() {
         let hub = PlayerEventHub()
 
-        let first = hub.emit(.playerInit)
-        let second = hub.emit(.playbackRequest)
+        let first = hub.emit(.playerInit(sessionEvent()))
+        let second = hub.emit(.playbackRequest(sessionEvent()))
 
         XCTAssertEqual(first.sequence, 1)
         XCTAssertEqual(second.sequence, 2)
@@ -373,6 +371,15 @@ private final class EventRecorder: @unchecked Sendable {
 
 private func makeTracker(clock: TestPlaybackWallClock) -> PlaybackStatsTracker {
     PlaybackStatsTracker(events: PlayerEventHub(), wallClock: clock)
+}
+
+private func sessionEvent() -> PlayerSessionEvent {
+    PlayerSessionEvent(
+        catalogPath: "catalog",
+        targetBuffering: .milliseconds(100),
+        videoTrackName: nil,
+        audioTrackName: nil
+    )
 }
 
 private func mediaFrame(

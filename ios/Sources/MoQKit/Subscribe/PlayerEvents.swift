@@ -91,7 +91,6 @@ public enum PlayerTrackPlaybackOutput: Sendable {
 public struct PlayerAudioPlaybackOutput: Sendable {
     public let timestampUs: UInt64
     public let hostTime: UInt64?
-    public let outputPresentationLatency: Duration?
 }
 
 public struct PlayerVideoPlaybackOutput: Sendable {
