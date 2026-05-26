@@ -6,6 +6,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import android.view.Surface
+import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -89,6 +90,7 @@ internal class VideoRenderer(
     /** CSD bytes to queue as BUFFER_FLAG_CODEC_CONFIG before feeding the new rendition's
      *  first frame, so the decoder can handle adaptive resolution changes. */
     private var pendingCsd: ByteArray? = null
+    private var isPlaybackStartEventArmed = true
 
     companion object {
         private const val MAX_AHEAD_US = 500_000L
@@ -102,7 +104,7 @@ internal class VideoRenderer(
         private const val CLOCK_RETARGET_TOLERANCE_US = 20_000L
     }
 
-    val bufferFillMs: Double get() = activeTrack.depthMs
+    val bufferFill: Duration get() = activeTrack.depth
 
     // MARK: - Lifecycle
 
@@ -110,6 +112,7 @@ internal class VideoRenderer(
         Log.d(TAG, "Starting")
 
         activeTrack.setOnDataAvailable {
+            metrics?.noteStall(MediaFrameKind.VIDEO, stalled = false)
             postDecoderWork {
                 if (activeTrack.isProcessorReady) {
                     maybeInitDecoder()
@@ -194,11 +197,10 @@ internal class VideoRenderer(
         }
     }
 
-    fun updateTargetBuffering(ms: Int) {
+    fun updateTargetBuffering(latency: Duration) {
         postDecoderWork {
-            val targetUs = ms.toLong() * 1_000L
-            val activeBecamePlayable = activeTrack.updateTargetBuffering(targetUs)
-            pendingTrack?.updateTargetBuffering(targetUs)
+            val activeBecamePlayable = activeTrack.updateTargetBuffering(latency)
+            pendingTrack?.updateTargetBuffering(latency)
             val canDrain = if (clock?.isVideoDriven == true && timelineStarted) {
                 syncClockToTargetLatency()
             } else {
@@ -239,7 +241,10 @@ internal class VideoRenderer(
             pendingTrack = track
             trackSwapPhase = TrackSwapPhase.AwaitingKeyframe
             onTrackActivated = onActivated
-            track.setOnDataAvailable { handler.post { tryFeedDecoder() } }
+            track.setOnDataAvailable {
+                metrics?.noteStall(MediaFrameKind.VIDEO, stalled = false)
+                handler.post { tryFeedDecoder() }
+            }
 
             awaitingKeyframeTimeout?.let { handler.removeCallbacks(it) }
             val timeout = Runnable {
@@ -273,6 +278,7 @@ internal class VideoRenderer(
             val mediaTimeUs = playbackTimeUsForScheduling()
 
             val nextPts = activeTrack.peekNextTimestampUs() ?: run {
+                metrics?.noteStall(MediaFrameKind.VIDEO, stalled = true)
                 return
             }
 
@@ -294,6 +300,7 @@ internal class VideoRenderer(
                 mediaTimeUs = mediaTimeUs?.let(::videoTime),
             )
             if (entry == null) {
+                metrics?.noteStall(MediaFrameKind.VIDEO, stalled = true)
                 return
             }
 
@@ -426,6 +433,7 @@ internal class VideoRenderer(
 
         activeTrack.setOnDataAvailable(null)
         activeTrack = newTrack
+        isPlaybackStartEventArmed = true
         metrics?.resetVideoDecodeStats(newTrack.trackName)
         pendingCsd = extractCsd(newTrack)
         pendingTrack = null
@@ -434,6 +442,7 @@ internal class VideoRenderer(
         maybeCancelScheduledDraining()
 
         newTrack.setOnDataAvailable {
+            metrics?.noteStall(MediaFrameKind.VIDEO, stalled = false)
             postDecoderWork {
                 if (activeTrack.isProcessorReady) {
                     maybeInitDecoder()
@@ -534,6 +543,34 @@ internal class VideoRenderer(
         val renderNs = baseRenderNs.coerceIn(nowNs, nowNs + MAX_RENDER_SCHEDULE_NS)
         dec.releaseOutputBuffer(bufferIndex, renderNs)
         metrics?.recordVideoFrameDisplayed()
+        emitPlaybackStartIfArmed(
+            sourceTimestampUs = timestampUs,
+            presentationTimeUs = displayTimestampUs,
+            clockTimeUs = mediaTimeUs ?: displayTimestampUs,
+            buffer = activeTrack.depth,
+        )
+    }
+
+    private fun emitPlaybackStartIfArmed(
+        sourceTimestampUs: Long,
+        presentationTimeUs: Long,
+        clockTimeUs: Long,
+        buffer: Duration,
+    ) {
+        if (!isPlaybackStartEventArmed) return
+        isPlaybackStartEventArmed = false
+        metrics?.videoPlaybackStarted(
+            context = PlaybackStartContext(
+                kind = MediaFrameKind.VIDEO,
+                trackName = activeTrack.trackName,
+                sourceTimestampUs = sourceTimestampUs,
+                targetBuffering = activeTrack.targetBuffering,
+                trackEpoch = activeTrack.trackEpoch,
+            ),
+            presentationTimeUs = presentationTimeUs,
+            clockTimeUs = clockTimeUs,
+            buffer = buffer,
+        )
     }
 
     private fun runOnHandlerSync(block: () -> Unit) {

@@ -5,12 +5,18 @@ import android.view.Surface
 import com.swmansion.moqkit.UnsupportedCodecException
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipeline
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipelineSwitchOutcome
+import com.swmansion.moqkit.subscribe.internal.playback.PlayerEventHub
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackStatsTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+import java.time.Duration
 
 private const val TAG = "Player"
 
@@ -29,7 +35,7 @@ private const val TAG = "Player"
  *     catalog = catalog,
  *     videoTrackName = catalog.videoTracks.firstOrNull()?.name,
  *     audioTrackName = catalog.audioTracks.firstOrNull()?.name,
- *     targetLatencyMs = 150,
+ *     targetBuffering = Duration.ofMillis(150),
  *     parentScope = lifecycleScope,
  * )
  * player.setSurface(surfaceView.holder.surface)
@@ -41,7 +47,7 @@ private const val TAG = "Player"
  * @param catalog Catalog emitted by [Broadcast.catalogs].
  * @param videoTrackName Video track name to play, or `null` for audio-only playback.
  * @param audioTrackName Audio track name to play, or `null` for video-only playback.
- * @param targetLatencyMs Desired live playback latency in milliseconds.
+ * @param targetBuffering Desired live playback buffering depth.
  * @param parentScope Coroutine scope that owns playback work.
  * @param volume Initial audio volume, clamped to the 0.0-1.0 range.
  * @throws IllegalArgumentException if a selected track name does not exist.
@@ -51,50 +57,41 @@ class Player(
     private val catalog: Catalog,
     videoTrackName: String? = null,
     audioTrackName: String? = null,
-    targetLatencyMs: Int = 100,
+    targetBuffering: Duration = Duration.ofMillis(100),
     parentScope: CoroutineScope,
     volume: Float = 1f,
 ) : AutoCloseable {
-    /**
-     * Playback lifecycle events emitted by the player.
-     */
-    sealed class Event {
-        /** A track started producing decoded output. [kind] is `"audio"` or `"video"`. */
-        data class TrackPlaying(val kind: String) : Event()
-        /** A track was paused via [pause]. [kind] is `"audio"` or `"video"`. */
-        data class TrackPaused(val kind: String) : Event()
-        /** A track's incoming data stream ended. [kind] is `"audio"` or `"video"`. */
-        data class TrackStopped(val kind: String) : Event()
-        /** A switched-in rendition became active. [kind] is `"audio"` or `"video"`. */
-        data class TrackSwitched(val kind: String) : Event()
-        /** An unrecoverable error occurred on a track. */
-        data class Error(val kind: String, val message: String) : Event()
-        /** All active tracks have stopped (stream ended or [stop] called). */
-        object AllTracksStopped : Event()
-    }
-
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
-    private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 8)
+    private val eventHub = PlayerEventHub()
+    private val statsTracker = PlaybackStatsTracker(events = eventHub)
+    private val mutableStatsUpdates = MutableSharedFlow<PlaybackStats>(extraBufferCapacity = 8)
 
     /**
      * Playback lifecycle events.
      *
-     * Use this flow for UI state such as play/pause indicators and unrecoverable playback
-     * errors.
+     * Events are not replayed. Collect before [play] if startup events are needed.
      */
-    val events: SharedFlow<Event> = _events
+    val events: SharedFlow<PlayerEvent> = eventHub.events
+
+    /**
+     * Pushed playback stats snapshots sampled while playback is active.
+     */
+    val statsUpdates: SharedFlow<PlaybackStats> = mutableStatsUpdates.asSharedFlow()
 
     private val broadcastOwner: BroadcastOwner
-    private val statsTracker = PlaybackStatsTracker()
     private var selectedVideoTrack: VideoTrackInfo?
     private var selectedAudioTrack: AudioTrackInfo?
-    private var targetLatencyMs = targetLatencyMs
+    private var targetBuffering = targetBuffering
     private var storedAudioVolume = volume.coerceIn(0f, 1f)
     private var surface: Surface? = null
     private var playbackPipeline: PlaybackPipeline? = null
-    private var lastStats: PlaybackStats = emptyStats()
+    private var lastStats: PlaybackStats = PlaybackStats.Empty
+    private var statsSamplingJob: Job? = null
     private var playing = false
+    private var isPaused = false
+    private var hasStartedPlaybackSession = false
     private var closed = false
+    private var destroyed = false
 
     init {
         val resolvedVideoTrack = resolveVideoTrack(videoTrackName)
@@ -105,6 +102,8 @@ class Player(
         selectedVideoTrack = resolvedVideoTrack
         selectedAudioTrack = resolvedAudioTrack
         broadcastOwner = catalog.retainBroadcastOwner()
+        eventHub.emit(PlayerEventType.PlayerInit(sessionEvent))
+        emitSelectedTrackSelect()
     }
 
     /** Current playback time in microseconds. */
@@ -147,14 +146,30 @@ class Player(
         if (playing) return
 
         validateSelectedTracks()
+        eventHub.emit(PlayerEventType.PlaybackRequest(sessionEvent))
+        statsTracker.beginSession(
+            rebufferKind = if (selectedAudioTrack != null) {
+                com.swmansion.moqkit.subscribe.internal.playback.MediaFrameKind.AUDIO
+            } else {
+                com.swmansion.moqkit.subscribe.internal.playback.MediaFrameKind.VIDEO
+            },
+        )
         playing = true
-        statsTracker.markPlayStart()
+        hasStartedPlaybackSession = true
+        val shouldEmitResume = isPaused
         playbackPipeline = try {
             makePlaybackPipeline()
         } catch (t: Throwable) {
             playing = false
+            hasStartedPlaybackSession = false
             throw t
         }
+        if (shouldEmitResume) {
+            eventHub.emit(PlayerEventType.PlaybackResume(sessionEvent))
+        }
+        isPaused = false
+        startStatsSampling()
+        publishStatsSample()
     }
 
     /**
@@ -182,6 +197,7 @@ class Player(
             when (pipeline.switchVideo(newTrack)) {
                 PlaybackPipelineSwitchOutcome.HANDLED -> {
                     selectedVideoTrack = newTrack
+                    emitTrackSelect(PlayerTrackKind.VIDEO, newTrack.name)
                     return
                 }
 
@@ -190,6 +206,7 @@ class Player(
         }
 
         selectedVideoTrack = newTrack
+        emitTrackSelect(PlayerTrackKind.VIDEO, newTrack?.name)
         if (playing) restartPlaybackForSelectionChange()
     }
 
@@ -218,6 +235,7 @@ class Player(
             when (pipeline.switchAudio(newTrack)) {
                 PlaybackPipelineSwitchOutcome.HANDLED -> {
                     selectedAudioTrack = newTrack
+                    emitTrackSelect(PlayerTrackKind.AUDIO, newTrack.name)
                     return
                 }
 
@@ -226,6 +244,7 @@ class Player(
         }
 
         selectedAudioTrack = newTrack
+        emitTrackSelect(PlayerTrackKind.AUDIO, newTrack?.name)
         if (playing) restartPlaybackForSelectionChange()
     }
 
@@ -238,40 +257,33 @@ class Player(
         check(!closed) { "Player is already closed" }
         if (!playing) return
 
-        val hadAudioTrack = selectedAudioTrack != null
-        val hadVideoTrack = selectedVideoTrack != null
         Log.d(TAG, "pause")
         playing = false
-        teardownPlayback(resetStats = false)
-
-        if (hadAudioTrack) _events.tryEmit(Event.TrackPaused("audio"))
-        if (hadVideoTrack) _events.tryEmit(Event.TrackPaused("video"))
+        teardownPlayback(permanent = false, reason = "pause()")
+        eventHub.emit(PlayerEventType.PlaybackPause(sessionEvent))
+        isPaused = true
     }
 
     /**
-     * Stops playback and resets accumulated metrics.
+     * Stops playback, closes active subscriptions, and resets accumulated metrics.
      */
-    fun stop() {
+    fun stopAll(reason: String = "caller requested stopAll") {
         check(!closed) { "Player is already closed" }
-        if (!playing && playbackPipeline == null) {
-            lastStats = emptyStats()
-            return
-        }
 
-        Log.d(TAG, "stop")
+        Log.d(TAG, "stopAll reason=$reason")
         playing = false
-        teardownPlayback(resetStats = true)
+        teardownPlayback(permanent = true, reason = reason)
     }
 
     /**
-     * Adjusts the target playback latency while the player is running.
+     * Adjusts the target playback buffering depth while the player is running.
      *
      * Lower values reduce delay but can increase stalls on unstable networks.
      */
-    fun updateTargetLatency(ms: Int) {
+    fun updateTargetLatency(latency: Duration) {
         check(!closed) { "Player is already closed" }
-        targetLatencyMs = ms
-        playbackPipeline?.updateTargetLatency(ms)
+        targetBuffering = latency
+        playbackPipeline?.updateTargetLatency(latency)
     }
 
     /**
@@ -294,7 +306,8 @@ class Player(
 
         closed = true
         playing = false
-        teardownPlayback(resetStats = true)
+        teardownPlayback(permanent = true, reason = "close()")
+        emitPlayerDestroy()
         scope.cancel()
         broadcastOwner.release()
     }
@@ -309,33 +322,49 @@ class Player(
             broadcastOwner = broadcastOwner,
             videoTrack = selectedVideoTrack,
             audioTrack = selectedAudioTrack,
-            targetLatencyMs = targetLatencyMs,
+            targetBuffering = targetBuffering,
             initialVolume = storedAudioVolume,
             initialSurface = surface,
             scope = scope,
             statsTracker = statsTracker,
-            emitEvent = { event -> _events.tryEmit(event) },
         )
     }
 
     private fun restartPlaybackForSelectionChange() {
         Log.d(TAG, "Restarting playback for selection change")
-        teardownPlayback(resetStats = false)
+        teardownPlayback(permanent = false, reason = "track selection changed")
         if (playing) {
             validateSelectedTracks()
+            eventHub.emit(PlayerEventType.PlaybackRequest(sessionEvent))
+            statsTracker.beginSession(
+                rebufferKind = if (selectedAudioTrack != null) {
+                    com.swmansion.moqkit.subscribe.internal.playback.MediaFrameKind.AUDIO
+                } else {
+                    com.swmansion.moqkit.subscribe.internal.playback.MediaFrameKind.VIDEO
+                },
+            )
             playbackPipeline = makePlaybackPipeline()
+            startStatsSampling()
+            publishStatsSample()
         }
     }
 
-    private fun teardownPlayback(resetStats: Boolean) {
+    private fun teardownPlayback(permanent: Boolean, reason: String) {
         playbackPipeline?.let { pipeline ->
             lastStats = pipeline.snapshotStats()
             pipeline.stop()
         }
         playbackPipeline = null
-        if (resetStats) {
-            lastStats = emptyStats()
+        stopStatsSampling()
+        statsTracker.closeOutInFlightStalls()
+        if (permanent) {
+            if (hasStartedPlaybackSession) {
+                statsTracker.emitPlaybackEnd(reason)
+            }
+            lastStats = PlaybackStats.Empty
             statsTracker.reset()
+            hasStartedPlaybackSession = false
+            isPaused = false
         }
     }
 
@@ -370,22 +399,55 @@ class Player(
         throw UnsupportedCodecException("Audio track '${track.name}' is not playable: $reason")
     }
 
-    private fun emptyStats(): PlaybackStats = PlaybackStats(
-        audioLatencyMs = null,
-        videoLatencyMs = null,
-        audioStalls = null,
-        videoStalls = null,
-        audioBitrateKbps = null,
-        videoBitrateKbps = null,
-        timeToFirstAudioFrameMs = null,
-        timeToFirstVideoFrameMs = null,
-        videoFps = null,
-        audioFramesDropped = null,
-        videoFramesDropped = null,
-        audioRingBufferMs = null,
-        videoJitterBufferMs = null,
-        videoDecodeStats = null,
-        audioArrival = null,
-        videoArrival = null,
-    )
+    private fun startStatsSampling() {
+        statsSamplingJob?.cancel()
+        statsSamplingJob = scope.launch {
+            while (true) {
+                delay(1_000L)
+                publishStatsSample()
+            }
+        }
+    }
+
+    private fun stopStatsSampling() {
+        statsSamplingJob?.cancel()
+        statsSamplingJob = null
+    }
+
+    private fun publishStatsSample() {
+        val pipeline = playbackPipeline ?: return
+        val snapshot = pipeline.snapshotStats()
+        lastStats = snapshot
+        mutableStatsUpdates.tryEmit(snapshot)
+    }
+
+    private val sessionEvent: PlayerSessionEvent
+        get() = PlayerSessionEvent(
+            catalogPath = catalog.path,
+            targetBuffering = targetBuffering,
+            videoTrackName = selectedVideoTrack?.name,
+            audioTrackName = selectedAudioTrack?.name,
+        )
+
+    private fun emitSelectedTrackSelect() {
+        selectedVideoTrack?.let { emitTrackSelect(PlayerTrackKind.VIDEO, it.name) }
+        selectedAudioTrack?.let { emitTrackSelect(PlayerTrackKind.AUDIO, it.name) }
+    }
+
+    private fun emitTrackSelect(kind: PlayerTrackKind, trackName: String?) {
+        eventHub.emit(
+            PlayerEventType.TrackSelect(
+                PlayerTrackSelectionEvent(
+                    kind = kind,
+                    trackName = trackName,
+                ),
+            ),
+        )
+    }
+
+    private fun emitPlayerDestroy() {
+        if (destroyed) return
+        destroyed = true
+        eventHub.emit(PlayerEventType.PlayerDestroy)
+    }
 }

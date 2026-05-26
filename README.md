@@ -286,7 +286,7 @@ lifecycleScope.launch {
                 catalog = catalog,
                 videoTrackName = videoTrack,
                 audioTrackName = audioTrack,
-                targetLatencyMs = 100,
+                targetBuffering = java.time.Duration.ofMillis(100),
                 parentScope = lifecycleScope,
             )
 

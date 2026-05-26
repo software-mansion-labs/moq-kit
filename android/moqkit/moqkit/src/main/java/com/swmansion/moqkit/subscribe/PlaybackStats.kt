@@ -1,123 +1,126 @@
 package com.swmansion.moqkit.subscribe
 
+import java.time.Duration
+
 /**
- * A point-in-time snapshot of playback health metrics, available via [Player.stats].
+ * A point-in-time snapshot of playback quality metrics, available via [Player.stats].
  *
- * These values are intended for diagnostics and quality UI. Poll them periodically while a
- * player is running; they are not emitted as a flow.
- *
- * All fields are nullable — a `null` value means the metric has not yet been measured
- * (e.g. no frames received yet) rather than that the metric is zero.
- *
- * @property audioLatencyMs End-to-end audio latency in milliseconds
- *   (difference between the latest ingested PTS and the current playback position).
- * @property videoLatencyMs End-to-end video latency in milliseconds.
- * @property audioStalls Stall statistics for the audio pipeline since playback started.
- * @property videoStalls Stall statistics for the video pipeline since playback started.
- * @property audioBitrateKbps Smoothed incoming audio bitrate in kilobits per second.
- * @property videoBitrateKbps Smoothed incoming video bitrate in kilobits per second.
- * @property timeToFirstAudioFrameMs Milliseconds from [Player.play] until the first
- *   decoded audio frame was submitted to the renderer.
- * @property timeToFirstVideoFrameMs Milliseconds from [Player.play] until the first
- *   decoded video frame was submitted to the renderer.
- * @property videoFps Smoothed rendered video frame rate.
- * @property audioFramesDropped Total audio frames dropped due to buffer overflow or stale PTS.
- * @property videoFramesDropped Total video frames dropped due to buffer overflow or stale PTS.
- * @property audioRingBufferMs Current fill level of the audio ring buffer in milliseconds.
- * @property videoJitterBufferMs Current fill level of the video jitter buffer in milliseconds.
- * @property videoDecodeStats Decode timing statistics for the currently active video track.
- * @property audioArrival Audio frame arrival timing diagnostics.
- * @property videoArrival Video frame arrival timing diagnostics.
+ * These values are intended for diagnostics and quality UI. All nullable fields use
+ * `null` to mean the metric has not yet been measured or the media kind is inactive.
  */
 data class PlaybackStats(
-    val audioLatencyMs: Double?,
-    val videoLatencyMs: Double?,
+    val audioLatency: Duration?,
+    val videoLatency: Duration?,
     val audioStalls: StallStats?,
     val videoStalls: StallStats?,
     val audioBitrateKbps: Double?,
     val videoBitrateKbps: Double?,
-    val timeToFirstAudioFrameMs: Double?,
-    val timeToFirstVideoFrameMs: Double?,
+    val timeToFirst: TimeToFirstPlaybackStats,
     val videoFps: Double?,
     val audioFramesDropped: Long?,
     val videoFramesDropped: Long?,
-    val audioRingBufferMs: Double?,
-    val videoJitterBufferMs: Double?,
-    val videoDecodeStats: VideoDecodeStats? = null,
+    val audioRingBuffer: Duration?,
+    val videoJitterBuffer: Duration?,
     val audioArrival: FrameArrivalStats? = null,
     val videoArrival: FrameArrivalStats? = null,
-)
+    val audioSwitches: TrackSwitchStats? = null,
+    val videoSwitches: TrackSwitchStats? = null,
+    val videoDecodeStats: VideoDecodeStats? = null,
+) {
+    companion object {
+        internal val Empty = PlaybackStats(
+            audioLatency = null,
+            videoLatency = null,
+            audioStalls = null,
+            videoStalls = null,
+            audioBitrateKbps = null,
+            videoBitrateKbps = null,
+            timeToFirst = TimeToFirstPlaybackStats.Empty,
+            videoFps = null,
+            audioFramesDropped = null,
+            videoFramesDropped = null,
+            audioRingBuffer = null,
+            videoJitterBuffer = null,
+            audioArrival = null,
+            videoArrival = null,
+            audioSwitches = null,
+            videoSwitches = null,
+            videoDecodeStats = null,
+        )
+    }
+}
+
+/** Startup timing milestones from [Player.play]. */
+data class TimeToFirstPlaybackStats(
+    val audioFrame: Duration?,
+    val videoFrame: Duration?,
+    val audioPlaying: Duration?,
+    val videoPlaying: Duration?,
+) {
+    companion object {
+        internal val Empty = TimeToFirstPlaybackStats(
+            audioFrame = null,
+            videoFrame = null,
+            audioPlaying = null,
+            videoPlaying = null,
+        )
+    }
+}
 
 /**
  * Arrival timing diagnostics for one received media stream.
- *
- * These counters help explain stutter caused by network jitter, bursty delivery, or
- * timestamps that move backwards.
- *
- * @property receivedFramesPerSecond Received compressed frames per second over the rolling window.
- * @property averageInterarrivalMs Average wall-clock interval between received frames.
- * @property maxInterarrivalMs Maximum wall-clock interval between received frames.
- * @property arrivalGapCount Number of intervals where wall-clock arrival lagged PTS spacing.
- * @property burstCount Number of intervals where frames arrived much faster than PTS spacing.
- * @property outOfOrderCount Number of frames whose timestamp regressed.
- * @property maxOutOfOrderDeltaMs Largest timestamp regression observed.
- * @property discontinuityCount Number of player-detected timestamp discontinuities.
- * @property maxDiscontinuityGapMs Largest player-detected timestamp discontinuity.
  */
 data class FrameArrivalStats(
     val receivedFramesPerSecond: Double?,
-    val averageInterarrivalMs: Double?,
-    val maxInterarrivalMs: Double?,
-    val arrivalGapCount: Long,
-    val burstCount: Long,
+    val averageInterarrival: Duration?,
+    val maxInterarrival: Duration?,
+    val slowArrivalCount: Long,
+    val fastArrivalCount: Long,
     val outOfOrderCount: Long,
-    val maxOutOfOrderDeltaMs: Double?,
+    val maxOutOfOrderDelta: Duration?,
     val discontinuityCount: Long,
-    val maxDiscontinuityGapMs: Double?,
+    val maxDiscontinuityGap: Duration?,
 )
 
 /**
  * MediaCodec decode timing statistics for the currently active video track.
  *
- * Timing starts when a compressed frame is queued to MediaCodec and ends when the matching decoded
- * output buffer is delivered.
- *
- * @property trackName Video track these decode stats refer to.
- * @property sampleCount Number of decoded samples included in the timing summary.
- * @property minMs Fastest observed decode time in milliseconds.
- * @property maxMs Slowest observed decode time in milliseconds.
- * @property averageMs Average decode time in milliseconds.
- * @property lastMs Most recent decode time in milliseconds.
- * @property inFlightBufferCount Number of compressed frame buffers queued to the decoder that have
- *   not emitted a matching output buffer yet.
- * @property minOutputIntervalMs Minimum wall-clock time between matching output buffer callbacks.
- * @property averageOutputIntervalMs Average wall-clock time between matching output buffer callbacks.
- * @property maxOutputIntervalMs Maximum wall-clock time between matching output buffer callbacks.
+ * Android-only diagnostic surface.
  */
 data class VideoDecodeStats(
     val trackName: String,
     val sampleCount: Long,
-    val minMs: Double,
-    val maxMs: Double,
-    val averageMs: Double,
-    val lastMs: Double,
+    val min: Duration,
+    val max: Duration,
+    val average: Duration,
+    val last: Duration,
     val inFlightBufferCount: Int = 0,
-    val minOutputIntervalMs: Double? = null,
-    val averageOutputIntervalMs: Double? = null,
-    val maxOutputIntervalMs: Double? = null,
+    val minOutputInterval: Duration? = null,
+    val averageOutputInterval: Duration? = null,
+    val maxOutputInterval: Duration? = null,
 )
 
-/**
- * Stall / rebuffering statistics for one media pipeline.
- *
- * A stall means playback had to wait for more media before it could continue.
- *
- * @property count Total number of stall events since playback started.
- * @property totalDurationMs Cumulative stall duration in milliseconds.
- * @property rebufferingRatio Fraction of total playback time spent stalled (0.0–1.0).
- */
+/** Stall / rebuffering statistics for one media pipeline. */
 data class StallStats(
     val count: Long,
-    val totalDurationMs: Double,
+    val totalDuration: Duration,
     val rebufferingRatio: Double,
+)
+
+/** Track switch diagnostics for one media kind. */
+data class TrackSwitchStats(
+    val requestedCount: Long,
+    val completedCount: Long,
+    val latest: TrackSwitch?,
+)
+
+/** Milestones for a single track switch attempt. */
+data class TrackSwitch(
+    val trackName: String?,
+    val isCompleted: Boolean,
+    val errorMessage: String?,
+    val switchToReady: Duration?,
+    val readyToPlaying: Duration?,
+    val switchToPlaying: Duration?,
+    val switchToActive: Duration?,
 )

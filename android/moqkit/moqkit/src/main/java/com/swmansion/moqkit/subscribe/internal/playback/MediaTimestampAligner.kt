@@ -44,6 +44,13 @@ internal class MediaTimestampAligner(
         return abs(value) > threshold
     }
 
+    override fun onMediaTrackStarted(kind: MediaFrameKind) {
+        when (kind) {
+            MediaFrameKind.AUDIO -> audioLiveEdge.reset()
+            MediaFrameKind.VIDEO -> videoLiveEdge.reset()
+        }
+    }
+
     override fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
         val timestampUs = frame.timestampUs.toLong()
         when (kind) {

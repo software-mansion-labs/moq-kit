@@ -2,6 +2,7 @@ package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaFormat
 import uniffi.moq.MoqVideo
+import java.time.Duration
 
 /**
  * Processed video frame ready for MediaCodec input.
@@ -25,12 +26,13 @@ internal data class ProcessedFrame(
  */
 internal class VideoRendererTrack(
     val trackName: String,
+    val trackEpoch: Long,
     config: MoqVideo,
-    targetBufferingUs: Long,
+    val targetBuffering: Duration,
 ) {
     val processor = VideoFrameProcessor(config)
 
-    private val buffer = JitterBuffer<ProcessedFrame>(targetBufferingUs)
+    private val buffer = JitterBuffer<ProcessedFrame>(targetBuffering.toMicrosecondsLongClamped())
     private val lock = Object()
     private var onDataAvailable: (() -> Unit)? = null
 
@@ -41,8 +43,8 @@ internal class VideoRendererTrack(
         }
     }
 
-    fun insert(payload: ByteArray, timestampUs: Long, keyframe: Boolean) {
-        val processed = processor.processPayload(payload, keyframe) ?: return
+    fun insert(payload: ByteArray, timestampUs: Long, keyframe: Boolean): Boolean {
+        val processed = processor.processPayload(payload, keyframe) ?: return false
         val frame = ProcessedFrame(processed, timestampUs, keyframe)
 
         buffer.insert(frame, timestampUs)
@@ -54,6 +56,7 @@ internal class VideoRendererTrack(
             val cb = synchronized(lock) { onDataAvailable }
             cb?.invoke()
         }
+        return true
     }
 
     fun peekFront(): Pair<Long, Boolean>? {
@@ -90,7 +93,8 @@ internal class VideoRendererTrack(
         } else null)
     }
 
-    fun updateTargetBuffering(us: Long): Boolean = buffer.updateTargetBuffering(us)
+    fun updateTargetBuffering(targetBuffering: Duration): Boolean =
+        buffer.updateTargetBuffering(targetBuffering.toMicrosecondsLongClamped())
 
     fun flush() {
         buffer.flush()
@@ -98,6 +102,7 @@ internal class VideoRendererTrack(
 
     val state: JitterBuffer.State get() = buffer.state
     val depthMs: Double get() = buffer.depthMs
+    val depth: Duration get() = durationFromMilliseconds(buffer.depthMs) ?: Duration.ZERO
     fun estimatedPlaybackTimeUs(): Long = buffer.estimatedPlaybackTimeUs()
     fun targetPlaybackPTS(): Long? = buffer.targetPlaybackPTS()
     val frontFrameIntervalUs: Long? get() = buffer.frontFrameIntervalUs

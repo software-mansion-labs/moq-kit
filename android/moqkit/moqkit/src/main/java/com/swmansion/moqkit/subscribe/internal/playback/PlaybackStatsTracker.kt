@@ -2,17 +2,47 @@ package com.swmansion.moqkit.subscribe.internal.playback
 
 import com.swmansion.moqkit.subscribe.FrameArrivalStats
 import com.swmansion.moqkit.subscribe.PlaybackStats
+import com.swmansion.moqkit.subscribe.PlayerAudioPlaybackOutput
+import com.swmansion.moqkit.subscribe.PlayerEventType
+import com.swmansion.moqkit.subscribe.PlayerPlaybackEndEvent
+import com.swmansion.moqkit.subscribe.PlayerTrackErrorEvent
+import com.swmansion.moqkit.subscribe.PlayerTrackEvent
+import com.swmansion.moqkit.subscribe.PlayerTrackKind
+import com.swmansion.moqkit.subscribe.PlayerTrackPlaybackOutput
+import com.swmansion.moqkit.subscribe.PlayerTrackPlayingEvent
+import com.swmansion.moqkit.subscribe.PlayerTrackReadyEvent
+import com.swmansion.moqkit.subscribe.PlayerVideoPlaybackOutput
 import com.swmansion.moqkit.subscribe.StallStats
+import com.swmansion.moqkit.subscribe.TimeToFirstPlaybackStats
+import com.swmansion.moqkit.subscribe.TrackSwitch
+import com.swmansion.moqkit.subscribe.TrackSwitchStats
 import com.swmansion.moqkit.subscribe.VideoDecodeStats
 import uniffi.moq.MoqFrame
+import java.time.Duration
+
+internal data class PlaybackStartContext(
+    val kind: MediaFrameKind,
+    val trackName: String,
+    val sourceTimestampUs: Long,
+    val targetBuffering: Duration,
+    val trackEpoch: Long,
+)
+
+internal data class TrackReadyContext(
+    val kind: MediaFrameKind,
+    val trackName: String,
+    val sourceTimestampUs: Long,
+    val targetBuffering: Duration,
+    val trackEpoch: Long,
+    val keyframe: Boolean,
+    val payloadBytes: Int,
+)
 
 /**
- * Thread-safe tracker for playback quality metrics and received-frame diagnostics.
- *
- * All write methods are lightweight (synchronized on a single lock).
- * One [snapshot] method reads all fields under the lock and returns [PlaybackStats].
+ * Thread-safe tracker for playback quality metrics and lifecycle events.
  */
 internal class PlaybackStatsTracker(
+    private val events: PlayerEventHub = PlayerEventHub(),
     private val clock: () -> Long = System::nanoTime,
 ) : MediaFrameObserver {
     private data class ArrivalInterval(val ns: Long, val ms: Double)
@@ -24,8 +54,8 @@ internal class PlaybackStatsTracker(
         val frameTimestamps: MutableList<Long> = mutableListOf(),
         val intervalsWindow: MutableList<ArrivalInterval> = mutableListOf(),
         var intervalMsTotal: Double = 0.0,
-        var arrivalGapCount: Long = 0,
-        var burstCount: Long = 0,
+        var slowArrivalCount: Long = 0,
+        var fastArrivalCount: Long = 0,
         var outOfOrderCount: Long = 0,
         var maxOutOfOrderDeltaMs: Double = 0.0,
         var discontinuityCount: Long = 0,
@@ -33,20 +63,18 @@ internal class PlaybackStatsTracker(
     ) {
         val hasData: Boolean
             get() = frameTimestamps.isNotEmpty() ||
-                arrivalGapCount > 0 ||
-                burstCount > 0 ||
+                slowArrivalCount > 0 ||
+                fastArrivalCount > 0 ||
                 outOfOrderCount > 0 ||
                 discontinuityCount > 0
 
         fun resetAll() {
-            lastWallNs = null
-            lastPtsUs = null
-            highestPtsUs = null
+            resetTimingBaseline()
             frameTimestamps.clear()
             intervalsWindow.clear()
             intervalMsTotal = 0.0
-            arrivalGapCount = 0
-            burstCount = 0
+            slowArrivalCount = 0
+            fastArrivalCount = 0
             outOfOrderCount = 0
             maxOutOfOrderDeltaMs = 0.0
             discontinuityCount = 0
@@ -60,49 +88,141 @@ internal class PlaybackStatsTracker(
         }
     }
 
+    private data class StallState(
+        var readyAtNs: Long = 0L,
+        var count: Long = 0L,
+        var activeStartNs: Long = 0L,
+        var totalNs: Long = 0L,
+        var active: Boolean = false,
+    ) {
+        fun markReady(now: Long) {
+            if (readyAtNs == 0L) readyAtNs = now
+        }
+
+        fun start(now: Long) {
+            markReady(now)
+            if (active) return
+            active = true
+            activeStartNs = now
+            count++
+        }
+
+        fun end(now: Long) {
+            if (!active) return
+            totalNs += now - activeStartNs
+            active = false
+            activeStartNs = 0L
+        }
+
+        fun stats(now: Long): StallStats? {
+            if (readyAtNs == 0L) return null
+            val total = totalNs + if (active) now - activeStartNs else 0L
+            val elapsed = (now - readyAtNs).coerceAtLeast(0L)
+            val ratio = if (elapsed > 0L) total.toDouble() / elapsed.toDouble() else 0.0
+            return StallStats(
+                count = count,
+                totalDuration = durationFromNanoseconds(total),
+                rebufferingRatio = ratio,
+            )
+        }
+    }
+
+    private data class SwitchAttempt(
+        var trackName: String?,
+        val startedAtNs: Long,
+        var readyAtNs: Long = 0L,
+        var playingAtNs: Long = 0L,
+        var activeAtNs: Long = 0L,
+        var errorMessage: String? = null,
+    )
+
+    private data class SwitchState(
+        var requestedCount: Long = 0L,
+        var completedCount: Long = 0L,
+        var latestAttempt: SwitchAttempt? = null,
+        var countedLatestCompletion: Boolean = false,
+    ) {
+        fun start(trackName: String?, now: Long) {
+            requestedCount++
+            latestAttempt = SwitchAttempt(trackName = trackName, startedAtNs = now)
+            countedLatestCompletion = false
+        }
+
+        fun markReady(now: Long) {
+            val latest = latestAttempt ?: return
+            if (latest.readyAtNs == 0L) latest.readyAtNs = now
+        }
+
+        fun markPlaying(now: Long) {
+            val latest = latestAttempt ?: return
+            if (latest.playingAtNs == 0L) latest.playingAtNs = now
+        }
+
+        fun markActive(now: Long) {
+            val latest = latestAttempt ?: return
+            if (latest.activeAtNs == 0L) latest.activeAtNs = now
+            if (!countedLatestCompletion) {
+                countedLatestCompletion = true
+                completedCount++
+            }
+        }
+
+        fun markError(message: String?) {
+            latestAttempt?.errorMessage = message
+        }
+
+        fun stats(): TrackSwitchStats? {
+            if (requestedCount == 0L) return null
+            val latest = latestAttempt?.let { attempt ->
+                TrackSwitch(
+                    trackName = attempt.trackName,
+                    isCompleted = attempt.activeAtNs > 0L,
+                    errorMessage = attempt.errorMessage,
+                    switchToReady = durationBetween(attempt.startedAtNs, attempt.readyAtNs),
+                    readyToPlaying = durationBetween(attempt.readyAtNs, attempt.playingAtNs),
+                    switchToPlaying = durationBetween(attempt.startedAtNs, attempt.playingAtNs),
+                    switchToActive = durationBetween(attempt.startedAtNs, attempt.activeAtNs),
+                )
+            }
+            return TrackSwitchStats(
+                requestedCount = requestedCount,
+                completedCount = completedCount,
+                latest = latest,
+            )
+        }
+
+        private fun durationBetween(startNs: Long, endNs: Long): Duration? {
+            if (startNs == 0L || endNs == 0L) return null
+            return durationFromNanoseconds((endNs - startNs).coerceAtLeast(0L))
+        }
+    }
+
     private val lock = Any()
 
-    // TTFF
-    private var playStartNs: Long = 0
-    private var firstAudioFrameNs: Long = 0
-    private var firstVideoFrameNs: Long = 0
+    private var playStartNs: Long = 0L
+    private var firstAudioFrameNs: Long = 0L
+    private var firstVideoFrameNs: Long = 0L
+    private var firstAudioPlayingNs: Long = 0L
+    private var firstVideoPlayingNs: Long = 0L
+    private var rebufferKind: MediaFrameKind? = null
+    private var rebuffering = false
+    private var playbackStartEmitted = false
 
-    // Stalls — audio
-    private var audioStallCount: Long = 0
-    private var audioStallStartNs: Long = 0
-    private var audioStallTotalNs: Long = 0
-    private var audioIsStalled: Boolean = false
-    private var audioPlayTimeNs: Long = 0
-    private var audioPlayStartNs: Long = 0
-    private var audioIsPlaying: Boolean = false
+    private val audioStalls = StallState()
+    private val videoStalls = StallState()
+    private val audioSwitches = SwitchState()
+    private val videoSwitches = SwitchState()
 
-    // Stalls — video
-    private var videoStallCount: Long = 0
-    private var videoStallStartNs: Long = 0
-    private var videoStallTotalNs: Long = 0
-    private var videoIsStalled: Boolean = false
-    private var videoPlayTimeNs: Long = 0
-    private var videoPlayStartNs: Long = 0
-    private var videoIsPlaying: Boolean = false
-
-    // Bitrate — audio/video (1-sec rolling window)
     private val audioBytesWindow = mutableListOf<Pair<Long, Int>>()
     private var audioBytesTotal: Int = 0
     private val videoBytesWindow = mutableListOf<Pair<Long, Int>>()
     private var videoBytesTotal: Int = 0
-
-    // FPS — displayed video (1-sec rolling window)
     private val videoFrameTimestamps = mutableListOf<Long>()
-
-    // Received-frame arrival diagnostics
     private val audioArrival = FrameArrivalState()
     private val videoArrival = FrameArrivalState()
-
-    // Dropped frames
     private var audioFramesDroppedCount: Long = 0
     private var videoFramesDroppedCount: Long = 0
 
-    // Video decode timing
     private var videoDecodeTrackName: String? = null
     private var videoDecodeSampleCount: Long = 0
     private var videoDecodeMinNs: Long = Long.MAX_VALUE
@@ -116,6 +236,8 @@ internal class PlaybackStatsTracker(
     private var videoDecodeMaxOutputIntervalNs: Long = 0
     private var videoDecodeTotalOutputIntervalNs: Long = 0
 
+    private var pendingAudioPlaybackStart: PlaybackStartContext? = null
+
     companion object {
         private const val WINDOW_NS = 1_000_000_000L
         private const val MIN_WINDOW_SPAN_NS = 100_000_000L
@@ -124,129 +246,192 @@ internal class PlaybackStatsTracker(
         private const val DISCONTINUITY_THRESHOLD_US = 2_000_000L
     }
 
-    override fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
-        val now = clock()
-        val timestampUs = frame.timestampUs.toLong()
-        val payloadSize = frame.payload.size
-
-        synchronized(lock) {
-            when (kind) {
-                MediaFrameKind.AUDIO -> {
-                    if (firstAudioFrameNs == 0L) {
-                        firstAudioFrameNs = now
-                    }
-                    audioBytesWindow.add(now to payloadSize)
-                    audioBytesTotal += payloadSize
-                    pruneWindow(audioBytesWindow, now) { audioBytesTotal -= it }
-                    recordArrival(timestampUs, now, audioArrival)
-                }
-
-                MediaFrameKind.VIDEO -> {
-                    if (firstVideoFrameNs == 0L) {
-                        firstVideoFrameNs = now
-                    }
-                    videoBytesWindow.add(now to payloadSize)
-                    videoBytesTotal += payloadSize
-                    pruneWindow(videoBytesWindow, now) { videoBytesTotal -= it }
-                    recordArrival(timestampUs, now, videoArrival)
-                }
-            }
-        }
-    }
-
-    override fun onFrameDiscontinuity(kind: MediaFrameKind, gapUs: Long) {
-        synchronized(lock) {
-            val gapMs = gapUs.toDouble() / 1_000.0
-            when (kind) {
-                MediaFrameKind.AUDIO -> {
-                    audioArrival.discontinuityCount++
-                    audioArrival.maxDiscontinuityGapMs =
-                        maxOf(audioArrival.maxDiscontinuityGapMs, gapMs)
-                    audioArrival.resetTimingBaseline()
-                }
-
-                MediaFrameKind.VIDEO -> {
-                    videoArrival.discontinuityCount++
-                    videoArrival.maxDiscontinuityGapMs =
-                        maxOf(videoArrival.maxDiscontinuityGapMs, gapMs)
-                    videoArrival.resetTimingBaseline()
-                }
-            }
-        }
-    }
-
-    // -- TTFF --
-
-    fun markPlayStart() {
+    fun beginSession(rebufferKind: MediaFrameKind) {
         val now = clock()
         synchronized(lock) {
+            this.rebufferKind = rebufferKind
             playStartNs = now
+            firstAudioFrameNs = 0L
+            firstVideoFrameNs = 0L
+            firstAudioPlayingNs = 0L
+            firstVideoPlayingNs = 0L
+            rebuffering = false
+            playbackStartEmitted = false
+            audioStalls.reset()
+            videoStalls.reset()
+            audioSwitches.reset()
+            videoSwitches.reset()
+            pendingAudioPlaybackStart = null
         }
     }
 
-    // -- Stalls --
-
-    fun audioStallBegan() {
+    fun closeOutInFlightStalls() {
         val now = clock()
         synchronized(lock) {
-            if (!audioIsStalled) {
-                audioIsStalled = true
-                audioStallCount++
-                audioStallStartNs = now
-                if (audioIsPlaying) {
-                    audioPlayTimeNs += now - audioPlayStartNs
-                    audioIsPlaying = false
+            audioStalls.end(now)
+            videoStalls.end(now)
+            rebuffering = false
+        }
+    }
+
+    fun emitSubscribeStart(kind: MediaFrameKind, trackName: String, trackEpoch: Long) {
+        events.emit(PlayerEventType.TrackSubscribeStart(trackEvent(kind, trackName, trackEpoch)))
+        if (trackEpoch <= 1L) return
+        val now = clock()
+        synchronized(lock) {
+            switchState(kind).start(trackName, now)
+        }
+    }
+
+    fun emitSubscribeError(kind: MediaFrameKind, trackName: String, message: String, trackEpoch: Long) {
+        events.emit(
+            PlayerEventType.TrackSubscribeError(
+                PlayerTrackErrorEvent(
+                    track = trackEvent(kind, trackName, trackEpoch),
+                    message = message,
+                ),
+            ),
+        )
+        if (trackEpoch <= 1L) return
+        synchronized(lock) {
+            switchState(kind).markError(message)
+        }
+    }
+
+    fun emitSubscribeEnd(kind: MediaFrameKind, trackName: String, trackEpoch: Long) {
+        events.emit(PlayerEventType.TrackSubscribeEnd(trackEvent(kind, trackName, trackEpoch)))
+    }
+
+    fun emitTrackReady(context: TrackReadyContext) {
+        events.emit(
+            PlayerEventType.TrackReady(
+                PlayerTrackReadyEvent(
+                    track = trackEvent(context.kind, context.trackName, context.trackEpoch),
+                    sourceTimestampUs = context.sourceTimestampUs,
+                    targetBuffering = context.targetBuffering,
+                    keyframe = context.keyframe,
+                    payloadBytes = context.payloadBytes.coerceAtLeast(0).toLong(),
+                ),
+            ),
+        )
+        val now = clock()
+        synchronized(lock) {
+            if (context.trackEpoch == 1L && playStartNs > 0L) {
+                when (context.kind) {
+                    MediaFrameKind.AUDIO -> if (firstAudioFrameNs == 0L) firstAudioFrameNs = now
+                    MediaFrameKind.VIDEO -> if (firstVideoFrameNs == 0L) firstVideoFrameNs = now
                 }
             }
-        }
-    }
-
-    fun audioStallEnded() {
-        val now = clock()
-        synchronized(lock) {
-            if (audioIsStalled) {
-                audioIsStalled = false
-                audioStallTotalNs += now - audioStallStartNs
-                audioIsPlaying = true
-                audioPlayStartNs = now
-            } else if (!audioIsPlaying) {
-                audioIsPlaying = true
-                audioPlayStartNs = now
+            if (context.trackEpoch > 1L) {
+                switchState(context.kind).markReady(now)
             }
         }
     }
 
-    fun videoStallBegan() {
+    fun emitTrackSwitch(kind: MediaFrameKind, trackName: String, trackEpoch: Long) {
+        events.emit(PlayerEventType.TrackSwitch(trackEvent(kind, trackName, trackEpoch)))
         val now = clock()
         synchronized(lock) {
-            if (!videoIsStalled) {
-                videoIsStalled = true
-                videoStallCount++
-                videoStallStartNs = now
-                if (videoIsPlaying) {
-                    videoPlayTimeNs += now - videoPlayStartNs
-                    videoIsPlaying = false
-                }
-            }
+            switchState(kind).markActive(now)
         }
     }
 
-    fun videoStallEnded() {
+    fun emitDecodeError(kind: MediaFrameKind, trackName: String, message: String) {
+        events.emit(
+            PlayerEventType.DecodeError(
+                PlayerTrackErrorEvent(
+                    track = trackEvent(kind, trackName),
+                    message = message,
+                ),
+            ),
+        )
+    }
+
+    fun emitPlaybackEnd(reason: String?) {
+        events.emit(PlayerEventType.PlaybackEnd(PlayerPlaybackEndEvent(reason)))
+    }
+
+    fun noteStall(kind: MediaFrameKind, stalled: Boolean) {
         val now = clock()
-        synchronized(lock) {
-            if (videoIsStalled) {
-                videoIsStalled = false
-                videoStallTotalNs += now - videoStallStartNs
-                videoIsPlaying = true
-                videoPlayStartNs = now
-            } else if (!videoIsPlaying) {
-                videoIsPlaying = true
-                videoPlayStartNs = now
+        val rebufferChanged: Boolean
+        val changed = synchronized(lock) {
+            val state = stallState(kind)
+            if (state.active == stalled) {
+                return
             }
+            if (stalled) state.start(now) else state.end(now)
+            rebufferChanged = kind == rebufferKind && rebuffering != stalled
+            if (rebufferChanged) rebuffering = stalled
+            true
+        }
+        if (!changed) return
+
+        val track = trackEvent(kind)
+        events.emit(
+            if (stalled) {
+                PlayerEventType.TrackStallStart(track)
+            } else {
+                PlayerEventType.TrackStallEnd(track)
+            },
+        )
+        if (rebufferChanged) {
+            events.emit(
+                if (stalled) {
+                    PlayerEventType.RebufferStart(track)
+                } else {
+                    PlayerEventType.RebufferEnd(track)
+                },
+            )
         }
     }
 
-    // -- FPS --
+    fun armAudioPlaybackStart(context: PlaybackStartContext) {
+        synchronized(lock) {
+            pendingAudioPlaybackStart = context
+        }
+    }
+
+    fun disarmAudioPlaybackStart() {
+        synchronized(lock) {
+            pendingAudioPlaybackStart = null
+        }
+    }
+
+    fun audioPlaybackStarted(timestampUs: Long, hostTime: Long?) {
+        val context = synchronized(lock) {
+            val pending = pendingAudioPlaybackStart ?: return
+            if (timestampUs < pending.sourceTimestampUs) return
+            pendingAudioPlaybackStart = null
+            pending
+        }
+        emitTrackPlaying(
+            context = context,
+            output = PlayerTrackPlaybackOutput.Audio(
+                PlayerAudioPlaybackOutput(
+                    timestampUs = timestampUs,
+                    hostTime = hostTime,
+                ),
+            ),
+        )
+    }
+
+    fun videoPlaybackStarted(
+        context: PlaybackStartContext,
+        presentationTimeUs: Long,
+        clockTimeUs: Long,
+        buffer: Duration,
+    ) {
+        emitTrackPlaying(
+            context = context,
+            output = PlayerTrackPlaybackOutput.Video(
+                PlayerVideoPlaybackOutput(
+                    presentationTimeUs = presentationTimeUs,
+                    clockTimeUs = clockTimeUs,
+                    buffer = buffer,
+                ),
+            ),
+        )
+    }
 
     fun recordVideoFrameDisplayed() {
         val now = clock()
@@ -255,8 +440,6 @@ internal class PlaybackStatsTracker(
             pruneTimestamps(videoFrameTimestamps, now)
         }
     }
-
-    // -- Dropped frames --
 
     fun recordVideoFrameDropped() {
         synchronized(lock) {
@@ -270,8 +453,6 @@ internal class PlaybackStatsTracker(
             audioFramesDroppedCount += count
         }
     }
-
-    // -- Video decode timing --
 
     fun resetVideoDecodeStats(trackName: String?) {
         synchronized(lock) {
@@ -297,16 +478,11 @@ internal class PlaybackStatsTracker(
             } else if (videoDecodeTrackName != trackName) {
                 return
             }
-
             videoDecodeInFlightBufferCount++
         }
     }
 
-    fun recordVideoDecodeTime(
-        trackName: String,
-        durationNs: Long,
-        outputAtNs: Long = clock(),
-    ) {
+    fun recordVideoDecodeTime(trackName: String, durationNs: Long, outputAtNs: Long = clock()) {
         if (durationNs < 0) return
         synchronized(lock) {
             if (videoDecodeTrackName == null) {
@@ -314,24 +490,19 @@ internal class PlaybackStatsTracker(
             } else if (videoDecodeTrackName != trackName) {
                 return
             }
-
             if (videoDecodeInFlightBufferCount > 0) {
                 videoDecodeInFlightBufferCount--
             }
-
             if (videoDecodeLastOutputNs > 0L) {
                 val intervalNs = outputAtNs - videoDecodeLastOutputNs
                 if (intervalNs >= 0L) {
                     videoDecodeOutputIntervalCount++
-                    videoDecodeMinOutputIntervalNs =
-                        minOf(videoDecodeMinOutputIntervalNs, intervalNs)
-                    videoDecodeMaxOutputIntervalNs =
-                        maxOf(videoDecodeMaxOutputIntervalNs, intervalNs)
+                    videoDecodeMinOutputIntervalNs = minOf(videoDecodeMinOutputIntervalNs, intervalNs)
+                    videoDecodeMaxOutputIntervalNs = maxOf(videoDecodeMaxOutputIntervalNs, intervalNs)
                     videoDecodeTotalOutputIntervalNs += intervalNs
                 }
             }
             videoDecodeLastOutputNs = outputAtNs
-
             videoDecodeSampleCount++
             videoDecodeMinNs = minOf(videoDecodeMinNs, durationNs)
             videoDecodeMaxNs = maxOf(videoDecodeMaxNs, durationNs)
@@ -340,95 +511,40 @@ internal class PlaybackStatsTracker(
         }
     }
 
-    // -- Snapshot --
-
     fun snapshot(
-        audioLatencyMs: Double?,
-        videoLatencyMs: Double?,
-        audioRingBufferMs: Double? = null,
-        videoJitterBufferMs: Double? = null,
+        audioLatency: Duration?,
+        videoLatency: Duration?,
+        audioRingBuffer: Duration? = null,
+        videoJitterBuffer: Duration? = null,
         videoDecodeStatsEnabled: Boolean = true,
     ): PlaybackStats {
         val now = clock()
         synchronized(lock) {
-            val ttfAudio = if (playStartNs > 0 && firstAudioFrameNs > 0) {
-                (firstAudioFrameNs - playStartNs).toDouble() / 1_000_000.0
-            } else null
-
-            val ttfVideo = if (playStartNs > 0 && firstVideoFrameNs > 0) {
-                (firstVideoFrameNs - playStartNs).toDouble() / 1_000_000.0
-            } else null
-
-            val aStalls = if (audioStallCount > 0 || audioIsPlaying || audioIsStalled) {
-                makeStallStats(
-                    audioStallCount, audioStallTotalNs,
-                    audioIsStalled, audioStallStartNs,
-                    audioPlayTimeNs, audioIsPlaying,
-                    audioPlayStartNs, now,
-                )
-            } else null
-
-            val vStalls = if (videoStallCount > 0 || videoIsPlaying || videoIsStalled) {
-                makeStallStats(
-                    videoStallCount, videoStallTotalNs,
-                    videoIsStalled, videoStallStartNs,
-                    videoPlayTimeNs, videoIsPlaying,
-                    videoPlayStartNs, now,
-                )
-            } else null
-
-            val aBitrate = computeBitrateKbps(audioBytesWindow, audioBytesTotal, now)
-            val vBitrate = computeBitrateKbps(videoBytesWindow, videoBytesTotal, now)
-            val fps = computeFps(videoFrameTimestamps, now)
-            val aDrop = if (audioFramesDroppedCount > 0) audioFramesDroppedCount else null
-            val vDrop = if (videoFramesDroppedCount > 0) videoFramesDroppedCount else null
-            val decodeStats = if (videoDecodeStatsEnabled) makeVideoDecodeStats() else null
-
-            return PlaybackStats(
-                audioLatencyMs = audioLatencyMs,
-                videoLatencyMs = videoLatencyMs,
-                audioStalls = aStalls,
-                videoStalls = vStalls,
-                audioBitrateKbps = aBitrate,
-                videoBitrateKbps = vBitrate,
-                timeToFirstAudioFrameMs = ttfAudio,
-                timeToFirstVideoFrameMs = ttfVideo,
-                videoFps = fps,
-                audioFramesDropped = aDrop,
-                videoFramesDropped = vDrop,
-                audioRingBufferMs = audioRingBufferMs,
-                videoJitterBufferMs = videoJitterBufferMs,
-                videoDecodeStats = decodeStats,
-                audioArrival = makeFrameArrivalStats(audioArrival, now),
-                videoArrival = makeFrameArrivalStats(videoArrival, now),
+            return makeStatsLocked(
+                audioLatency = audioLatency,
+                videoLatency = videoLatency,
+                audioRingBuffer = audioRingBuffer,
+                videoJitterBuffer = videoJitterBuffer,
+                videoDecodeStatsEnabled = videoDecodeStatsEnabled,
+                now = now,
             )
         }
     }
 
-    // -- Reset --
-
     fun reset() {
         synchronized(lock) {
-            playStartNs = 0
-            firstAudioFrameNs = 0
-            firstVideoFrameNs = 0
-
-            audioStallCount = 0
-            audioStallStartNs = 0
-            audioStallTotalNs = 0
-            audioIsStalled = false
-            audioPlayTimeNs = 0
-            audioPlayStartNs = 0
-            audioIsPlaying = false
-
-            videoStallCount = 0
-            videoStallStartNs = 0
-            videoStallTotalNs = 0
-            videoIsStalled = false
-            videoPlayTimeNs = 0
-            videoPlayStartNs = 0
-            videoIsPlaying = false
-
+            playStartNs = 0L
+            firstAudioFrameNs = 0L
+            firstVideoFrameNs = 0L
+            firstAudioPlayingNs = 0L
+            firstVideoPlayingNs = 0L
+            rebufferKind = null
+            rebuffering = false
+            playbackStartEmitted = false
+            audioStalls.reset()
+            videoStalls.reset()
+            audioSwitches.reset()
+            videoSwitches.reset()
             audioBytesWindow.clear()
             audioBytesTotal = 0
             videoBytesWindow.clear()
@@ -436,26 +552,147 @@ internal class PlaybackStatsTracker(
             videoFrameTimestamps.clear()
             audioArrival.resetAll()
             videoArrival.resetAll()
-
             audioFramesDroppedCount = 0
             videoFramesDroppedCount = 0
-
-            videoDecodeTrackName = null
-            videoDecodeSampleCount = 0
-            videoDecodeMinNs = Long.MAX_VALUE
-            videoDecodeMaxNs = 0
-            videoDecodeTotalNs = 0
-            videoDecodeLastNs = 0
-            videoDecodeInFlightBufferCount = 0
-            videoDecodeLastOutputNs = 0
-            videoDecodeOutputIntervalCount = 0
-            videoDecodeMinOutputIntervalNs = Long.MAX_VALUE
-            videoDecodeMaxOutputIntervalNs = 0
-            videoDecodeTotalOutputIntervalNs = 0
+            pendingAudioPlaybackStart = null
+            resetVideoDecodeStatsLocked(null)
         }
     }
 
-    // -- Private helpers (called under lock) --
+    override fun onMediaTrackStarted(kind: MediaFrameKind) {
+        synchronized(lock) {
+            when (kind) {
+                MediaFrameKind.AUDIO -> audioArrival.resetTimingBaseline()
+                MediaFrameKind.VIDEO -> videoArrival.resetTimingBaseline()
+            }
+        }
+    }
+
+    override fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
+        val now = clock()
+        val timestampUs = frame.timestampUs.toLong()
+        val payloadSize = frame.payload.size
+        synchronized(lock) {
+            when (kind) {
+                MediaFrameKind.AUDIO -> {
+                    audioBytesWindow.add(now to payloadSize)
+                    audioBytesTotal += payloadSize
+                    pruneWindow(audioBytesWindow, now) { audioBytesTotal -= it }
+                    recordArrival(timestampUs, now, audioArrival)
+                }
+                MediaFrameKind.VIDEO -> {
+                    videoBytesWindow.add(now to payloadSize)
+                    videoBytesTotal += payloadSize
+                    pruneWindow(videoBytesWindow, now) { videoBytesTotal -= it }
+                    recordArrival(timestampUs, now, videoArrival)
+                }
+            }
+        }
+    }
+
+    override fun onFrameDiscontinuity(kind: MediaFrameKind, gapUs: Long) {
+        synchronized(lock) {
+            val gapMs = gapUs.toDouble() / 1_000.0
+            when (kind) {
+                MediaFrameKind.AUDIO -> {
+                    audioArrival.discontinuityCount++
+                    audioArrival.maxDiscontinuityGapMs = maxOf(audioArrival.maxDiscontinuityGapMs, gapMs)
+                    audioArrival.resetTimingBaseline()
+                }
+                MediaFrameKind.VIDEO -> {
+                    videoArrival.discontinuityCount++
+                    videoArrival.maxDiscontinuityGapMs = maxOf(videoArrival.maxDiscontinuityGapMs, gapMs)
+                    videoArrival.resetTimingBaseline()
+                }
+            }
+        }
+    }
+
+    private fun emitTrackPlaying(context: PlaybackStartContext, output: PlayerTrackPlaybackOutput) {
+        val playing = PlayerTrackPlayingEvent(
+            track = trackEvent(context.kind, context.trackName, context.trackEpoch),
+            sourceTimestampUs = context.sourceTimestampUs,
+            targetBuffering = context.targetBuffering,
+            output = output,
+        )
+        events.emit(PlayerEventType.TrackPlaying(playing))
+
+        val shouldEmitPlaybackStart = synchronized(lock) {
+            val now = clock()
+            stallState(context.kind).markReady(now)
+            if (context.trackEpoch == 1L) {
+                when (context.kind) {
+                    MediaFrameKind.AUDIO -> if (firstAudioPlayingNs == 0L) firstAudioPlayingNs = now
+                    MediaFrameKind.VIDEO -> if (firstVideoPlayingNs == 0L) firstVideoPlayingNs = now
+                }
+                if (!playbackStartEmitted && context.kind == rebufferKind) {
+                    playbackStartEmitted = true
+                    true
+                } else {
+                    false
+                }
+            } else {
+                switchState(context.kind).markPlaying(now)
+                false
+            }
+        }
+        if (shouldEmitPlaybackStart) {
+            events.emit(PlayerEventType.PlaybackStart(playing))
+        }
+    }
+
+    private fun makeStatsLocked(
+        audioLatency: Duration?,
+        videoLatency: Duration?,
+        audioRingBuffer: Duration?,
+        videoJitterBuffer: Duration?,
+        videoDecodeStatsEnabled: Boolean,
+        now: Long,
+    ): PlaybackStats =
+        PlaybackStats(
+            audioLatency = audioLatency,
+            videoLatency = videoLatency,
+            audioStalls = audioStalls.stats(now),
+            videoStalls = videoStalls.stats(now),
+            audioBitrateKbps = computeBitrateKbps(audioBytesWindow, audioBytesTotal, now),
+            videoBitrateKbps = computeBitrateKbps(videoBytesWindow, videoBytesTotal, now),
+            timeToFirst = TimeToFirstPlaybackStats(
+                audioFrame = durationSincePlayStart(firstAudioFrameNs),
+                videoFrame = durationSincePlayStart(firstVideoFrameNs),
+                audioPlaying = durationSincePlayStart(firstAudioPlayingNs),
+                videoPlaying = durationSincePlayStart(firstVideoPlayingNs),
+            ),
+            videoFps = computeFps(videoFrameTimestamps, now),
+            audioFramesDropped = audioFramesDroppedCount.takeIf { it > 0L },
+            videoFramesDropped = videoFramesDroppedCount.takeIf { it > 0L },
+            audioRingBuffer = audioRingBuffer,
+            videoJitterBuffer = videoJitterBuffer,
+            audioArrival = makeFrameArrivalStats(audioArrival, now),
+            videoArrival = makeFrameArrivalStats(videoArrival, now),
+            audioSwitches = audioSwitches.stats(),
+            videoSwitches = videoSwitches.stats(),
+            videoDecodeStats = if (videoDecodeStatsEnabled) makeVideoDecodeStats() else null,
+        )
+
+    private fun durationSincePlayStart(endNs: Long): Duration? {
+        if (playStartNs == 0L || endNs == 0L) return null
+        return durationFromNanoseconds((endNs - playStartNs).coerceAtLeast(0L))
+    }
+
+    private fun resetVideoDecodeStatsLocked(trackName: String?) {
+        videoDecodeTrackName = trackName
+        videoDecodeSampleCount = 0
+        videoDecodeMinNs = Long.MAX_VALUE
+        videoDecodeMaxNs = 0
+        videoDecodeTotalNs = 0
+        videoDecodeLastNs = 0
+        videoDecodeInFlightBufferCount = 0
+        videoDecodeLastOutputNs = 0
+        videoDecodeOutputIntervalCount = 0
+        videoDecodeMinOutputIntervalNs = Long.MAX_VALUE
+        videoDecodeMaxOutputIntervalNs = 0
+        videoDecodeTotalOutputIntervalNs = 0
+    }
 
     private fun recordArrival(timestampUs: Long, now: Long, state: FrameArrivalState) {
         state.frameTimestamps.add(now)
@@ -475,19 +712,17 @@ internal class PlaybackStatsTracker(
         if (previousWallNs != null && previousPtsUs != null) {
             val isOutOfOrder = timestampUs < previousPtsUs
             val ptsDeltaUs = if (isOutOfOrder) 0L else timestampUs - previousPtsUs
-
             if (!isOutOfOrder && ptsDeltaUs <= DISCONTINUITY_THRESHOLD_US) {
                 val wallDeltaMs = (now - previousWallNs).toDouble() / 1_000_000.0
                 state.intervalsWindow.add(ArrivalInterval(now, wallDeltaMs))
                 state.intervalMsTotal += wallDeltaMs
                 pruneArrivalIntervals(state, now)
-
                 val ptsDeltaMs = ptsDeltaUs.toDouble() / 1_000.0
                 if (ptsDeltaMs > 0.0) {
                     if (wallDeltaMs > ptsDeltaMs * ARRIVAL_GAP_FACTOR) {
-                        state.arrivalGapCount++
+                        state.slowArrivalCount++
                     } else if (wallDeltaMs < ptsDeltaMs * BURST_FACTOR) {
-                        state.burstCount++
+                        state.fastArrivalCount++
                     }
                 }
             }
@@ -500,39 +735,33 @@ internal class PlaybackStatsTracker(
     private fun makeVideoDecodeStats(): VideoDecodeStats? {
         val trackName = videoDecodeTrackName ?: return null
         if (videoDecodeSampleCount == 0L && videoDecodeInFlightBufferCount == 0) return null
-        val minOutputIntervalMs = if (videoDecodeOutputIntervalCount > 0L) {
-            videoDecodeMinOutputIntervalNs.toDouble() / 1_000_000.0
-        } else null
-        val averageOutputIntervalMs = if (videoDecodeOutputIntervalCount > 0L) {
-            videoDecodeTotalOutputIntervalNs.toDouble() /
-                videoDecodeOutputIntervalCount.toDouble() /
-                1_000_000.0
-        } else null
-        val maxOutputIntervalMs = if (videoDecodeOutputIntervalCount > 0L) {
-            videoDecodeMaxOutputIntervalNs.toDouble() / 1_000_000.0
-        } else null
-
         return VideoDecodeStats(
             trackName = trackName,
             sampleCount = videoDecodeSampleCount,
-            minMs = if (videoDecodeSampleCount > 0L) videoDecodeMinNs.toDouble() / 1_000_000.0 else 0.0,
-            maxMs = if (videoDecodeSampleCount > 0L) videoDecodeMaxNs.toDouble() / 1_000_000.0 else 0.0,
-            averageMs = if (videoDecodeSampleCount > 0L) {
-                videoDecodeTotalNs.toDouble() / videoDecodeSampleCount.toDouble() / 1_000_000.0
-            } else 0.0,
-            lastMs = if (videoDecodeSampleCount > 0L) videoDecodeLastNs.toDouble() / 1_000_000.0 else 0.0,
+            min = durationFromNanoseconds(if (videoDecodeSampleCount > 0L) videoDecodeMinNs else 0L),
+            max = durationFromNanoseconds(if (videoDecodeSampleCount > 0L) videoDecodeMaxNs else 0L),
+            average = durationFromNanoseconds(
+                if (videoDecodeSampleCount > 0L) {
+                    videoDecodeTotalNs / videoDecodeSampleCount
+                } else {
+                    0L
+                },
+            ),
+            last = durationFromNanoseconds(if (videoDecodeSampleCount > 0L) videoDecodeLastNs else 0L),
             inFlightBufferCount = videoDecodeInFlightBufferCount,
-            minOutputIntervalMs = minOutputIntervalMs,
-            averageOutputIntervalMs = averageOutputIntervalMs,
-            maxOutputIntervalMs = maxOutputIntervalMs,
+            minOutputInterval = if (videoDecodeOutputIntervalCount > 0L) {
+                durationFromNanoseconds(videoDecodeMinOutputIntervalNs)
+            } else null,
+            averageOutputInterval = if (videoDecodeOutputIntervalCount > 0L) {
+                durationFromNanoseconds(videoDecodeTotalOutputIntervalNs / videoDecodeOutputIntervalCount)
+            } else null,
+            maxOutputInterval = if (videoDecodeOutputIntervalCount > 0L) {
+                durationFromNanoseconds(videoDecodeMaxOutputIntervalNs)
+            } else null,
         )
     }
 
-    private inline fun pruneWindow(
-        entries: MutableList<Pair<Long, Int>>,
-        now: Long,
-        onRemove: (Int) -> Unit,
-    ) {
+    private inline fun pruneWindow(entries: MutableList<Pair<Long, Int>>, now: Long, onRemove: (Int) -> Unit) {
         val cutoff = if (now >= WINDOW_NS) now - WINDOW_NS else 0L
         while (entries.isNotEmpty() && entries[0].first < cutoff) {
             onRemove(entries.removeAt(0).second)
@@ -553,11 +782,7 @@ internal class PlaybackStatsTracker(
         }
     }
 
-    private fun computeBitrateKbps(
-        entries: List<Pair<Long, Int>>,
-        total: Int,
-        now: Long,
-    ): Double? {
+    private fun computeBitrateKbps(entries: List<Pair<Long, Int>>, total: Int, now: Long): Double? {
         if (entries.isEmpty()) return null
         val spanNs = now - entries[0].first
         if (spanNs < MIN_WINDOW_SPAN_NS) return null
@@ -573,49 +798,57 @@ internal class PlaybackStatsTracker(
         return entries.size.toDouble() / spanSec
     }
 
-    private fun makeFrameArrivalStats(
-        state: FrameArrivalState,
-        now: Long,
-    ): FrameArrivalStats? {
+    private fun makeFrameArrivalStats(state: FrameArrivalState, now: Long): FrameArrivalStats? {
         if (!state.hasData) return null
         val averageInterarrivalMs = if (state.intervalsWindow.isNotEmpty()) {
             state.intervalMsTotal / state.intervalsWindow.size.toDouble()
         } else null
-
         return FrameArrivalStats(
             receivedFramesPerSecond = computeFps(state.frameTimestamps, now),
-            averageInterarrivalMs = averageInterarrivalMs,
-            maxInterarrivalMs = state.intervalsWindow.maxOfOrNull { it.ms },
-            arrivalGapCount = state.arrivalGapCount,
-            burstCount = state.burstCount,
+            averageInterarrival = durationFromMilliseconds(averageInterarrivalMs),
+            maxInterarrival = durationFromMilliseconds(state.intervalsWindow.maxOfOrNull { it.ms }),
+            slowArrivalCount = state.slowArrivalCount,
+            fastArrivalCount = state.fastArrivalCount,
             outOfOrderCount = state.outOfOrderCount,
-            maxOutOfOrderDeltaMs = state.maxOutOfOrderDeltaMs.takeIf { it > 0.0 },
+            maxOutOfOrderDelta = durationFromMilliseconds(state.maxOutOfOrderDeltaMs.takeIf { it > 0.0 }),
             discontinuityCount = state.discontinuityCount,
-            maxDiscontinuityGapMs = state.maxDiscontinuityGapMs.takeIf { it > 0.0 },
+            maxDiscontinuityGap = durationFromMilliseconds(state.maxDiscontinuityGapMs.takeIf { it > 0.0 }),
         )
     }
 
-    private fun makeStallStats(
-        count: Long,
-        stallTotalNs: Long,
-        isStalled: Boolean,
-        stallStartNs: Long,
-        playTimeNs: Long,
-        isPlaying: Boolean,
-        playStartNs: Long,
-        now: Long,
-    ): StallStats {
-        var totalStallNs = stallTotalNs
-        if (isStalled) {
-            totalStallNs += now - stallStartNs
+    private fun trackEvent(kind: MediaFrameKind, trackName: String? = null, trackEpoch: Long = 0L): PlayerTrackEvent =
+        PlayerTrackEvent(kind = kind.playerTrackKind, trackName = trackName, epoch = trackEpoch)
+
+    private fun stallState(kind: MediaFrameKind): StallState =
+        when (kind) {
+            MediaFrameKind.AUDIO -> audioStalls
+            MediaFrameKind.VIDEO -> videoStalls
         }
-        var totalPlayNs = playTimeNs
-        if (isPlaying) {
-            totalPlayNs += now - playStartNs
+
+    private fun switchState(kind: MediaFrameKind): SwitchState =
+        when (kind) {
+            MediaFrameKind.AUDIO -> audioSwitches
+            MediaFrameKind.VIDEO -> videoSwitches
         }
-        val totalMs = totalStallNs.toDouble() / 1_000_000.0
-        val totalTime = (totalPlayNs + totalStallNs).toDouble()
-        val ratio = if (totalTime > 0) totalStallNs.toDouble() / totalTime else 0.0
-        return StallStats(count = count, totalDurationMs = totalMs, rebufferingRatio = ratio)
+
+    private fun StallState.reset() {
+        readyAtNs = 0L
+        count = 0L
+        activeStartNs = 0L
+        totalNs = 0L
+        active = false
+    }
+
+    private fun SwitchState.reset() {
+        requestedCount = 0L
+        completedCount = 0L
+        latestAttempt = null
+        countedLatestCompletion = false
     }
 }
+
+internal val MediaFrameKind.playerTrackKind: PlayerTrackKind
+    get() = when (this) {
+        MediaFrameKind.AUDIO -> PlayerTrackKind.AUDIO
+        MediaFrameKind.VIDEO -> PlayerTrackKind.VIDEO
+    }
