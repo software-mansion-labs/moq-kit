@@ -74,7 +74,7 @@ final class VideoRenderer: @unchecked Sendable {
     private var lastKnownClockTimeUs: UInt64 = 0
     private var pendingStallCheck: DispatchWorkItem?
     private var pendingDrainWakeup: DispatchWorkItem?
-    private var isWaitingForFirstPlayablePlayback = true
+    private var isPlaybackStartEventArmed = true
     private var hasLoggedFirstEnqueue = false
     private var hasLoggedNoActiveFrame = false
 
@@ -147,7 +147,7 @@ final class VideoRenderer: @unchecked Sendable {
             pendingDrainWakeup = nil
             lastEnqueuedPTS = .invalid
             lastKnownClockTimeUs = 0
-            isWaitingForFirstPlayablePlayback = true
+            isPlaybackStartEventArmed = true
             hasLoggedFirstEnqueue = false
             hasLoggedNoActiveFrame = false
         }
@@ -165,7 +165,7 @@ final class VideoRenderer: @unchecked Sendable {
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
             lastEnqueuedPTS = .invalid
-            isWaitingForFirstPlayablePlayback = true
+            isPlaybackStartEventArmed = true
             hasLoggedNoActiveFrame = false
         }
     }
@@ -350,7 +350,7 @@ final class VideoRenderer: @unchecked Sendable {
         lastEnqueuedPTS = displaySample.presentationTime
         hasLoggedNoActiveFrame = false
         if playable {
-            scheduleFirstPlayablePlaybackIfNeeded(
+            emitPlaybackStartIfArmed(
                 sourceTimestampUs: entry.timestampUs,
                 presentationTimeUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
                 buffer: activeTrack.depth
@@ -365,13 +365,13 @@ final class VideoRenderer: @unchecked Sendable {
         return true
     }
 
-    private func scheduleFirstPlayablePlaybackIfNeeded(
+    private func emitPlaybackStartIfArmed(
         sourceTimestampUs: UInt64,
         presentationTimeUs: UInt64,
         buffer: Duration
     ) {
-        guard isWaitingForFirstPlayablePlayback else { return }
-        isWaitingForFirstPlayablePlayback = false
+        guard isPlaybackStartEventArmed else { return }
+        isPlaybackStartEventArmed = false
 
         let context = PlaybackStartContext(
             kind: .video,
@@ -535,7 +535,7 @@ final class VideoRenderer: @unchecked Sendable {
         activeTrack = newTrack
         pendingTrack = nil
         pendingPhase = nil
-        isWaitingForFirstPlayablePlayback = true
+        isPlaybackStartEventArmed = true
         newTrack.setOnDataAvailable(makeDataAvailableCallback())
         // Current rendition switching assumes all video tracks share one timestamp domain.
         // If future renditions do not, MediaTimestampAligner needs per-video-track live
