@@ -7,7 +7,7 @@ struct MoQDemoRelayURLs {
 
     static let defaults = MoQDemoRelayURLs(
         boyDemoURL: "https://cdn.moq.dev/demo",
-         sharedRelayURL: "http://192.168.92.150:4443/anon"
+         sharedRelayURL: "http://192.168.92.131:4443/anon"
     )
 }
 

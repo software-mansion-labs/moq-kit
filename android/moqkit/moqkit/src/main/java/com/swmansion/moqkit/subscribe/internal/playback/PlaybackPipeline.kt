@@ -6,7 +6,6 @@ import com.swmansion.moqkit.subscribe.AudioTrackInfo
 import com.swmansion.moqkit.subscribe.BroadcastOwner
 import com.swmansion.moqkit.subscribe.Catalog
 import com.swmansion.moqkit.subscribe.PlaybackStats
-import com.swmansion.moqkit.subscribe.Player
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
 import com.swmansion.moqkit.subscribe.internal.subscribeTrack
 import kotlinx.coroutines.CancellationException
@@ -14,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import java.time.Duration
 
 private const val TAG = "PlaybackPipeline"
 private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
@@ -36,12 +36,11 @@ internal class PlaybackPipeline(
     private val broadcastOwner: BroadcastOwner,
     videoTrack: VideoTrackInfo?,
     audioTrack: AudioTrackInfo?,
-    targetLatencyMs: Int,
+    targetBuffering: Duration,
     initialVolume: Float,
     initialSurface: Surface?,
     private val scope: CoroutineScope,
     private val statsTracker: PlaybackStatsTracker,
-    private val emitEvent: (Player.Event) -> Unit,
 ) {
     private val timestampAligner = MediaTimestampAligner()
     private val frameObserver = CompositeMediaFrameObserver(listOf(statsTracker, timestampAligner))
@@ -50,9 +49,11 @@ internal class PlaybackPipeline(
 
     private var selectedVideoTrack: VideoTrackInfo? = videoTrack
     private var selectedAudioTrack: AudioTrackInfo? = audioTrack
-    private var targetLatencyMs = targetLatencyMs
+    private var targetBuffering = targetBuffering
     private var storedAudioVolume = initialVolume.coerceIn(0f, 1f)
     private var surface: Surface? = initialSurface
+    private var videoEpoch: Long = if (videoTrack != null) 1L else 0L
+    private var audioEpoch: Long = if (audioTrack != null) 1L else 0L
 
     private var audioRenderer: AudioRenderer? = null
     private var videoRenderer: VideoRenderer? = null
@@ -82,10 +83,10 @@ internal class PlaybackPipeline(
         val videoLiveTime = if (hasVideo) videoLiveTimeForStats(hasAudio) else null
 
         return statsTracker.snapshot(
-            audioLatencyMs = playbackLatencyMs(audioLiveTime, currentTimeUs),
-            videoLatencyMs = playbackLatencyMs(videoLiveTime, currentTimeUs),
-            audioRingBufferMs = audioRenderer?.bufferFillMs,
-            videoJitterBufferMs = videoRenderer?.bufferFillMs,
+            audioLatency = playbackLatency(audioLiveTime, currentTimeUs),
+            videoLatency = playbackLatency(videoLiveTime, currentTimeUs),
+            audioRingBuffer = audioRenderer?.bufferFill,
+            videoJitterBuffer = videoRenderer?.bufferFill,
             videoDecodeStatsEnabled = hasVideo,
         )
     }
@@ -112,10 +113,10 @@ internal class PlaybackPipeline(
         }
     }
 
-    fun updateTargetLatency(ms: Int) {
-        targetLatencyMs = ms
-        audioRenderer?.updateTargetLatency(ms)
-        videoRenderer?.updateTargetBuffering(ms)
+    fun updateTargetLatency(latency: Duration) {
+        targetBuffering = latency
+        audioRenderer?.updateTargetLatency(latency)
+        videoRenderer?.updateTargetBuffering(latency)
     }
 
     fun setVolume(volume: Float) {
@@ -130,10 +131,13 @@ internal class PlaybackPipeline(
 
         Log.d(TAG, "Switching video track to '${track.name}' codec=${track.config.codec}")
 
+        val nextEpoch = videoEpoch + 1L
+        statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, track.name, nextEpoch)
         val newTrack = VideoRendererTrack(
             trackName = track.name,
+            trackEpoch = nextEpoch,
             config = track.rawConfig,
-            targetBufferingUs = targetLatencyMs.toLong() * 1_000L,
+            targetBuffering = targetBuffering,
         )
         val oldHandle = TrackIngestHandle(videoIngestJob)
         synchronized(stateLock) {
@@ -148,11 +152,12 @@ internal class PlaybackPipeline(
                     pendingVideoCleanup = null
                 }
             }
-            emitEvent(Player.Event.TrackSwitched("video"))
+            statsTracker.emitTrackSwitch(MediaFrameKind.VIDEO, track.name, nextEpoch)
         }
 
         selectedVideoTrack = track
-        videoIngestJob = launchVideoIngestJob(track, newTrack, isSwitch = true)
+        videoEpoch = nextEpoch
+        videoIngestJob = launchVideoIngestJob(track, newTrack, nextEpoch)
         restartCoordinator()
         return PlaybackPipelineSwitchOutcome.HANDLED
     }
@@ -165,9 +170,12 @@ internal class PlaybackPipeline(
 
         Log.d(TAG, "Switching audio track to '${track.name}' codec=${track.config.codec}")
 
+        val nextEpoch = audioEpoch + 1L
+        statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, track.name, nextEpoch)
         val oldJob = audioIngestJob
         selectedAudioTrack = track
-        audioIngestJob = launchAudioIngestJob(track, renderer, isSwitch = true)
+        audioEpoch = nextEpoch
+        audioIngestJob = launchAudioIngestJob(track, renderer, nextEpoch)
         oldJob?.cancel()
         restartCoordinator()
         return PlaybackPipelineSwitchOutcome.HANDLED
@@ -204,19 +212,20 @@ internal class PlaybackPipeline(
         Log.d(
             TAG,
             "Starting audio: '${audioInfo.name}' ${audioInfo.config.sampleRate}Hz " +
-                "${audioInfo.config.channelCount}ch, targetLatency=${targetLatencyMs}ms",
+                "${audioInfo.config.channelCount}ch, targetBuffering=${targetBuffering.toMillisecondsLongClamped()}ms",
         )
 
         val renderer = AudioRenderer(
             config = audioInfo.rawConfig,
-            targetLatencyMs = targetLatencyMs,
+            targetBuffering = targetBuffering,
             metrics = statsTracker,
             initialVolume = storedAudioVolume,
             clock = audioClock,
         )
         audioRenderer = renderer
         renderer.start()
-        audioIngestJob = launchAudioIngestJob(audioInfo, renderer, isSwitch = false)
+        statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, audioInfo.name, audioEpoch)
+        audioIngestJob = launchAudioIngestJob(audioInfo, renderer, audioEpoch)
     }
 
     private fun startVideo(surface: Surface) {
@@ -230,8 +239,9 @@ internal class PlaybackPipeline(
         statsTracker.resetVideoDecodeStats(videoInfo.name)
         val track = VideoRendererTrack(
             trackName = videoInfo.name,
+            trackEpoch = videoEpoch,
             config = videoInfo.rawConfig,
-            targetBufferingUs = targetLatencyMs.toLong() * 1_000L,
+            targetBuffering = targetBuffering,
         )
         val renderer = VideoRenderer(
             activeTrack = track,
@@ -243,25 +253,27 @@ internal class PlaybackPipeline(
         )
         videoRenderer = renderer
         renderer.start()
-        videoIngestJob = launchVideoIngestJob(videoInfo, track, isSwitch = false)
+        statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, videoInfo.name, videoEpoch)
+        videoIngestJob = launchVideoIngestJob(videoInfo, track, videoEpoch)
     }
 
     private fun launchAudioIngestJob(
         audioInfo: AudioTrackInfo,
         renderer: AudioRenderer,
-        isSwitch: Boolean,
+        trackEpoch: Long,
     ): Job {
         val audioFlow = subscribeTrack(
             broadcastOwner.consumer(),
             audioInfo.name,
             audioInfo.rawConfig.container,
-            targetLatencyMs.toULong(),
+            targetBuffering.toMillisecondsLongClamped().toULong(),
         )
 
         return scope.launch {
             var firstFrame = true
             var lastPtsUs: Long? = null
             try {
+                frameObserver.onMediaTrackStarted(MediaFrameKind.AUDIO)
                 audioFlow.collect { frame ->
                     val timestampUs = frame.timestampUs.toLong()
                     val previousPtsUs = lastPtsUs
@@ -274,27 +286,35 @@ internal class PlaybackPipeline(
                     lastPtsUs = timestampUs
 
                     frameObserver.onMediaFrame(frame, MediaFrameKind.AUDIO)
-                    renderer.submitFrame(frame.payload, timestampUs)
-
                     if (firstFrame) {
                         firstFrame = false
-                        Log.d(TAG, "First audio frame received track='${audioInfo.name}' isSwitch=$isSwitch")
-                        emitEvent(
-                            if (isSwitch) {
-                                Player.Event.TrackSwitched("audio")
-                            } else {
-                                Player.Event.TrackPlaying("audio")
-                            },
+                        Log.d(TAG, "First audio frame received track='${audioInfo.name}' epoch=$trackEpoch")
+                        renderer.expectPlaybackStart(
+                            TrackReadyContext(
+                                kind = MediaFrameKind.AUDIO,
+                                trackName = audioInfo.name,
+                                sourceTimestampUs = timestampUs,
+                                targetBuffering = targetBuffering,
+                                trackEpoch = trackEpoch,
+                                keyframe = frame.keyframe,
+                                payloadBytes = frame.payload.size,
+                            ),
                         )
                     }
+                    renderer.submitFrame(frame.payload, timestampUs)
                 }
 
-                emitEvent(Player.Event.TrackStopped("audio"))
+                statsTracker.emitSubscribeEnd(MediaFrameKind.AUDIO, audioInfo.name, trackEpoch)
             } catch (_: CancellationException) {
                 Log.d(TAG, "Audio ingest cancelled")
             } catch (e: Exception) {
                 Log.e(TAG, "Audio ingest error", e)
-                emitEvent(Player.Event.Error("audio", e.message ?: "Unknown error"))
+                statsTracker.emitSubscribeError(
+                    MediaFrameKind.AUDIO,
+                    audioInfo.name,
+                    e.message ?: "Unknown error",
+                    trackEpoch,
+                )
             }
         }
     }
@@ -302,20 +322,21 @@ internal class PlaybackPipeline(
     private fun launchVideoIngestJob(
         videoInfo: VideoTrackInfo,
         track: VideoRendererTrack,
-        isSwitch: Boolean,
+        trackEpoch: Long,
     ): Job {
         Log.d(TAG, "Subscribing to video track '${videoInfo.name}'")
         val videoFlow = subscribeTrack(
             broadcastOwner.consumer(),
             videoInfo.name,
             videoInfo.rawConfig.container,
-            targetLatencyMs.toULong(),
+            targetBuffering.toMillisecondsLongClamped().toULong(),
         )
 
         return scope.launch {
             var firstFrame = true
             var lastPtsUs: Long? = null
             try {
+                frameObserver.onMediaTrackStarted(MediaFrameKind.VIDEO)
                 videoFlow.collect { frame ->
                     val timestampUs = frame.timestampUs.toLong()
                     val previousPtsUs = lastPtsUs
@@ -327,23 +348,36 @@ internal class PlaybackPipeline(
                     lastPtsUs = timestampUs
 
                     frameObserver.onMediaFrame(frame, MediaFrameKind.VIDEO)
-                    track.insert(frame.payload, timestampUs, frame.keyframe)
+                    val accepted = track.insert(frame.payload, timestampUs, frame.keyframe)
 
-                    if (firstFrame) {
+                    if (accepted && firstFrame) {
                         firstFrame = false
-                        Log.d(TAG, "First video frame received track='${videoInfo.name}' isSwitch=$isSwitch")
-                        if (!isSwitch) {
-                            emitEvent(Player.Event.TrackPlaying("video"))
-                        }
+                        Log.d(TAG, "First video frame accepted track='${videoInfo.name}' epoch=$trackEpoch")
+                        statsTracker.emitTrackReady(
+                            TrackReadyContext(
+                                kind = MediaFrameKind.VIDEO,
+                                trackName = videoInfo.name,
+                                sourceTimestampUs = timestampUs,
+                                targetBuffering = targetBuffering,
+                                trackEpoch = trackEpoch,
+                                keyframe = frame.keyframe,
+                                payloadBytes = frame.payload.size,
+                            ),
+                        )
                     }
                 }
 
-                emitEvent(Player.Event.TrackStopped("video"))
+                statsTracker.emitSubscribeEnd(MediaFrameKind.VIDEO, videoInfo.name, trackEpoch)
             } catch (_: CancellationException) {
                 Log.d(TAG, "Video ingest cancelled")
             } catch (e: Exception) {
                 Log.e(TAG, "Video ingest error", e)
-                emitEvent(Player.Event.Error("video", e.message ?: "Unknown error"))
+                statsTracker.emitSubscribeError(
+                    MediaFrameKind.VIDEO,
+                    videoInfo.name,
+                    e.message ?: "Unknown error",
+                    trackEpoch,
+                )
             }
         }
     }
@@ -369,7 +403,7 @@ internal class PlaybackPipeline(
                 "Playback coordinator observed all tracks stopped; " +
                     "video=${videoTrackName ?: "none"}, audio=${audioTrackName ?: "none"}",
             )
-            emitEvent(Player.Event.AllTracksStopped)
+            statsTracker.emitPlaybackEnd(null)
         }
     }
 
@@ -397,9 +431,10 @@ internal class PlaybackPipeline(
         Log.e(TAG, "Video renderer error", error)
         val hadAudio = audioIngestJob?.isActive == true
         stopVideo()
-        emitEvent(Player.Event.Error("video", error.message ?: "Unknown error"))
+        val trackName = selectedVideoTrack?.name ?: "video"
+        statsTracker.emitDecodeError(MediaFrameKind.VIDEO, trackName, error.message ?: "Unknown error")
         if (!hadAudio) {
-            emitEvent(Player.Event.AllTracksStopped)
+            statsTracker.emitPlaybackEnd(error.message)
         }
     }
 
@@ -431,14 +466,14 @@ internal class PlaybackPipeline(
         )
     }
 
-    private fun playbackLatencyMs(liveTime: Long?, currentTimeUs: Long): Double? {
+    private fun playbackLatency(liveTime: Long?, currentTimeUs: Long): Duration? {
         val live = liveTime ?: return null
         val latencyUs = try {
             Math.subtractExact(live, currentTimeUs)
         } catch (_: ArithmeticException) {
             return null
         }
-        return maxOf(0L, latencyUs).toDouble() / 1_000.0
+        return durationFromMicroseconds(maxOf(0L, latencyUs))
     }
 
     private fun isDiscontinuity(currentUs: Long, lastUs: Long?, keyframe: Boolean): Boolean {

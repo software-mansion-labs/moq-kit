@@ -6,6 +6,7 @@ import android.media.AudioTrack
 import android.os.Process
 import android.util.Log
 import uniffi.moq.MoqAudio
+import java.time.Duration
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -19,7 +20,7 @@ private const val TAG = "AudioRenderer"
  */
 internal class AudioRenderer(
     private val config: MoqAudio,
-    private val targetLatencyMs: Int,
+    private val targetBuffering: Duration,
     private val metrics: PlaybackStatsTracker? = null,
     initialVolume: Float = 1f,
     clock: AudioDrivenClock = AudioDrivenClock(),
@@ -32,12 +33,13 @@ internal class AudioRenderer(
     private var ringBuffer = AudioRingBuffer(
         rate = sampleRate,
         channels = channels,
-        latencyMs = targetLatencyMs.toDouble(),
+        latencyMs = targetBuffering.toMillisecondsLongClamped().toDouble(),
     )
 
     private var audioTrack: AudioTrack? = null
     private var decoder: AudioDecoder? = null
     private var playbackThread: Thread? = null
+    private var pendingReadyContext: TrackReadyContext? = null
 
     @Volatile
     private var volume = initialVolume.coerceIn(0f, 1f)
@@ -45,12 +47,14 @@ internal class AudioRenderer(
     @Volatile
     private var running = false
 
-    val bufferFillMs: Double get() = lock.withLock {
-        (ringBuffer.length.toDouble() / sampleRate) * 1000.0
-    }
+    val bufferFill: Duration get() = durationFromMilliseconds(
+        lock.withLock {
+            (ringBuffer.length.toDouble() / sampleRate) * 1000.0
+        },
+    ) ?: Duration.ZERO
 
     fun start() {
-        Log.d(TAG, "Starting: ${sampleRate}Hz ${channels}ch, targetLatency=${targetLatencyMs}ms")
+        Log.d(TAG, "Starting: ${sampleRate}Hz ${channels}ch, targetBuffering=${targetBuffering.toMillisecondsLongClamped()}ms")
 
         val channelMask = if (channels == 1) {
             AudioFormat.CHANNEL_OUT_MONO
@@ -89,6 +93,7 @@ internal class AudioRenderer(
             ?: throw IllegalStateException("Unsupported audio codec: ${config.codec}")
 
         decoder = AudioDecoder(format) { pcmData, frameCount, timestampUs ->
+            var readyContext: TrackReadyContext? = null
             lock.withLock {
                 // Seed the audio clock from the first decoded frame.
                 if (clock.currentTimeUs == 0L) {
@@ -96,6 +101,14 @@ internal class AudioRenderer(
                 }
                 val discarded = ringBuffer.write(timestampUs, pcmData, frameCount)
                 metrics?.recordAudioFramesDropped(discarded)
+                readyContext = pendingReadyContext
+                pendingReadyContext = null
+            }
+            readyContext?.let { context ->
+                metrics?.emitTrackReady(context)
+                if (context.trackEpoch > 1L) {
+                    metrics?.emitTrackSwitch(MediaFrameKind.AUDIO, context.trackName, context.trackEpoch)
+                }
             }
         }
         decoder!!.start()
@@ -122,14 +135,15 @@ internal class AudioRenderer(
                     if (wasStalled || !everPlayed) {
                         wasStalled = false
                         everPlayed = true
-                        metrics?.audioStallEnded()
+                        metrics?.noteStall(MediaFrameKind.AUDIO, stalled = false)
                     }
                     track.write(chunkBuf, 0, framesRead * channels)
                     clock.setCurrentTimeUs(ts)
+                    metrics?.audioPlaybackStarted(ts, hostTime = null)
                 } else {
                     if (!wasStalled && everPlayed) {
                         wasStalled = true
-                        metrics?.audioStallBegan()
+                        metrics?.noteStall(MediaFrameKind.AUDIO, stalled = true)
                     }
                     // Stalled — avoid busy-wait
                     Thread.sleep(5)
@@ -149,10 +163,25 @@ internal class AudioRenderer(
         decoder?.submitFrame(payload, timestampUs)
     }
 
-    /** Update the target latency, resizing the ring buffer. */
-    fun updateTargetLatency(ms: Int) {
+    fun expectPlaybackStart(context: TrackReadyContext) {
         lock.withLock {
-            ringBuffer.resize(ms.toDouble())
+            pendingReadyContext = context
+        }
+        metrics?.armAudioPlaybackStart(
+            PlaybackStartContext(
+                kind = context.kind,
+                trackName = context.trackName,
+                sourceTimestampUs = context.sourceTimestampUs,
+                targetBuffering = context.targetBuffering,
+                trackEpoch = context.trackEpoch,
+            ),
+        )
+    }
+
+    /** Update the target latency, resizing the ring buffer. */
+    fun updateTargetLatency(latency: Duration) {
+        lock.withLock {
+            ringBuffer.resize(latency.toMillisecondsLongClamped().toDouble())
         }
     }
 
@@ -167,7 +196,9 @@ internal class AudioRenderer(
     fun flush() {
         lock.withLock {
             ringBuffer.reset()
+            pendingReadyContext = null
         }
+        metrics?.disarmAudioPlaybackStart()
         decoder?.flush()
         clock.reset()
     }
