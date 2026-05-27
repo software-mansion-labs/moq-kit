@@ -8,16 +8,24 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.swmansion.moqkit.Session
+import com.swmansion.moqkit.subscribe.AudioTrackInfo
 import com.swmansion.moqkit.subscribe.Broadcast
 import com.swmansion.moqkit.subscribe.BroadcastSubscription
 import com.swmansion.moqkit.subscribe.Catalog
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.Player
+import com.swmansion.moqkit.subscribe.PlayerEvent
+import com.swmansion.moqkit.subscribe.PlayerEventType
+import com.swmansion.moqkit.subscribe.PlayerTrackEvent
+import com.swmansion.moqkit.subscribe.PlayerTrackKind
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.Duration
+import java.time.Instant
 
 class BroadcastEntry(catalog: Catalog) {
     val id: String = catalog.path
@@ -31,7 +39,9 @@ class BroadcastEntry(catalog: Catalog) {
     var lastNonZeroVolume by mutableStateOf(1f)
 
     var playbackStats by mutableStateOf<PlaybackStats?>(null)
+    var startupDiagnostics by mutableStateOf(PlayerStartupDiagnostics())
     var selectedVideoTrack by mutableStateOf<VideoTrackInfo?>(null)
+    var selectedAudioTrack by mutableStateOf<AudioTrackInfo?>(null)
     var pendingVideoTrack by mutableStateOf<VideoTrackInfo?>(null)
 
     internal var eventJob: Job? = null
@@ -41,6 +51,7 @@ class BroadcastEntry(catalog: Catalog) {
 
 class PlayerDemoViewModel(application: Application) : AndroidViewModel(application) {
     var relayUrl by mutableStateOf("http://192.168.92.140:4443/anon")
+    var broadcastPath by mutableStateOf("")
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
@@ -51,6 +62,8 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     private var subscription: BroadcastSubscription? = null
 
     fun connect() {
+        stop()
+
         val s = Session(
             url = relayUrl,
             parentScope = viewModelScope,
@@ -64,7 +77,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
             viewModelScope.launch {
                 try {
                     s.connect()
-                    val newSubscription = s.subscribe()
+                    val newSubscription = s.subscribe(prefix = broadcastPath)
                     subscription = newSubscription
                     newSubscription.broadcasts.collect { broadcast ->
                         observeCatalogs(broadcast)
@@ -78,8 +91,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     fun togglePause(entry: BroadcastEntry) {
         if (entry.isPaused) {
             entry.player?.play()
-            // play() recreates renderers with the original constructor latency — restore the slider value
-            entry.player?.updateTargetLatency(entry.targetLatencyMs)
+            entry.player?.updateTargetLatency(Duration.ofMillis(entry.targetLatencyMs.toLong()))
             entry.player?.setVolume(entry.volume)
             entry.isPaused = false
         } else {
@@ -93,7 +105,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         entry.latencyUpdateJob?.cancel()
         entry.latencyUpdateJob = viewModelScope.launch {
             delay(300) // 300ms debounce, matching iOS
-            entry.player?.updateTargetLatency(ms)
+            entry.player?.updateTargetLatency(Duration.ofMillis(ms.toLong()))
         }
     }
 
@@ -116,11 +128,11 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
 
     fun switchVideoTrack(entry: BroadcastEntry, track: VideoTrackInfo) {
         if (!track.isPlayable) return
+        val player = entry.player ?: return
         entry.pendingVideoTrack = track
         try {
-            entry.player?.switchTrack(track.name)
-            entry.selectedVideoTrack = track
-        } finally {
+            player.switchTrack(track.name)
+        } catch (_: Exception) {
             entry.pendingVideoTrack = null
         }
     }
@@ -154,6 +166,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     private fun replaceBroadcast(catalog: Catalog) {
         val existing = broadcasts.find { it.id == catalog.path }
         val preferredVideoName = existing?.selectedVideoTrack?.name
+        val preferredAudioName = existing?.selectedAudioTrack?.name
 
         if (existing == null) {
             val entry = BroadcastEntry(catalog)
@@ -168,7 +181,11 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         existing.catalog = catalog
         existing.offline = false
         if (hasPlayableTracks(catalog)) {
-            startPlayer(existing, preferredVideoName = preferredVideoName)
+            startPlayer(
+                existing,
+                preferredVideoName = preferredVideoName,
+                preferredAudioName = preferredAudioName,
+            )
         }
     }
 
@@ -188,9 +205,11 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         entry.player?.close()
         entry.player = null
         entry.playbackStats = null
+        entry.startupDiagnostics = PlayerStartupDiagnostics()
         entry.isPlaying = false
         entry.isPaused = false
         entry.selectedVideoTrack = null
+        entry.selectedAudioTrack = null
         entry.pendingVideoTrack = null
     }
 
@@ -198,10 +217,14 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         return catalog.playableVideoTracks.isNotEmpty() || catalog.playableAudioTracks.isNotEmpty()
     }
 
-    private fun startPlayer(entry: BroadcastEntry, preferredVideoName: String?) {
+    private fun startPlayer(
+        entry: BroadcastEntry,
+        preferredVideoName: String?,
+        preferredAudioName: String? = null,
+    ) {
         val catalog = entry.catalog
         val initialVideo = preferredVideoTrack(catalog, preferredVideoName)
-        val initialAudio = catalog.playableAudioTracks.firstOrNull()
+        val initialAudio = preferredAudioTrack(catalog, preferredAudioName)
         if (initialVideo == null && initialAudio == null) {
             return
         }
@@ -211,7 +234,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
                 catalog = catalog,
                 videoTrackName = initialVideo?.name,
                 audioTrackName = initialAudio?.name,
-                targetLatencyMs = entry.targetLatencyMs,
+                targetBuffering = Duration.ofMillis(entry.targetLatencyMs.toLong()),
                 parentScope = viewModelScope,
                 volume = entry.volume,
             )
@@ -220,32 +243,105 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         }
         entry.player = player
         entry.selectedVideoTrack = initialVideo
-        player.play()
-        player.setVolume(entry.volume)
+        entry.selectedAudioTrack = initialAudio
+        entry.startupDiagnostics = PlayerStartupDiagnostics()
 
-        entry.eventJob = viewModelScope.launch {
-            player.events.collect { ev ->
-                when (ev) {
-                    is Player.Event.TrackPlaying -> {
-                        entry.isPlaying = true
-                        entry.isPaused = false
+        entry.eventJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            player.events.collect { event ->
+                handlePlayerEvent(entry, event)
+            }
+        }
+        entry.statsJob = viewModelScope.launch(start = CoroutineStart.UNDISPATCHED) {
+            player.statsUpdates.collect { stats ->
+                entry.playbackStats = stats
+            }
+        }
+
+        try {
+            player.play()
+            player.setVolume(entry.volume)
+        } catch (_: Exception) {
+            entry.offline = true
+            stopEntry(entry)
+        }
+    }
+
+    private fun handlePlayerEvent(entry: BroadcastEntry, event: PlayerEvent) {
+        entry.startupDiagnostics = entry.startupDiagnostics.record(event)
+
+        when (val type = event.type) {
+            is PlayerEventType.PlaybackStart -> {
+                entry.isPlaying = true
+                entry.isPaused = false
+                applyActiveTrack(entry, type.playback.track)
+            }
+
+            is PlayerEventType.PlaybackPause -> {
+                entry.isPaused = true
+            }
+
+            is PlayerEventType.PlaybackResume -> {
+                entry.isPaused = false
+            }
+
+            is PlayerEventType.TrackSelect -> {
+                when (type.selection.kind) {
+                    PlayerTrackKind.VIDEO -> {
+                        if (type.selection.trackName == null) {
+                            entry.selectedVideoTrack = null
+                        }
                     }
 
-                    is Player.Event.TrackPaused -> entry.isPaused = true
-                    is Player.Event.TrackStopped -> {}
-                    is Player.Event.TrackSwitched -> {}
-                    is Player.Event.Error -> {}
-                    is Player.Event.AllTracksStopped -> {
-                        entry.isPlaying = false
-                        entry.isPaused = false
+                    PlayerTrackKind.AUDIO -> {
+                        entry.selectedAudioTrack = entry.catalog.playableAudioTracks
+                            .firstOrNull { it.name == type.selection.trackName }
                     }
                 }
             }
+
+            is PlayerEventType.TrackPlaying -> {
+                applyActiveTrack(entry, type.playing.track)
+            }
+
+            is PlayerEventType.TrackSwitch -> {
+                applyActiveTrack(entry, type.track)
+            }
+
+            is PlayerEventType.TrackSubscribeError -> {
+                if (type.error.track.kind == PlayerTrackKind.VIDEO) {
+                    entry.pendingVideoTrack = null
+                }
+            }
+
+            is PlayerEventType.PlaybackEnd -> {
+                entry.isPlaying = false
+                entry.isPaused = false
+                entry.offline = true
+                entry.playbackStats = null
+            }
+
+            else -> Unit
         }
-        entry.statsJob = viewModelScope.launch {
-            while (true) {
-                delay(500)
-                entry.playbackStats = player.stats
+    }
+
+    private fun applyActiveTrack(entry: BroadcastEntry, track: PlayerTrackEvent) {
+        when (track.kind) {
+            PlayerTrackKind.VIDEO -> {
+                val trackName = track.trackName
+                if (trackName != null) {
+                    entry.selectedVideoTrack = entry.catalog.playableVideoTracks
+                        .firstOrNull { it.name == trackName }
+                } else {
+                    entry.selectedVideoTrack = entry.pendingVideoTrack
+                }
+                if (entry.pendingVideoTrack?.name == entry.selectedVideoTrack?.name || trackName == null) {
+                    entry.pendingVideoTrack = null
+                }
+            }
+
+            PlayerTrackKind.AUDIO -> {
+                entry.selectedAudioTrack = entry.catalog.playableAudioTracks
+                    .firstOrNull { it.name == track.trackName }
             }
         }
     }
@@ -281,4 +377,190 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
             (track.config.coded?.height ?: 0u) * (track.config.coded?.width ?: 0u)
         }
     }
+
+    private fun preferredAudioTrack(catalog: Catalog, preferredName: String?): AudioTrackInfo? {
+        if (preferredName != null) {
+            catalog.playableAudioTracks.firstOrNull { it.name == preferredName }?.let { return it }
+        }
+        return catalog.playableAudioTracks.firstOrNull()
+    }
+}
+
+data class PlayerStartupDiagnostics(
+    val playerInitAt: Instant? = null,
+    val playRequestedAt: Instant? = null,
+    val playbackStartedAt: Instant? = null,
+    val playbackEndedAt: Instant? = null,
+    val playbackStartedByKind: PlayerTrackKind? = null,
+    val orderedTracks: List<TrackStartupDiagnostics> = emptyList(),
+) {
+    val initToPlayRequest: Duration?
+        get() = elapsed(playerInitAt, playRequestedAt)
+
+    val playRequestToPlaybackStart: Duration?
+        get() = elapsed(playRequestedAt, playbackStartedAt)
+
+    fun record(event: PlayerEvent): PlayerStartupDiagnostics {
+        return when (val type = event.type) {
+            is PlayerEventType.PlayerInit -> copy(
+                playerInitAt = playerInitAt ?: event.timestamp,
+            )
+
+            is PlayerEventType.PlaybackRequest -> copy(
+                playRequestedAt = event.timestamp,
+                playbackStartedAt = null,
+                playbackEndedAt = null,
+                playbackStartedByKind = null,
+                orderedTracks = emptyList(),
+            )
+
+            is PlayerEventType.PlaybackStart -> copy(
+                playbackStartedAt = playbackStartedAt ?: event.timestamp,
+                playbackStartedByKind = type.playback.track.kind,
+            )
+
+            is PlayerEventType.PlaybackEnd -> copy(
+                playbackEndedAt = event.timestamp,
+            )
+
+            is PlayerEventType.TrackSubscribeStart -> startTrack(event, type.track)
+
+            is PlayerEventType.TrackReady -> updateTrack(event, type.ready.track) { track ->
+                track.copy(
+                    trackName = type.ready.track.trackName ?: track.trackName,
+                    readyAt = track.readyAt ?: event.timestamp,
+                    epoch = type.ready.track.epoch,
+                )
+            }
+
+            is PlayerEventType.TrackPlaying -> updateTrack(event, type.playing.track) { track ->
+                track.copy(
+                    trackName = type.playing.track.trackName ?: track.trackName,
+                    playingAt = track.playingAt ?: event.timestamp,
+                    epoch = type.playing.track.epoch,
+                )
+            }
+
+            is PlayerEventType.TrackSubscribeError -> updateTrack(event, type.error.track) { track ->
+                track.copy(
+                    trackName = type.error.track.trackName ?: track.trackName,
+                    errorAt = event.timestamp,
+                    errorMessage = type.error.message,
+                    epoch = type.error.track.epoch,
+                )
+            }
+
+            is PlayerEventType.TrackSubscribeEnd -> updateTrack(event, type.track) { track ->
+                track.copy(
+                    trackName = type.track.trackName ?: track.trackName,
+                    endedAt = event.timestamp,
+                    epoch = type.track.epoch,
+                )
+            }
+
+            is PlayerEventType.TrackSwitch -> updateTrack(event, type.track) { track ->
+                track.copy(
+                    trackName = type.track.trackName ?: track.trackName,
+                    activeAt = track.activeAt ?: event.timestamp,
+                    epoch = type.track.epoch,
+                )
+            }
+
+            else -> this
+        }
+    }
+
+    private fun startTrack(
+        event: PlayerEvent,
+        eventTrack: PlayerTrackEvent,
+    ): PlayerStartupDiagnostics {
+        val track = TrackStartupDiagnostics(
+            id = "track-${event.sequence}",
+            kind = eventTrack.kind,
+            trackName = eventTrack.trackName,
+            subscribeStartedAt = event.timestamp,
+            epoch = eventTrack.epoch,
+        )
+        return copy(orderedTracks = orderedTracks + track)
+    }
+
+    private fun updateTrack(
+        event: PlayerEvent,
+        eventTrack: PlayerTrackEvent,
+        update: (TrackStartupDiagnostics) -> TrackStartupDiagnostics,
+    ): PlayerStartupDiagnostics {
+        val index = orderedTracks.indices.reversed().firstOrNull { index ->
+            val track = orderedTracks[index]
+            if (track.kind != eventTrack.kind) return@firstOrNull false
+            val eventTrackName = eventTrack.trackName
+            val existingName = track.trackName
+            if (eventTrackName != null && existingName != null && existingName != eventTrackName) {
+                return@firstOrNull false
+            }
+            if (eventTrack.epoch != 0L && track.epoch != eventTrack.epoch) {
+                return@firstOrNull false
+            }
+            true
+        }
+
+        if (index != null) {
+            val tracks = orderedTracks.toMutableList()
+            tracks[index] = update(tracks[index])
+            return copy(orderedTracks = tracks)
+        }
+
+        val track = update(
+            TrackStartupDiagnostics(
+                id = "track-${event.sequence}",
+                kind = eventTrack.kind,
+                epoch = eventTrack.epoch,
+            ),
+        )
+        return copy(orderedTracks = orderedTracks + track)
+    }
+}
+
+data class TrackStartupDiagnostics(
+    val id: String,
+    val kind: PlayerTrackKind,
+    val trackName: String? = null,
+    val subscribeStartedAt: Instant? = null,
+    val readyAt: Instant? = null,
+    val playingAt: Instant? = null,
+    val activeAt: Instant? = null,
+    val errorAt: Instant? = null,
+    val errorMessage: String? = null,
+    val endedAt: Instant? = null,
+    val epoch: Long = 0L,
+) {
+    val isTrackSwitch: Boolean
+        get() = epoch > 1L
+
+    val operationLabel: String
+        get() = if (isTrackSwitch) "Switch" else "Play request"
+
+    fun subscribeToReady(): Duration? = elapsed(subscribeStartedAt, readyAt)
+
+    fun operationToReady(playRequestedAt: Instant?): Duration? {
+        return elapsed(operationStartedAt(playRequestedAt), readyAt)
+    }
+
+    fun readyToPlaying(): Duration? = elapsed(readyAt, playingAt)
+
+    fun operationToPlaying(playRequestedAt: Instant?): Duration? {
+        return elapsed(operationStartedAt(playRequestedAt), playingAt)
+    }
+
+    fun operationToActive(playRequestedAt: Instant?): Duration? {
+        return elapsed(operationStartedAt(playRequestedAt), activeAt)
+    }
+
+    private fun operationStartedAt(playRequestedAt: Instant?): Instant? {
+        return if (isTrackSwitch) subscribeStartedAt else playRequestedAt
+    }
+}
+
+private fun elapsed(from: Instant?, to: Instant?): Duration? {
+    if (from == null || to == null) return null
+    return Duration.between(from, to)
 }
