@@ -1,5 +1,6 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
+import java.time.Duration
 import kotlin.math.ceil
 import kotlin.math.min
 
@@ -13,7 +14,7 @@ import kotlin.math.min
 internal class AudioRingBuffer(
     val rate: Int,
     val channels: Int,
-    latencyMs: Double,
+    latency: Duration,
 ) {
     private var buffer: ShortArray
     private var writeFrame: Int = 0
@@ -25,11 +26,8 @@ internal class AudioRingBuffer(
     init {
         require(channels > 0) { "invalid channels" }
         require(rate > 0) { "invalid sample rate" }
-        require(latencyMs > 0) { "invalid latency" }
 
-        val frames = ceil(rate.toDouble() * latencyMs / 1000.0).toInt()
-        require(frames > 0) { "empty buffer" }
-        buffer = ShortArray(frames * channels)
+        buffer = ShortArray(capacityForLatency(latency) * channels)
     }
 
     /** Total capacity in frames. */
@@ -153,10 +151,9 @@ internal class AudioRingBuffer(
     }
 
     /** Resize the buffer to match a new latency target. Preserves recent samples. Triggers stall. */
-    fun resize(latencyMs: Double) {
-        val newCapacity = ceil(rate.toDouble() * latencyMs / 1000.0).toInt()
+    fun resize(latency: Duration) {
+        val newCapacity = capacityForLatency(latency)
         if (newCapacity == capacity) return
-        require(newCapacity > 0) { "empty buffer" }
 
         val newBuffer = ShortArray(newCapacity * channels)
         val framesToKeep = min(length, newCapacity)
@@ -171,6 +168,15 @@ internal class AudioRingBuffer(
         buffer = newBuffer
         readFrame = writeFrame - framesToKeep
         stalled = true
+    }
+
+    private fun capacityForLatency(latency: Duration): Int {
+        require(!latency.isNegative && !latency.isZero) { "invalid latency" }
+
+        val seconds = latency.seconds.toDouble() + latency.nano.toDouble() / 1_000_000_000.0
+        val frames = ceil(rate.toDouble() * seconds).toInt()
+        require(frames > 0) { "empty buffer" }
+        return frames
     }
 
     /** Reset all state, clearing the buffer and re-entering stalled mode. */
