@@ -70,7 +70,7 @@ final class VideoRenderer: @unchecked Sendable {
     private let timestampAligner: MediaTimestampAligner?
     private var timelineStarted: Bool
     private weak var delegate: (any VideoRendererDelegate)?
-    private var lastEnqueuedPTS: CMTime = .invalid
+    private var stallHorizon = VideoStallHorizon()
     private var lastKnownClockTimeUs: UInt64 = 0
     private var pendingStallCheck: DispatchWorkItem?
     private var pendingDrainWakeup: DispatchWorkItem?
@@ -143,9 +143,9 @@ final class VideoRenderer: @unchecked Sendable {
 
             pendingStallCheck?.cancel()
             pendingStallCheck = nil
+            stallHorizon.reset()
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
-            lastEnqueuedPTS = .invalid
             lastKnownClockTimeUs = 0
             isPlaybackStartEventArmed = true
             hasLoggedFirstEnqueue = false
@@ -162,9 +162,9 @@ final class VideoRenderer: @unchecked Sendable {
             layer.flushAndRemoveImage()
             pendingStallCheck?.cancel()
             pendingStallCheck = nil
+            stallHorizon.reset()
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
-            lastEnqueuedPTS = .invalid
             isPlaybackStartEventArmed = true
             hasLoggedNoActiveFrame = false
         }
@@ -278,6 +278,7 @@ final class VideoRenderer: @unchecked Sendable {
 
         case .flushAndSwap:
             layer.flushAndRemoveImage()
+            stallHorizon.reset()
             if let keyframePts = pending.firstKeyframePts {
                 pending.discardNonKeyframesBeforePts(keyframePts)
             }
@@ -329,14 +330,9 @@ final class VideoRenderer: @unchecked Sendable {
 
     @discardableResult
     private func enqueueNextActiveFrame() -> Bool {
+        let frontFrameIntervalUs = activeTrack.frontFrameIntervalUs
         let (entry, playable) = activeTrack.dequeue()
         guard let entry else { return false }
-
-        if playable {
-            delegate?.videoRendererDidDisplayFrame(self)
-        } else {
-            delegate?.videoRendererDidDropFrame(self)
-        }
 
         let displaySample = displaySampleBuffer(
             for: entry.item.sampleBuffer,
@@ -347,7 +343,19 @@ final class VideoRenderer: @unchecked Sendable {
         }
 
         layer.enqueue(displaySample.sampleBuffer)
-        lastEnqueuedPTS = displaySample.presentationTime
+        if playable {
+            let shouldEndStall = stallHorizon.recordVisibleFrame(
+                sampleBuffer: displaySample.sampleBuffer,
+                presentationTime: displaySample.presentationTime,
+                frontFrameIntervalUs: frontFrameIntervalUs
+            )
+            delegate?.videoRendererDidDisplayFrame(self)
+            if shouldEndStall {
+                endVideoStall()
+            }
+        } else {
+            delegate?.videoRendererDidDropFrame(self)
+        }
         hasLoggedNoActiveFrame = false
         if playable {
             emitPlaybackStartIfArmed(
@@ -436,30 +444,74 @@ final class VideoRenderer: @unchecked Sendable {
         }
 
         // Emergency swap: active drained completely but pending has a keyframe.
-        if let pending = pendingTrack,
-            pending.peekFront()?.isKeyframe == true
-        {
-            pending.setBufferState(.playing)
-            performSwap(to: pending)
+        if promotePendingTrackIfReady() {
             armVideoEnqueue()
             return
         }
 
+        evaluateVideoStallStart()
+    }
+
+    private func evaluateVideoStallStart() {
         pendingStallCheck?.cancel()
-        let currentTime = timing.currentTime()
-        if lastEnqueuedPTS.isValid && currentTime < lastEnqueuedPTS {
-            let remaining = CMTimeSubtract(lastEnqueuedPTS, currentTime)
-            let delaySec = max(0, CMTimeGetSeconds(remaining))
-            let workItem = DispatchWorkItem { [weak self] in
-                self?.pendingStallCheck = nil
-                guard let self else { return }
-                self.delegate?.videoRendererDidBeginStall(self)
-            }
-            pendingStallCheck = workItem
-            enqueueQueue.asyncAfter(deadline: .now() + delaySec, execute: workItem)
-        } else {
-            delegate?.videoRendererDidBeginStall(self)
+        pendingStallCheck = nil
+        stallHorizon.clearPendingStallMarker()
+
+        guard activeTrack.peekFront() == nil else { return }
+
+        if promotePendingTrackIfReady() {
+            armVideoEnqueue()
+            return
         }
+
+        switch stallHorizon.evaluateStallStart(at: currentPlaybackTimeUs()) {
+        case .wait(let delayUs):
+            scheduleVideoStallCheck(afterUs: delayUs)
+        case .beginStall:
+            beginVideoStall()
+        case .alreadyStalled:
+            break
+        }
+    }
+
+    private func scheduleVideoStallCheck(afterUs delayUs: UInt64) {
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.evaluateVideoStallStart()
+        }
+        pendingStallCheck = workItem
+        enqueueQueue.asyncAfter(
+            deadline: .now() + Double(delayUs) / 1_000_000.0,
+            execute: workItem
+        )
+    }
+
+    private func beginVideoStall() {
+        let stalledAtUs = currentPlaybackTimeUs()
+        lastKnownClockTimeUs = stalledAtUs
+        if timing.isVideoDriven {
+            timing.setRate(0)
+        }
+        delegate?.videoRendererDidBeginStall(self)
+    }
+
+    private func endVideoStall() {
+        if timing.isVideoDriven {
+            timing.setRate(1.0)
+        }
+        delegate?.videoRendererDidEndStall(self)
+    }
+
+    @discardableResult
+    private func promotePendingTrackIfReady() -> Bool {
+        guard let pending = pendingTrack,
+            pending.peekFront()?.isKeyframe == true
+        else {
+            return false
+        }
+
+        pending.setBufferState(.playing)
+        performSwap(to: pending)
+        return true
     }
 
     private func scheduleDrainWakeup(_ delay: RenderDelay) {
@@ -553,7 +605,7 @@ final class VideoRenderer: @unchecked Sendable {
                 guard let self else { return }
                 self.pendingStallCheck?.cancel()
                 self.pendingStallCheck = nil
-                self.delegate?.videoRendererDidEndStall(self)
+                self.stallHorizon.clearPendingStallMarker()
                 self.armVideoEnqueue()
             }
         }
