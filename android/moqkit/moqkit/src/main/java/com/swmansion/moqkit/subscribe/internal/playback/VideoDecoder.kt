@@ -103,20 +103,24 @@ internal class VideoDecoder(
     }
 
     /** Release an output buffer for rendering at the specified timestamp. */
-    fun releaseOutputBuffer(index: Int, renderTimestampNs: Long) {
-        try {
+    fun releaseOutputBuffer(index: Int, renderTimestampNs: Long): Boolean {
+        return try {
             codec.releaseOutputBuffer(index, renderTimestampNs)
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing output buffer for render: $e")
+            false
         }
     }
 
     /** Release an output buffer without rendering (drop). */
-    fun releaseOutputBuffer(index: Int, render: Boolean) {
-        try {
+    fun releaseOutputBuffer(index: Int, render: Boolean): Boolean {
+        return try {
             codec.releaseOutputBuffer(index, render)
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing output buffer: $e")
+            false
         }
     }
 
