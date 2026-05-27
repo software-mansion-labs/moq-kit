@@ -1,6 +1,10 @@
 [daemons.relay]
 run = "mise run relay:run"
 
+[daemons.web]
+dir = "vendor/moq/demo"
+run = "just web"
+
 [daemons.publish-shrek]
 run = "mise run stream:file --name public/shrek"
 
