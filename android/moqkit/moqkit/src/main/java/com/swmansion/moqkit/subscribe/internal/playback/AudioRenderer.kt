@@ -33,7 +33,7 @@ internal class AudioRenderer(
     private var ringBuffer = AudioRingBuffer(
         rate = sampleRate,
         channels = channels,
-        latencyMs = targetBuffering.toMillisecondsLongClamped().toDouble(),
+        latency = targetBuffering,
     )
 
     private var audioTrack: AudioTrack? = null
@@ -181,7 +181,7 @@ internal class AudioRenderer(
     /** Update the target latency, resizing the ring buffer. */
     fun updateTargetLatency(latency: Duration) {
         lock.withLock {
-            ringBuffer.resize(latency.toMillisecondsLongClamped().toDouble())
+            ringBuffer.resize(latency)
         }
     }
 
