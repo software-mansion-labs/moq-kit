@@ -65,9 +65,16 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.swmansion.moqkit.Session
+import com.swmansion.moqkit.subscribe.FrameArrivalStats
 import com.swmansion.moqkit.subscribe.PlaybackStats
+import com.swmansion.moqkit.subscribe.PlayerTrackKind
+import com.swmansion.moqkit.subscribe.StallStats
+import com.swmansion.moqkit.subscribe.TrackSwitch
+import com.swmansion.moqkit.subscribe.TrackSwitchStats
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
 import kotlinx.coroutines.delay
+import java.time.Duration
+import java.time.Instant
 
 @Composable
 fun PlayerDemoScreen(vm: PlayerDemoViewModel = viewModel()) {
@@ -110,18 +117,24 @@ fun PlayerDemoScreen(vm: PlayerDemoViewModel = viewModel()) {
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            OutlinedTextField(
+                value = vm.broadcastPath,
+                onValueChange = { vm.broadcastPath = it },
+                label = { Text("Broadcast Path (Optional)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
                     onClick = { vm.connect() },
-                    enabled = vm.sessionState is Session.State.Idle &&
-                            vm.relayUrl.isNotEmpty(),
+                    enabled = canConnect(vm.sessionState) && vm.relayUrl.isNotEmpty(),
                 ) {
                     Text("Connect")
                 }
                 OutlinedButton(
                     onClick = { vm.stop() },
-                    enabled = vm.sessionState is Session.State.Connecting ||
-                            vm.sessionState is Session.State.Connected,
+                    enabled = canStop(vm.sessionState),
                 ) {
                     Text("Stop")
                 }
@@ -352,8 +365,8 @@ private fun BroadcastCard(
                 )
             }
 
-            entry.playbackStats?.let { stats ->
-                StatsCard(stats)
+            if (entry.player != null) {
+                DiagnosticsCard(entry)
             }
         }
     }
@@ -491,8 +504,9 @@ private fun VolumeControl(
 }
 
 @Composable
-private fun StatsCard(stats: PlaybackStats) {
-    var isExpanded by remember { mutableStateOf(false) }
+private fun DiagnosticsCard(entry: BroadcastEntry) {
+    var isExpanded by remember { mutableStateOf(true) }
+    val stats = entry.playbackStats
 
     Card(
         colors = CardDefaults.cardColors(
@@ -501,7 +515,6 @@ private fun StatsCard(stats: PlaybackStats) {
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
-            // Header — always visible
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
@@ -509,26 +522,34 @@ private fun StatsCard(stats: PlaybackStats) {
                     .clickable { isExpanded = !isExpanded },
             ) {
                 Text(
-                    text = "Playback Stats",
+                    text = "Stats for Nerds",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Medium,
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f).padding(start = 8.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // Summary in collapsed header
-                    stats.videoLatencyMs?.let { ms ->
+                    entry.startupDiagnostics.playRequestToPlaybackStart?.let { duration ->
                         Text(
-                            text = "${ms.toInt()} ms",
+                            text = "start ${formatMs(duration)}",
                             style = MaterialTheme.typography.labelSmall,
-                            color = latencyColor(ms),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    stats.videoFps?.let { fps ->
+                    stats?.videoLatency?.let { latency ->
                         Text(
-                            text = "${fps.toInt()} fps",
+                            text = formatMs(latency),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = latencyColor(latency),
+                        )
+                    }
+                    stats?.videoFps?.let { fps ->
+                        Text(
+                            text = formatFps(fps),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -545,109 +566,384 @@ private fun StatsCard(stats: PlaybackStats) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // Latency section
-                    if (stats.videoLatencyMs != null || stats.audioLatencyMs != null) {
-                        StatsSection("Latency") {
-                            stats.videoLatencyMs?.let { ms ->
-                                StatRow("Video", "${ms.toInt()} ms", latencyColor(ms))
-                            }
-                            stats.audioLatencyMs?.let { ms ->
-                                StatRow("Audio", "${ms.toInt()} ms", latencyColor(ms))
-                            }
-                        }
-                    }
-
-                    // Throughput section
-                    if (stats.videoBitrateKbps != null || stats.audioBitrateKbps != null || stats.videoFps != null) {
-                        StatsSection("Throughput") {
-                            stats.videoBitrateKbps?.let { kbps ->
-                                StatRow("Video bitrate", formatBitrate(kbps))
-                            }
-                            stats.audioBitrateKbps?.let { kbps ->
-                                StatRow("Audio bitrate", formatBitrate(kbps))
-                            }
-                            stats.videoFps?.let { fps ->
-                                StatRow("Frame rate", "${fps.toInt()} fps")
-                            }
-                        }
-                    }
-
-                    stats.videoDecodeStats?.let { decode ->
-                        StatsSection("Decode") {
-                            StatRow("Track", decode.trackName)
-                            StatRow(
-                                "Min / avg / max",
-                                "${formatMs(decode.minMs)} / ${formatMs(decode.averageMs)} / ${formatMs(decode.maxMs)}",
-                            )
-                            val minOutputIntervalMs = decode.minOutputIntervalMs
-                            val averageOutputIntervalMs = decode.averageOutputIntervalMs
-                            val maxOutputIntervalMs = decode.maxOutputIntervalMs
-                            if (
-                                minOutputIntervalMs != null &&
-                                averageOutputIntervalMs != null &&
-                                maxOutputIntervalMs != null
-                            ) {
-                                StatRow(
-                                    "Output interval",
-                                    "${formatMs(minOutputIntervalMs)} / " +
-                                        "${formatMs(averageOutputIntervalMs)} / " +
-                                        formatMs(maxOutputIntervalMs),
-                                )
-                            }
-                            StatRow("In flight", decode.inFlightBufferCount.toString())
-                            StatRow("Last", formatMs(decode.lastMs))
-                            StatRow("Samples", decode.sampleCount.toString())
-                        }
-                    }
-
-                    // Startup section
-                    if (stats.timeToFirstVideoFrameMs != null || stats.timeToFirstAudioFrameMs != null) {
-                        StatsSection("Startup") {
-                            stats.timeToFirstVideoFrameMs?.let { ms ->
-                                StatRow("First video frame", "${ms.toInt()} ms")
-                            }
-                            stats.timeToFirstAudioFrameMs?.let { ms ->
-                                StatRow("First audio frame", "${ms.toInt()} ms")
-                            }
-                        }
-                    }
-
-                    // Buffers section
-                    if (stats.audioRingBufferMs != null || stats.videoJitterBufferMs != null) {
-                        StatsSection("Buffers") {
-                            stats.videoJitterBufferMs?.let { ms ->
-                                StatRow("Video jitter buffer", "${ms.toInt()} ms")
-                            }
-                            stats.audioRingBufferMs?.let { ms ->
-                                StatRow("Audio ring buffer", "${ms.toInt()} ms")
-                            }
-                        }
-                    }
-
-                    // Health section
-                    val hasHealth = (stats.videoStalls?.let { it.count > 0 } == true)
-                        || (stats.audioStalls?.let { it.count > 0 } == true)
-                        || (stats.videoFramesDropped?.let { it > 0 } == true)
-                        || (stats.audioFramesDropped?.let { it > 0 } == true)
-                    if (hasHealth) {
-                        StatsSection("Health") {
-                            stats.videoStalls?.takeIf { it.count > 0 }?.let { s ->
-                                StatRow("Video stalls", "${s.count} (${s.totalDurationMs.toInt()} ms)", Color(0xFFFFA500))
-                            }
-                            stats.audioStalls?.takeIf { it.count > 0 }?.let { s ->
-                                StatRow("Audio stalls", "${s.count} (${s.totalDurationMs.toInt()} ms)", Color(0xFFFFA500))
-                            }
-                            stats.videoFramesDropped?.takeIf { it > 0L }?.let { d ->
-                                StatRow("Video frames dropped", "$d", Color.Red)
-                            }
-                            stats.audioFramesDropped?.takeIf { it > 0L }?.let { d ->
-                                StatRow("Audio frames dropped", "$d", Color.Red)
-                            }
+                    StartupDiagnosticsSection(entry)
+                    SelectedTracksSection(entry)
+                    if (stats != null) {
+                        LiveStatsSections(entry, stats)
+                    } else {
+                        StatsSection("Live") {
+                            StatRow("Playback samples", "pending", MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StartupDiagnosticsSection(entry: BroadcastEntry) {
+    val startup = entry.startupDiagnostics
+
+    StatsSection("Startup") {
+        val initToPlayRequest = startup.initToPlayRequest
+        if (initToPlayRequest != null) {
+            StatRow("Init -> play request", formatMs(initToPlayRequest))
+        } else {
+            StatRow("Init -> play request", "pending", MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        val playRequestToPlaybackStart = startup.playRequestToPlaybackStart
+        if (playRequestToPlaybackStart != null) {
+            StatRow(
+                "Play request -> playback",
+                formatMs(playRequestToPlaybackStart),
+                startupColor(playRequestToPlaybackStart),
+            )
+        } else if (startup.playRequestedAt != null) {
+            StatRow("Play request -> playback", "pending", MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        startup.playbackStartedByKind?.let { kind ->
+            StatRow("Playback start trigger", kind.value)
+        }
+
+        entry.playbackStats?.let { stats ->
+            stats.timeToFirst.videoFrame?.let { duration ->
+                StatRow("Play request -> video playable", formatMs(duration), startupColor(duration))
+            }
+            stats.timeToFirst.audioFrame?.let { duration ->
+                StatRow("Play request -> audio playable", formatMs(duration), startupColor(duration))
+            }
+            stats.timeToFirst.videoPlaying?.let { duration ->
+                StatRow("Play request -> video playing", formatMs(duration), startupColor(duration))
+            }
+            stats.timeToFirst.audioPlaying?.let { duration ->
+                StatRow("Play request -> audio playing", formatMs(duration), startupColor(duration))
+            }
+        }
+    }
+
+    if (startup.orderedTracks.isNotEmpty()) {
+        StatsSection("Track Lifecycle") {
+            startup.orderedTracks.forEach { track ->
+                TrackStartupView(
+                    track = track,
+                    playRequestedAt = startup.playRequestedAt,
+                    formatMs = { duration -> formatMs(duration) },
+                    startupColor = { duration -> startupColor(duration) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SelectedTracksSection(entry: BroadcastEntry) {
+    if (entry.selectedVideoTrack == null && entry.selectedAudioTrack == null) return
+
+    StatsSection("Selected Tracks") {
+        entry.selectedVideoTrack?.let { video ->
+            StatRow("Video track", trackLabel(video.name))
+            StatRow("Video codec", video.config.codec)
+            video.config.coded?.let { coded ->
+                StatRow("Video coded size", "${coded.width}x${coded.height}")
+            }
+            video.config.framerate?.let { fps ->
+                StatRow("Declared frame rate", formatFps(fps))
+            }
+            video.config.bitrate?.let { bitrate ->
+                StatRow("Declared video bitrate", formatBitsPerSecond(bitrate))
+            }
+        }
+        entry.selectedAudioTrack?.let { audio ->
+            StatRow("Audio track", trackLabel(audio.name))
+            StatRow("Audio codec", audio.config.codec)
+            StatRow(
+                "Audio format",
+                "${audio.config.sampleRate} Hz / ${audio.config.channelCount} ch",
+            )
+            audio.config.bitrate?.let { bitrate ->
+                StatRow("Declared audio bitrate", formatBitsPerSecond(bitrate))
+            }
+        }
+    }
+}
+
+@Composable
+private fun LiveStatsSections(entry: BroadcastEntry, stats: PlaybackStats) {
+    if (stats.videoLatency != null || stats.audioLatency != null) {
+        StatsSection("Latency") {
+            stats.videoLatency?.let { latency ->
+                StatRow("Video live latency", formatMs(latency), latencyColor(latency))
+            }
+            stats.audioLatency?.let { latency ->
+                StatRow("Audio live latency", formatMs(latency), latencyColor(latency))
+            }
+        }
+    }
+
+    if (stats.audioRingBuffer != null || stats.videoJitterBuffer != null) {
+        StatsSection("Buffers") {
+            stats.videoJitterBuffer?.let { buffer ->
+                StatRow("Video jitter buffer", formatMs(buffer), bufferColor(buffer, entry.targetLatencyMs))
+            }
+            stats.audioRingBuffer?.let { buffer ->
+                StatRow("Audio ring buffer", formatMs(buffer), bufferColor(buffer, entry.targetLatencyMs))
+            }
+            StatRow("Target buffer", formatMs(entry.targetLatencyMs.toDouble()))
+        }
+    }
+
+    if (stats.videoBitrateKbps != null || stats.audioBitrateKbps != null || stats.videoFps != null) {
+        StatsSection("Throughput") {
+            stats.videoBitrateKbps?.let { kbps ->
+                StatRow("Video bitrate", formatBitrate(kbps))
+            }
+            stats.audioBitrateKbps?.let { kbps ->
+                StatRow("Audio bitrate", formatBitrate(kbps))
+            }
+            stats.videoFps?.let { fps ->
+                StatRow("Displayed frame rate", formatFps(fps))
+            }
+        }
+    }
+
+    stats.videoDecodeStats?.let { decode ->
+        StatsSection("Decode") {
+            StatRow("Track", decode.trackName)
+            StatRow(
+                "Min / avg / max",
+                "${formatMs(decode.min)} / ${formatMs(decode.average)} / ${formatMs(decode.max)}",
+            )
+            val minOutputInterval = decode.minOutputInterval
+            val averageOutputInterval = decode.averageOutputInterval
+            val maxOutputInterval = decode.maxOutputInterval
+            if (
+                minOutputInterval != null &&
+                averageOutputInterval != null &&
+                maxOutputInterval != null
+            ) {
+                StatRow(
+                    "Output interval",
+                    "${formatMs(minOutputInterval)} / " +
+                        "${formatMs(averageOutputInterval)} / " +
+                        formatMs(maxOutputInterval),
+                )
+            }
+            StatRow("In flight", decode.inFlightBufferCount.toString())
+            StatRow("Last", formatMs(decode.last))
+            StatRow("Samples", decode.sampleCount.toString())
+        }
+    }
+
+    if (stats.videoSwitches != null || stats.audioSwitches != null) {
+        StatsSection("Track Switches") {
+            stats.videoSwitches?.let { switches ->
+                TrackSwitchStatsView(
+                    kind = "Video",
+                    switches = switches,
+                    formatMs = { duration -> formatMs(duration) },
+                    startupColor = { duration -> startupColor(duration) },
+                )
+            }
+            stats.audioSwitches?.let { switches ->
+                TrackSwitchStatsView(
+                    kind = "Audio",
+                    switches = switches,
+                    formatMs = { duration -> formatMs(duration) },
+                    startupColor = { duration -> startupColor(duration) },
+                )
+            }
+        }
+    }
+
+    if (hasHealthStats(stats)) {
+        StatsSection("Health") {
+            stats.videoStalls?.let { stalls ->
+                StatRow("Video stalls", formatStalls(stalls), stallColor(stalls))
+            }
+            stats.audioStalls?.let { stalls ->
+                StatRow("Audio stalls", formatStalls(stalls), stallColor(stalls))
+            }
+            stats.videoFramesDropped?.let { dropped ->
+                StatRow(
+                    "Video frames dropped",
+                    dropped.toString(),
+                    if (dropped > 0L) Color.Red else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            stats.audioFramesDropped?.let { dropped ->
+                StatRow(
+                    "Audio frames dropped",
+                    dropped.toString(),
+                    if (dropped > 0L) Color.Red else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+
+    if (stats.videoArrival != null || stats.audioArrival != null) {
+        StatsSection("Frame Arrival") {
+            stats.videoArrival?.let { arrival ->
+                ArrivalStatsView(kind = "Video", arrival = arrival)
+            }
+            stats.audioArrival?.let { arrival ->
+                ArrivalStatsView(kind = "Audio", arrival = arrival)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackStartupView(
+    track: TrackStartupDiagnostics,
+    playRequestedAt: Instant?,
+    formatMs: (Duration) -> String,
+    startupColor: (Duration) -> Color,
+) {
+    val kind = when (track.kind) {
+        PlayerTrackKind.AUDIO -> "Audio"
+        PlayerTrackKind.VIDEO -> "Video"
+    }
+    val title = if (track.isTrackSwitch) "$kind switch" else "$kind startup"
+    val status = when {
+        track.errorAt != null -> "error" to Color.Red
+        track.activeAt != null -> "active" to Color(0xFF4CAF50)
+        track.playingAt != null -> "playing" to Color(0xFF4CAF50)
+        track.readyAt != null -> "ready" to Color(0xFF4CAF50)
+        track.subscribeStartedAt != null -> "subscribing" to Color(0xFFFFA500)
+        else -> "pending" to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+            )
+            Text(
+                text = status.first,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = status.second,
+            )
+        }
+        track.trackName?.let { trackName ->
+            StatRow("Track", trackName)
+        }
+        if (track.isTrackSwitch) {
+            val operationToReady = track.operationToReady(playRequestedAt)
+            if (operationToReady != null) {
+                StatRow("Switch -> ready", formatMs(operationToReady), startupColor(operationToReady))
+            } else if (track.subscribeStartedAt != null && track.errorAt == null) {
+                StatRow("Switch -> ready", "pending", MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        } else {
+            val subscribeToReady = track.subscribeToReady()
+            if (subscribeToReady != null) {
+                StatRow("Subscribe -> ready", formatMs(subscribeToReady), startupColor(subscribeToReady))
+            } else if (track.subscribeStartedAt != null && track.errorAt == null) {
+                StatRow("Subscribe -> ready", "pending", MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            track.operationToReady(playRequestedAt)?.let { duration ->
+                StatRow("Play request -> ready", formatMs(duration), startupColor(duration))
+            }
+        }
+        track.readyToPlaying()?.let { duration ->
+            StatRow("Ready -> playing", formatMs(duration), startupColor(duration))
+        }
+        track.operationToPlaying(playRequestedAt)?.let { duration ->
+            StatRow("${track.operationLabel} -> playing", formatMs(duration), startupColor(duration))
+        }
+        track.operationToActive(playRequestedAt)?.let { duration ->
+            StatRow("${track.operationLabel} -> active", formatMs(duration), startupColor(duration))
+        }
+        track.errorMessage?.let { message ->
+            StatRow("Error", message, Color.Red)
+        }
+    }
+}
+
+@Composable
+private fun TrackSwitchStatsView(
+    kind: String,
+    switches: TrackSwitchStats,
+    formatMs: (Duration) -> String,
+    startupColor: (Duration) -> Color,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = kind,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+        )
+        StatRow("Switches", "${switches.completedCount} / ${switches.requestedCount}")
+        switches.latest?.let { latest ->
+            latest.trackName?.let { trackName ->
+                StatRow("Latest track", trackName)
+            }
+            StatRow("Latest status", latestStatus(latest), latestStatusColor(latest))
+            latest.switchToReady?.let { duration ->
+                StatRow("Switch -> ready", formatMs(duration), startupColor(duration))
+            }
+            latest.readyToPlaying?.let { duration ->
+                StatRow("Ready -> playing", formatMs(duration), startupColor(duration))
+            }
+            latest.switchToPlaying?.let { duration ->
+                StatRow("Switch -> playing", formatMs(duration), startupColor(duration))
+            }
+            latest.switchToActive?.let { duration ->
+                StatRow("Switch -> active", formatMs(duration), startupColor(duration))
+            }
+            latest.errorMessage?.let { message ->
+                StatRow("Error", message, Color.Red)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArrivalStatsView(kind: String, arrival: FrameArrivalStats) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = kind,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+        )
+        arrival.receivedFramesPerSecond?.let { fps ->
+            StatRow("Received rate", formatFps(fps))
+        }
+        arrival.averageInterarrival?.let { average ->
+            StatRow("Average interarrival", formatMs(average))
+        }
+        arrival.maxInterarrival?.let { max ->
+            StatRow("Max interarrival", formatMs(max))
+        }
+        StatRow(
+            "Slow arrivals",
+            arrival.slowArrivalCount.toString(),
+            if (arrival.slowArrivalCount > 0L) Color(0xFFFFA500) else MaterialTheme.colorScheme.onSurface,
+        )
+        StatRow(
+            "Fast arrivals",
+            arrival.fastArrivalCount.toString(),
+            if (arrival.fastArrivalCount > 0L) Color(0xFFFFA500) else MaterialTheme.colorScheme.onSurface,
+        )
+        StatRow(
+            "Out of order",
+            outOfOrderValue(arrival),
+            if (arrival.outOfOrderCount > 0L) Color.Red else MaterialTheme.colorScheme.onSurface,
+        )
+        StatRow(
+            "Discontinuities",
+            discontinuityValue(arrival),
+            if (arrival.discontinuityCount > 0L) Color(0xFFFFA500) else MaterialTheme.colorScheme.onSurface,
+        )
     }
 }
 
@@ -682,10 +978,54 @@ private fun StatRow(label: String, value: String, color: Color = MaterialTheme.c
     }
 }
 
+private fun hasHealthStats(stats: PlaybackStats): Boolean {
+    return stats.videoStalls != null ||
+        stats.audioStalls != null ||
+        stats.videoFramesDropped != null ||
+        stats.audioFramesDropped != null
+}
+
+private fun latestStatus(latest: TrackSwitch): String {
+    if (latest.errorMessage != null) return "error"
+    if (latest.isCompleted) return "active"
+    if (latest.switchToPlaying != null) return "playing"
+    if (latest.switchToReady != null) return "ready"
+    return "pending"
+}
+
+private fun latestStatusColor(latest: TrackSwitch): Color {
+    if (latest.errorMessage != null) return Color.Red
+    if (latest.isCompleted || latest.switchToPlaying != null || latest.switchToReady != null) {
+        return Color(0xFF4CAF50)
+    }
+    return Color(0xFFFFA500)
+}
+
 private fun latencyColor(ms: Double): Color {
-    if (ms < 150) return Color(0xFF4CAF50) // green
-    if (ms < 500) return Color(0xFFFFA500) // orange
+    if (ms < 150) return Color(0xFF4CAF50)
+    if (ms < 500) return Color(0xFFFFA500)
     return Color.Red
+}
+
+private fun latencyColor(duration: Duration): Color = latencyColor(duration.milliseconds)
+
+private fun startupColor(ms: Double): Color {
+    if (ms < 250) return Color(0xFF4CAF50)
+    if (ms < 1000) return Color(0xFFFFA500)
+    return Color.Red
+}
+
+private fun startupColor(duration: Duration): Color = startupColor(duration.milliseconds)
+
+private fun bufferColor(duration: Duration, targetLatencyMs: Int): Color {
+    val ms = duration.milliseconds
+    if (ms < targetLatencyMs * 0.25) return Color(0xFFFFA500)
+    if (ms > targetLatencyMs * 2) return Color(0xFFFFA500)
+    return Color.Unspecified
+}
+
+private fun stallColor(stats: StallStats): Color {
+    return if (stats.count > 0L) Color(0xFFFFA500) else Color.Unspecified
 }
 
 private fun formatBitrate(kbps: Double): String {
@@ -693,7 +1033,40 @@ private fun formatBitrate(kbps: Double): String {
     return "${kbps.toInt()} kbps"
 }
 
-private fun formatMs(ms: Double): String = String.format("%.1f ms", ms)
+private fun formatBitsPerSecond(bps: ULong): String = formatBitrate(bps.toDouble() / 1000.0)
+
+private fun formatFps(fps: Double): String {
+    if (fps >= 10) return "${fps.toInt()} fps"
+    return String.format("%.1f fps", fps)
+}
+
+private fun formatStalls(stats: StallStats): String {
+    return "${stats.count} / ${formatMs(stats.totalDuration)} / ${formatPercent(stats.rebufferingRatio)}"
+}
+
+private fun formatPercent(ratio: Double): String = String.format("%.1f%%", ratio * 100.0)
+
+private fun formatMs(ms: Double): String {
+    if (ms >= 1000) return String.format("%.2f s", ms / 1000)
+    return "${ms.toInt()} ms"
+}
+
+private fun formatMs(duration: Duration): String = formatMs(duration.milliseconds)
+
+private fun trackLabel(value: String): String = value.ifEmpty { "unnamed" }
+
+private fun outOfOrderValue(arrival: FrameArrivalStats): String {
+    val delta = arrival.maxOutOfOrderDelta ?: return arrival.outOfOrderCount.toString()
+    return "${arrival.outOfOrderCount} / max ${formatMs(delta)}"
+}
+
+private fun discontinuityValue(arrival: FrameArrivalStats): String {
+    val gap = arrival.maxDiscontinuityGap ?: return arrival.discontinuityCount.toString()
+    return "${arrival.discontinuityCount} / max ${formatMs(gap)}"
+}
+
+private val Duration.milliseconds: Double
+    get() = seconds.toDouble() * 1_000.0 + nano.toDouble() / 1_000_000.0
 
 @Composable
 private fun RenditionPickerRow(entry: BroadcastEntry, vm: PlayerDemoViewModel) {
@@ -738,6 +1111,24 @@ private fun RenditionPickerRow(entry: BroadcastEntry, vm: PlayerDemoViewModel) {
             }
         }
     }
+}
+
+private fun canConnect(state: Session.State): Boolean = when (state) {
+    Session.State.Idle,
+    is Session.State.Error,
+    Session.State.Closed -> true
+
+    Session.State.Connecting,
+    Session.State.Connected -> false
+}
+
+private fun canStop(state: Session.State): Boolean = when (state) {
+    Session.State.Connecting,
+    Session.State.Connected -> true
+
+    Session.State.Idle,
+    is Session.State.Error,
+    Session.State.Closed -> false
 }
 
 private fun stateLabel(state: Session.State): String = when (state) {
