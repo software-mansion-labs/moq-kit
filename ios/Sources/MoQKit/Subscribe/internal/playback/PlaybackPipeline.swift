@@ -1,6 +1,6 @@
 import AVFoundation
 import Foundation
-import MoQKitFFI
+import MoqFFI
 
 private let playbackStatsPTSCorrectionThreshold: Duration = .seconds(2)
 
@@ -211,7 +211,7 @@ final class PlaybackPipeline {
         }
 
         KitLogger.player.debug(
-            "[Switch] Video track: \(track.name), codec=\(track.config.codec), config=\(track.config.debugDescription), container=\(track.rawConfig.container)"
+            "[Switch] Video track: \(track.name), codec=\(track.config.codec), config=\(track.config.debugDescription), container=\(track.rawConfig.container.moqKitDescription)"
         )
 
         let newRendererTrack = try VideoRendererTrack(
@@ -419,7 +419,7 @@ extension PlaybackPipeline {
                 kind: .video, trackName: videoTrack.name, trackEpoch: videoEpoch
             )
             KitLogger.player.debug(
-                "Video track: \(videoTrack.name), codec=\(videoTrack.config.codec), config=\(videoTrack.config.debugDescription), container=\(videoTrack.rawConfig.container)"
+                "Video track: \(videoTrack.name), codec=\(videoTrack.config.codec), config=\(videoTrack.config.debugDescription), container=\(videoTrack.rawConfig.container.moqKitDescription)"
             )
             do {
                 subscriptions.video = try makeMediaTrack(
@@ -446,7 +446,7 @@ extension PlaybackPipeline {
                 kind: .audio, trackName: audioTrack.name, trackEpoch: audioEpoch
             )
             KitLogger.player.debug(
-                "Audio track: \(audioTrack.name), config = \(audioTrack.config.debugDescription), container=\(audioTrack.rawConfig.container)"
+                "Audio track: \(audioTrack.name), config = \(audioTrack.config.debugDescription), container=\(audioTrack.rawConfig.container.moqKitDescription)"
             )
             do {
                 subscriptions.audio = try makeMediaTrack(

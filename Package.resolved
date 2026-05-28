@@ -1,6 +1,15 @@
 {
   "pins" : [
     {
+      "identity" : "moq-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/moq-dev/moq-swift",
+      "state" : {
+        "revision" : "a626d7bbebeb8e30c91de70e8c50683ce5e897cd",
+        "version" : "0.2.15"
+      }
+    },
+    {
       "identity" : "swift-atomics",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-atomics",

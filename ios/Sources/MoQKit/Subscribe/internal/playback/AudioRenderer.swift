@@ -1,4 +1,4 @@
-import MoQKitFFI
+import MoqFFI
 import AVFoundation
 import Atomics
 import CoreMedia

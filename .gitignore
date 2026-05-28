@@ -52,8 +52,6 @@ Thumbs.db
 # Vendor builds
 vendor/moq/target/
 
-# Generated frameworks
-ios/Frameworks/
 android/uniffi
 android/jniLibs
 android/**/uniffi/

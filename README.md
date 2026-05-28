@@ -155,8 +155,8 @@ Add the Swift package and depend on the `MoQKit` product:
 .product(name: "MoQKit", package: "moq-kit")
 ```
 
-The Swift package imports a prebuilt `moqFFI` XCFramework binary target. For local
-development, rebuild that binary with `mise run ios:ffi`.
+The Swift package depends on `https://github.com/moq-dev/moq-swift` from `0.2.15` for the
+generated `MoqFFI` Swift bindings and prebuilt XCFramework.
 
 The iOS SDK does not add permissions, entitlements, or audio-session configuration for
 you. Camera publishing requires `NSCameraUsageDescription`. Microphone publishing requires
@@ -371,13 +371,11 @@ development.
 mise tasks
 ```
 
-### Build platform bindings
+### Build platform SDKs
 
-iOS builds Rust `moq-ffi` into an XCFramework that the Swift package imports through
-`MoQKitFFI`:
+iOS resolves `moq-swift` through Swift Package Manager and compiles the Swift SDK:
 
 ```bash
-mise run ios:ffi
 mise run ios:build
 ```
 
@@ -390,9 +388,10 @@ mise run android:build
 ```
 
 The task scripts in [mise-tasks](mise-tasks) are the source of truth for exact build
-outputs and generated files. Generated UniFFI bindings are overwritten by these builds and
-should not be edited manually. See [ARCHITECTURE.md](ARCHITECTURE.md) for binding
-boundaries and invariants.
+outputs and generated files. Android generated UniFFI bindings are overwritten by these
+builds and should not be edited manually. iOS generated bindings come from the resolved
+`moq-swift` package. See [ARCHITECTURE.md](ARCHITECTURE.md) for binding boundaries and
+invariants.
 
 For local SDK development, the demo apps are usually the fastest feedback loop. Prefer
 wiring demos to local Swift and Android modules instead of published package versions when

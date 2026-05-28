@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 #MISE description="Build iOS DocC documentation into docs/ios, or preview it locally"
 #USAGE flag "--preview" help="Live-preview iOS docs with swift package instead of building static docs"
-#USAGE flag "--local-ffi" help="Use the local ios/Frameworks/moqffi.xcframework instead of the release binary target"
 set -euo pipefail
 
 PREVIEW=0
-LOCAL_FFI="${usage_local_ffi:-false}"
 
 for arg in "$@"; do
   case "$arg" in
   --preview) PREVIEW=1 ;;
-  --local-ffi) LOCAL_FFI=true ;;
   *)
     echo "Unknown argument: $arg" >&2
     exit 1
@@ -19,10 +16,6 @@ for arg in "$@"; do
 done
 
 cd "$MISE_PROJECT_ROOT"
-
-if [[ "$LOCAL_FFI" = "true" || "$LOCAL_FFI" = "1" || "${MOQKIT_USE_LOCAL_FFI:-}" = "1" ]]; then
-  export MOQKIT_USE_LOCAL_FFI=1
-fi
 
 if [[ $PREVIEW -eq 1 ]]; then
   exec swift package --disable-sandbox preview-documentation --target MoQKit
