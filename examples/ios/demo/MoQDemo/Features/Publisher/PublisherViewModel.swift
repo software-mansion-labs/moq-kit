@@ -17,7 +17,9 @@ final class PublisherViewModel: ObservableObject {
     @Published var replayKitAppGroupIdentifier = "group.com.swmansion.moqdemo"
     @Published var replayKitExtensionBundleIdentifier = "com.swmansion.moqdemo.broadcastupload"
     @Published var replayKitPrepared = false
+    @Published var cameraSourceMode: CameraSourceMode = .singleCamera
     @Published var cameraPosition: CameraPosition = .front
+    @Published var multiCameraMainPreviewPosition: CameraPosition = .back
     @Published var videoCodec: VideoCodec = PublisherViewModel.defaultVideoCodec()
     @Published var videoResolution: VideoResolution = .hd
     @Published var videoFrameRate: VideoFrameRate = .fps30
@@ -34,9 +36,14 @@ final class PublisherViewModel: ObservableObject {
         cameraCapture?.captureSession
     }
 
+    var multiCameraPreviewSession: AVCaptureMultiCamSession? {
+        multiCamera?.captureSession
+    }
+
     // MARK: - Capture Sources
 
     private var camera: CameraCapture?
+    private var multiCamera: MultiCameraCapture?
     private var microphone: MicrophoneCapture?
 
     // MARK: - Computed Properties
@@ -126,7 +133,22 @@ final class PublisherViewModel: ObservableObject {
     // MARK: - Camera Preview Lifecycle
 
     func startPreview() {
-        guard cameraCapture == nil, cameraEnabled else { return }
+        guard cameraEnabled else { return }
+
+        switch cameraSourceMode {
+        case .singleCamera:
+            startSingleCameraPreview()
+        case .multiCamera:
+            startMultiCameraPreview()
+        }
+    }
+
+    private func startSingleCameraPreview() {
+        stopMultiCameraPreview()
+        guard cameraCapture == nil else {
+            isPreviewRunning = true
+            return
+        }
 
         let cam = CameraCapture(camera: Camera(position: cameraPosition))
         cameraCapture = cam
@@ -143,13 +165,65 @@ final class PublisherViewModel: ObservableObject {
         }
     }
 
+    private func startMultiCameraPreview(videoConfig: VideoEncoderConfig? = nil) {
+        guard MultiCameraCapture.isSupported else {
+            lastError = "Multi-camera capture is not supported on this device"
+            cameraSourceMode = .singleCamera
+            startSingleCameraPreview()
+            return
+        }
+
+        stopSingleCameraPreview()
+
+        let videoConfig = videoConfig ?? currentVideoConfig()
+        if let existing = multiCamera {
+            guard !isMultiCamera(existing, configuredFor: videoConfig) else {
+                isPreviewRunning = true
+                return
+            }
+            existing.stop()
+            multiCamera = nil
+        }
+
+        let multi = makeMultiCameraCapture(videoConfig: videoConfig)
+        multiCamera = multi
+        isPreviewRunning = false
+
+        Task {
+            do {
+                try await multi.start()
+                if self.multiCamera === multi {
+                    self.isPreviewRunning = true
+                    self.lastError = nil
+                }
+            } catch {
+                if self.multiCamera === multi {
+                    self.lastError = "Multi-camera preview failed: \(error.localizedDescription)"
+                    self.multiCamera = nil
+                    self.isPreviewRunning = false
+                }
+            }
+        }
+    }
+
     func stopPreview() {
-        cameraCapture?.stop()
-        cameraCapture = nil
+        stopSingleCameraPreview()
+        stopMultiCameraPreview()
         isPreviewRunning = false
     }
 
+    private func stopSingleCameraPreview() {
+        cameraCapture?.stop()
+        cameraCapture = nil
+    }
+
+    private func stopMultiCameraPreview() {
+        multiCamera?.stop()
+        multiCamera = nil
+    }
+
     func flipCamera() {
+        guard cameraSourceMode == .singleCamera else { return }
         let newPosition: CameraPosition = cameraPosition == .front ? .back : .front
         cameraPosition = newPosition
 
@@ -159,6 +233,35 @@ final class PublisherViewModel: ObservableObject {
             } catch {
                 lastError = "Camera switch failed: \(error.localizedDescription)"
             }
+        }
+    }
+
+    func swapMultiCameraPreview() {
+        multiCameraMainPreviewPosition = multiCameraMainPreviewPosition == .front ? .back : .front
+    }
+
+    func handleCameraEnabledChanged() {
+        if cameraEnabled {
+            handleCameraSourceChanged()
+        } else {
+            stopPreview()
+        }
+    }
+
+    func handleCameraSourceChanged() {
+        guard cameraEnabled else { return }
+
+        switch cameraSourceMode {
+        case .singleCamera:
+            startSingleCameraPreview()
+        case .multiCamera:
+            if !MultiCameraCapture.isSupported {
+                cameraSourceMode = .singleCamera
+                lastError = "Multi-camera capture is not supported on this device"
+                startSingleCameraPreview()
+                return
+            }
+            startMultiCameraPreview()
         }
     }
 
@@ -247,20 +350,44 @@ final class PublisherViewModel: ObservableObject {
                 self.publisher = pub
 
                 if self.cameraEnabled {
-                    // Reuse the preview CameraCapture, or create one if preview wasn't started
-                    let cam: CameraCapture
-                    if let existing = self.cameraCapture {
-                        cam = existing
-                    } else {
-                        cam = CameraCapture(camera: Camera(position: self.cameraPosition))
-                        self.cameraCapture = cam
-                        try await cam.start()
-                    }
-                    self.camera = cam
+                    switch self.cameraSourceMode {
+                    case .singleCamera:
+                        // Reuse the preview CameraCapture, or create one if preview wasn't started
+                        let cam: CameraCapture
+                        if let existing = self.cameraCapture {
+                            cam = existing
+                        } else {
+                            cam = CameraCapture(camera: Camera(position: self.cameraPosition))
+                            self.cameraCapture = cam
+                            try await cam.start()
+                        }
+                        self.camera = cam
 
-                    let track = pub.addVideoTrack(name: "camera", source: cam, config: videoEncoderConfig)
-                    self.publishedTracks.append(track)
-                    self.trackStates["camera"] = .idle
+                        let track = pub.addVideoTrack(name: "camera", source: cam, config: videoEncoderConfig)
+                        self.publishedTracks.append(track)
+                        self.trackStates["camera"] = .idle
+
+                    case .multiCamera:
+                        let multi = try await self.runningMultiCameraCapture(
+                            videoConfig: videoEncoderConfig
+                        )
+
+                        let frontTrack = pub.addVideoTrack(
+                            name: "front-camera",
+                            source: multi.frontSource,
+                            config: videoEncoderConfig
+                        )
+                        self.publishedTracks.append(frontTrack)
+                        self.trackStates["front-camera"] = .idle
+
+                        let backTrack = pub.addVideoTrack(
+                            name: "back-camera",
+                            source: multi.backSource,
+                            config: videoEncoderConfig
+                        )
+                        self.publishedTracks.append(backTrack)
+                        self.trackStates["back-camera"] = .idle
+                    }
                 }
 
                 if self.micEnabled {
@@ -339,8 +466,75 @@ final class PublisherViewModel: ObservableObject {
     private func cleanupCaptureSources() {
         // Don't stop the camera — it's shared with preview via cameraCapture
         camera = nil
+        if cameraEnabled && cameraSourceMode == .multiCamera && multiCamera != nil {
+            isPreviewRunning = true
+        } else {
+            multiCamera?.stop()
+            multiCamera = nil
+            if cameraSourceMode == .multiCamera {
+                isPreviewRunning = false
+            }
+        }
         microphone?.stop()
         microphone = nil
+    }
+
+    private func runningMultiCameraCapture(
+        videoConfig: VideoEncoderConfig
+    ) async throws -> MultiCameraCapture {
+        if let existing = multiCamera {
+            if isMultiCamera(existing, configuredFor: videoConfig) {
+                try await existing.start()
+                isPreviewRunning = true
+                return existing
+            }
+
+            existing.stop()
+            multiCamera = nil
+            isPreviewRunning = false
+        }
+
+        let multi = makeMultiCameraCapture(videoConfig: videoConfig)
+        multiCamera = multi
+
+        do {
+            try await multi.start()
+            isPreviewRunning = true
+            return multi
+        } catch {
+            if multiCamera === multi {
+                multiCamera = nil
+                isPreviewRunning = false
+            }
+            throw error
+        }
+    }
+
+    private func makeMultiCameraCapture(videoConfig: VideoEncoderConfig) -> MultiCameraCapture {
+        MultiCameraCapture(
+            front: Camera(
+                position: .front,
+                width: videoConfig.width,
+                height: videoConfig.height
+            ),
+            back: Camera(
+                position: .back,
+                width: videoConfig.width,
+                height: videoConfig.height
+            ),
+            maxFrameRate: videoConfig.maxFrameRate
+        )
+    }
+
+    private func isMultiCamera(
+        _ multi: MultiCameraCapture,
+        configuredFor videoConfig: VideoEncoderConfig
+    ) -> Bool {
+        multi.front.width == videoConfig.width
+            && multi.front.height == videoConfig.height
+            && multi.back.width == videoConfig.width
+            && multi.back.height == videoConfig.height
+            && multi.maxFrameRate == videoConfig.maxFrameRate
     }
 
     private func currentVideoConfig() -> VideoEncoderConfig {
@@ -363,6 +557,9 @@ final class PublisherViewModel: ObservableObject {
         videoConfig: VideoEncoderConfig,
         audioConfig: AudioEncoderConfig
     ) -> String? {
+        if cameraEnabled && cameraSourceMode == .multiCamera && !MultiCameraCapture.isSupported {
+            return "Multi-camera capture is not supported on this device"
+        }
         if (cameraEnabled || screenEnabled), let reason = videoConfig.unsupportedReason {
             return reason
         }
