@@ -98,27 +98,42 @@ struct PublisherDemoView: View {
                 }
 
                 // Camera preview
-                if viewModel.cameraEnabled && viewModel.isPreviewRunning,
-                    let previewSession = viewModel.previewSession
-                {
-                    CameraPreviewView(session: previewSession)
-                        .aspectRatio(16 / 9, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(alignment: .bottomTrailing) {
-                            Button(action: viewModel.flipCamera) {
-                                Image(systemName: "camera.rotate")
-                                    .font(.title2)
-                                    .padding(10)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(Circle())
-                            }
-                            .padding(12)
+                if viewModel.cameraEnabled && viewModel.isPreviewRunning {
+                    switch viewModel.cameraSourceMode {
+                    case .singleCamera:
+                        if let previewSession = viewModel.previewSession {
+                            CameraPreviewView(session: previewSession)
+                                .aspectRatio(16 / 9, contentMode: .fit)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(alignment: .bottomTrailing) {
+                                    Button(action: viewModel.flipCamera) {
+                                        Image(systemName: "camera.rotate")
+                                            .font(.title2)
+                                            .padding(10)
+                                            .background(.ultraThinMaterial)
+                                            .clipShape(Circle())
+                                    }
+                                    .padding(12)
+                                }
                         }
+
+                    case .multiCamera:
+                        if let previewSession = viewModel.multiCameraPreviewSession {
+                            MultiCameraPreviewView(
+                                session: previewSession,
+                                mainCameraPosition: viewModel.multiCameraMainPreviewPosition,
+                                onSwap: viewModel.swapMultiCameraPreview
+                            )
+                            .aspectRatio(16 / 9, contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
                 }
 
                 // Source configuration
                 SourceConfigView(
                     cameraEnabled: $viewModel.cameraEnabled,
+                    cameraSourceMode: $viewModel.cameraSourceMode,
                     screenEnabled: $viewModel.screenEnabled,
                     micEnabled: $viewModel.micEnabled,
                     screenAudioEnabled: $viewModel.screenAudioEnabled,
@@ -153,6 +168,12 @@ struct PublisherDemoView: View {
         }
         .onAppear {
             viewModel.startPreview()
+        }
+        .onChange(of: viewModel.cameraEnabled) {
+            viewModel.handleCameraEnabledChanged()
+        }
+        .onChange(of: viewModel.cameraSourceMode) {
+            viewModel.handleCameraSourceChanged()
         }
         .onDisappear {
             viewModel.stop()

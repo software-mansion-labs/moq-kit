@@ -1,8 +1,23 @@
 import MoQKit
 import SwiftUI
 
+enum CameraSourceMode: String, CaseIterable, Identifiable {
+    case singleCamera
+    case multiCamera
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .singleCamera: return "Single Camera"
+        case .multiCamera: return "MultiCam"
+        }
+    }
+}
+
 struct SourceConfigView: View {
     @Binding var cameraEnabled: Bool
+    @Binding var cameraSourceMode: CameraSourceMode
     @Binding var screenEnabled: Bool
     @Binding var micEnabled: Bool
     @Binding var screenAudioEnabled: Bool
@@ -24,18 +39,30 @@ struct SourceConfigView: View {
                     .disabled(isPublishing)
 
                 if cameraEnabled {
-                    HStack(spacing: 8) {
-                        Text("Position")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button(cameraPosition == .front ? "Front" : "Back") {
-                            onFlipCamera()
+                    Picker("Camera Source", selection: $cameraSourceMode) {
+                        ForEach(CameraSourceMode.allCases) { mode in
+                            Text(mode.label)
+                                .tag(mode)
+                                .disabled(mode == .multiCamera && !MultiCameraCapture.isSupported)
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
-                    .padding(.leading, 4)
+                    .pickerStyle(.segmented)
+                    .disabled(isPublishing)
+
+                    if cameraSourceMode == .singleCamera {
+                        HStack(spacing: 8) {
+                            Text("Position")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button(cameraPosition == .front ? "Front" : "Back") {
+                                onFlipCamera()
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                        .padding(.leading, 4)
+                    }
                 }
 
                 Toggle("Screen (ReplayKit)", isOn: $screenEnabled)
