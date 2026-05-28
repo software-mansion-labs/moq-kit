@@ -10,22 +10,24 @@ operational guidance in this file unless it belongs in the durable architecture 
 
 ## Generated Artifacts
 
-Never manually edit generated UniFFI bindings or binary artifacts. They are overwritten by
-FFI build tasks. See `ARCHITECTURE.md` for the durable generated-artifact invariant.
+Never manually edit generated UniFFI bindings or binary artifacts. They are either resolved
+from upstream packages or overwritten by FFI build tasks. See `ARCHITECTURE.md` for the
+durable generated-artifact invariant.
 
-- iOS generated Swift binding: `ios/Sources/MoQKitFFI/moq.swift`
-- iOS generated XCFramework: `ios/Frameworks/moqffi.xcframework`
+- iOS generated Swift bindings and XCFramework come from the `moq-dev/moq-swift` Swift
+  package dependency, not from local moq-kit build scripts.
 - Android generated Kotlin bindings: `android/moqkit/moqkit/src/main/java/uniffi/moq/`
 - Android generated JNI libraries: `android/moqkit/moqkit/src/main/jniLibs/`
 
-When unsure about generated FFI types or fields, inspect the generated bindings, then make
-the durable change in Rust `moq-ffi` or the platform wrapper layer and regenerate.
+When unsure about generated FFI types or fields, inspect the resolved generated bindings
+(`MoqFFI` from `moq-swift` for iOS, local `uniffi.moq` for Android), then make the durable
+change in Rust `moq-ffi` or the platform wrapper layer and regenerate where applicable.
 
 ## Command Surface
 
 Use `mise.toml` and `mise-tasks/` as the source of truth for local commands. Prefer `mise
-run ...` over ad hoc build commands because the tasks also regenerate and place FFI
-artifacts correctly.
+run ...` over ad hoc build commands because the tasks set up the expected package and build
+caches.
 
 Common validation commands:
 
@@ -41,20 +43,19 @@ mise run docs:all
 ```
 
 Use `ios:check` and `android:check` for Swift/Kotlin-only SDK changes. These fast checks
-compile the platform SDKs against the currently checked-in/generated FFI artifacts and do
-not regenerate bindings or binary artifacts.
+compile the platform SDKs without regenerating bindings or binary artifacts.
 
 Use `ios:demo:build` for iOS demo-app changes. It compiles the `MoQDemo` Xcode project
 for a generic iOS simulator without installing or launching the app. `ios:check` only
 compiles the Swift package; it does not build the demo app or ReplayKit extension.
 
-Use `ios:build` and `android:build` when validating FFI changes, generated artifacts,
-release artifacts, or anything that may depend on rebuilt Rust bindings. These full builds
-run the FFI tasks first and overwrite generated outputs.
+Use `ios:build` for the iOS Swift package compile. Use `android:build` when validating
+Android FFI changes, generated artifacts, release artifacts, or anything that may depend on
+rebuilt Rust bindings.
 
 Avoid bare `swift build` from the repository root for iOS work. It targets the host
-platform by default and can fail unless the macOS FFI slice has been generated. Use
-`mise run ios:check` for the iOS simulator package compile instead.
+platform by default. Use `mise run ios:check` for the iOS simulator package compile
+instead.
 
 Useful runtime commands:
 
@@ -68,10 +69,9 @@ mise run android:run
 Use `ios:run` and `ios:run --simulator` for manual runtime smoke tests after the demo
 builds successfully. These commands install and launch the demo on a device or simulator.
 
-For generated bindings only:
+For generated Android bindings only:
 
 ```bash
-mise run ios:ffi
 mise run android:ffi
 ```
 

@@ -20,16 +20,18 @@ moq-kit currently targets `moq-lite`, not the fast-moving IETF `moq-transport` w
 ## Codemap
 
 `Package.swift` defines the Swift package. The public Swift SDK lives under
-`ios/Sources/MoQKit`. The `MoQKitFFI` target contains the generated UniFFI Swift bindings
-and small extensions around generated types.
+`ios/Sources/MoQKit`. The Swift SDK depends on the upstream
+`https://github.com/moq-dev/moq-swift` package, using its `MoqFFI` module for generated
+UniFFI Swift bindings and binary artifacts.
 
 `android/moqkit` is the Android Gradle project. The publishable Kotlin SDK module is
 `android/moqkit/moqkit`. Public Kotlin APIs live under `com.swmansion.moqkit`; generated
 UniFFI Kotlin bindings live under `uniffi.moq`.
 
 `vendor/moq` is a git submodule pointing at `moq-dev/moq`. The important crate for moq-kit
-is `moq-ffi`; it is the only Rust API the Swift and Kotlin SDKs bind to directly. `libmoq`
-also exists in the submodule, but moq-kit does not use it for platform bindings.
+is `moq-ffi`; Android builds it locally for Kotlin bindings and JNI libraries, while iOS
+consumes the published `moq-swift` package built from the same crate. `libmoq` also exists
+in the submodule, but moq-kit does not use it for platform bindings.
 
 `Session` is the main SDK entry point on both platforms. It owns one relay connection,
 creates separate consume and publish origins, starts broadcast discovery, registers
@@ -59,14 +61,17 @@ The demo apps in `examples/ios/demo/MoQDemo` and `examples/android/demo/MoQDemo`
 integration references. They exercise player, publisher, and chat/data-track workflows and
 are usually the fastest manual validation path.
 
-`mise.toml` and `mise-tasks` are the local development command surface. The FFI tasks build
-Rust artifacts, generate UniFFI bindings, and place platform artifacts where the Swift
-package and Android module expect them.
+`mise.toml` and `mise-tasks` are the local development command surface. Android FFI tasks
+build Rust artifacts, generate UniFFI bindings, and place platform artifacts where the
+Android module expects them. iOS package builds resolve `moq-swift` through Swift Package
+Manager instead of generating a local XCFramework.
 
 ## Architectural Invariants
 
-Generated UniFFI bindings are build artifacts. Do not manually edit `moq.swift` or
-`uniffi.moq` files; change Rust `moq-ffi` or the platform wrapper layer and regenerate.
+Generated UniFFI bindings are build artifacts. Do not manually edit generated Swift or
+Kotlin bindings; change Rust `moq-ffi` upstream or the platform wrapper layer. For iOS,
+inspect `MoqFFI` in the resolved `moq-swift` checkout when generated type shapes are
+unclear. For Android, regenerate local `uniffi.moq` artifacts with the Android FFI task.
 
 The platform SDKs depend on `moq-ffi`, not on `libmoq`. Public Swift and Kotlin APIs should
 hide generated UniFFI types unless there is a deliberate API reason to expose them.
@@ -104,6 +109,7 @@ The repository has limited formal tests. Android has focused unit tests for play
 and selection behavior; the native demo apps act as integration tests for end-to-end relay,
 publish, playback, and data-track flows.
 
-Release artifacts are platform-specific. iOS publishes a Swift package backed by a prebuilt
-`moqFFI` XCFramework binary target; Android publishes an AAR containing Kotlin wrappers,
+Release artifacts are platform-specific. iOS publishes a Swift package that depends on the
+published `moq-swift` package for the prebuilt `MoqFFI` XCFramework; moq-kit does not build
+or upload its own iOS XCFramework. Android publishes an AAR containing Kotlin wrappers,
 generated UniFFI bindings, and JNI libraries.

@@ -1,30 +1,6 @@
 // swift-tools-version: 5.9
 
-import Foundation
 import PackageDescription
-
-// Local checkouts, including the demo Xcode project, use the generated
-// XCFramework when present. Release consumers fall back to the remote binary
-// because ios/Frameworks/moqffi.xcframework is not tracked.
-let localMoqFFIPath = "ios/Frameworks/moqffi.xcframework"
-let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-let localMoqFFIExists = FileManager.default.fileExists(
-    atPath: packageRoot.appendingPathComponent(localMoqFFIPath).path
-)
-let localMoqFFISetting = Context.environment["MOQKIT_USE_LOCAL_FFI"]
-let useLocalMoqFFI = localMoqFFISetting == "1"
-    || (localMoqFFISetting != "0" && localMoqFFIExists)
-
-let moqFFITarget: Target = useLocalMoqFFI
-    ? .binaryTarget(
-            name: "moqFFI",
-            path: localMoqFFIPath
-        )
-    : .binaryTarget(
-            name: "moqFFI",
-            url: "https://github.com/software-mansion-labs/moq-kit/releases/download/ios/v0.1.1/moqffi.xcframework.zip",
-            checksum: "99e552fb9f0c09296cb49361a86b6cdd3651e87277e70e3f98403a32da8c708b"
-        )
 
 let package = Package(
     name: "MoQKit",
@@ -34,27 +10,25 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.5"),
-        .package(url: "https://github.com/apple/swift-atomics", from: "1.2.0")
+        .package(url: "https://github.com/apple/swift-atomics", from: "1.2.0"),
+        .package(url: "https://github.com/moq-dev/moq-swift", from: "0.2.15")
     ],
     targets: [
         .target(
             name: "MoQKit",
             dependencies: [
-                "MoQKitFFI",
-                .product(name: "Atomics", package: "swift-atomics")
+                .product(name: "Atomics", package: "swift-atomics"),
+                .product(name: "Moq", package: "moq-swift")
             ],
             path: "ios/Sources/MoQKit"
         ),
-        .target(
-            name: "MoQKitFFI",
-            dependencies: ["moqFFI"],
-            path: "ios/Sources/MoQKitFFI"
-        ),
         .testTarget(
             name: "MoQKitTests",
-            dependencies: ["MoQKit"],
+            dependencies: [
+                "MoQKit",
+                .product(name: "Moq", package: "moq-swift")
+            ],
             path: "ios/Tests/MoQKitTests"
-        ),
-        moqFFITarget,
+        )
     ]
 )

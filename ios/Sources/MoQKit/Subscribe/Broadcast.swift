@@ -1,5 +1,5 @@
 import Foundation
-import MoQKitFFI
+import MoqFFI
 
 // MARK: - VideoSize
 

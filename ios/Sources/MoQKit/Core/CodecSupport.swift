@@ -1,6 +1,6 @@
 import AVFoundation
 import CoreMedia
-import MoQKitFFI
+import MoqFFI
 import VideoToolbox
 
 internal struct CodecSupportResult {

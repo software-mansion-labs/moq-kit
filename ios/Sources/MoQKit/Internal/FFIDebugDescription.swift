@@ -1,22 +1,20 @@
 import Foundation
+import MoqFFI
 
-// Internal debug string helpers for generated UniFFI types.
-// Not public — MoQKit uses these for logging only.
-
-extension MoqVideo: CustomDebugStringConvertible {
-    public var debugDescription: String {
+extension MoqVideo {
+    var moqKitDebugDescription: String {
         "codec=\(codec), width=\(coded?.width ?? 0), height=\(coded?.height ?? 0)"
     }
 }
 
-extension MoqAudio: CustomDebugStringConvertible {
-    public var debugDescription: String {
+extension MoqAudio {
+    var moqKitDebugDescription: String {
         "codec=\(codec), sampleRate=\(sampleRate), channels=\(channelCount)"
     }
 }
 
-extension Container: CustomStringConvertible {
-    public var description: String {
+extension Container {
+    var moqKitDescription: String {
         switch self {
         case .legacy:
             return "legacy"

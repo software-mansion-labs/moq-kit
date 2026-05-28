@@ -1,5 +1,5 @@
 import os
-import MoQKitFFI
+import MoqFFI
 
 /// Centralized logging for MoQKit.
 ///

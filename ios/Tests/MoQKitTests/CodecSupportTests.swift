@@ -1,5 +1,5 @@
 @testable import MoQKit
-import MoQKitFFI
+import MoqFFI
 import XCTest
 
 final class VideoCodecSupportTests: XCTestCase {

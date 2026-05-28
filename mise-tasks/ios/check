@@ -1,24 +1,17 @@
 #!/usr/bin/env bash
-#MISE description="Compile the MoQKit Swift package for the iOS simulator without regenerating FFI artifacts"
-#USAGE flag "--local-ffi" help="Use the local ios/Frameworks/moqffi.xcframework instead of the release binary target"
+#MISE description="Compile the MoQKit Swift package for the iOS simulator"
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
-LOCAL_FFI="${usage_local_ffi:-false}"
 for arg in "$@"; do
   case "$arg" in
-  --local-ffi) LOCAL_FFI=true ;;
   *)
     echo "Unknown argument: $arg" >&2
     exit 1
     ;;
   esac
 done
-
-if [[ "$LOCAL_FFI" = "true" || "$LOCAL_FFI" = "1" || "${MOQKIT_USE_LOCAL_FFI:-}" = "1" ]]; then
-  export MOQKIT_USE_LOCAL_FFI=1
-fi
 
 echo "==> Building Swift package for iOS simulator..."
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"

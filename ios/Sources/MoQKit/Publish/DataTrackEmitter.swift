@@ -1,5 +1,5 @@
 import Foundation
-import MoQKitFFI
+import MoqFFI
 
 /// Push-based source for publishing app-defined binary messages on an object track.
 ///

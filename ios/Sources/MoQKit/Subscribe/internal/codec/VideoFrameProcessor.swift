@@ -1,6 +1,6 @@
 import CoreMedia
 import Foundation
-import MoQKitFFI
+import MoqFFI
 
 /// Resolves video format descriptions and preprocesses payloads for AVSampleBufferDisplayLayer.
 ///
