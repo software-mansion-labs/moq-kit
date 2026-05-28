@@ -5,6 +5,7 @@ set -euo pipefail
 
 # Produces:
 #   android/moqkit/moqkit/src/main/jniLibs/arm64-v8a/moq_ffi.so
+#   android/moqkit/moqkit/src/main/jniLibs/armeabi-v7a/moq_ffi.so
 #   android/moqkit/moqkit/src/main/java/uniffi/ (Kotlin bindings)
 
 DEBUG=0
@@ -30,6 +31,7 @@ fi
 
 TARGETS=(
   aarch64-linux-android
+  armv7-linux-androideabi
 )
 
 # --- Install Rust targets if missing ---
@@ -159,14 +161,14 @@ fi
     --language kotlin \
     --out-dir "$UNIFFI_OUT")
 
-echo "==> Building Android shared library (arm64-v8a)..."
+echo "==> Building Android shared libraries..."
 mkdir -p "$ANDROID_OUT/jniLibs"
 (cd "$ROOT_DIR/vendor/moq" &&
-  cargo ndk -t arm64-v8a -o "$ANDROID_OUT/jniLibs" \
+  cargo ndk -t arm64-v8a -t armeabi-v7a -o "$ANDROID_OUT/jniLibs" \
     build $PROFILE_FLAGS --package moq-ffi \
     --manifest-path "$WORKSPACE_CARGO")
 
 echo ""
 echo "Done."
-echo "JNI library: $ANDROID_OUT/jniLibs/arm64-v8a/moq_ffi.so"
+echo "JNI libraries: $ANDROID_OUT/jniLibs/{arm64-v8a,armeabi-v7a}/moq_ffi.so"
 echo "Kotlin bindings: $UNIFFI_OUT"
