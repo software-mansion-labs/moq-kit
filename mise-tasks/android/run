@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #MISE description="Build, install, and launch the Android demo on a connected device"
-#USAGE flag "--debug" help="Build Rust FFI artifacts with debug symbols before installing the demo"
 set -euo pipefail
+
+if [[ $# -gt 0 ]]; then
+  echo "Usage: android:run" >&2
+  exit 1
+fi
 
 echo "==> Checking for connected device..."
 if ! adb devices | grep -q "device$"; then
@@ -10,7 +14,7 @@ if ! adb devices | grep -q "device$"; then
 fi
 
 echo "==> Building Android SDK and demo inputs..."
-mise run android:build "$@"
+mise run android:build
 
 echo "==> Installing debug APK..."
 cd "$MISE_PROJECT_ROOT/examples/android/demo/MoQDemo" && ./gradlew installDebug

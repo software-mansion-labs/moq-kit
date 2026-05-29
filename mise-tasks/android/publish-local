@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-#MISE description="Build Android artifacts and publish the MoQKit AAR to local Maven"
-#USAGE flag "--debug" help="Build Rust FFI artifacts with debug symbols before publishing locally"
+#MISE description="Build and publish the MoQKit Android AAR to local Maven"
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
 echo "==> Building Android AAR..."
-mise run android:build "$@"
+mise run android:build
 
 echo "==> Publishing MoQKit AAR to local Maven..."
 cd "$ROOT_DIR/android/moqkit"
