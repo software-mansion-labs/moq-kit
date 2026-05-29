@@ -2,7 +2,7 @@
 
 moq-kit provides native Swift and Kotlin SDKs for publishing and playing low-latency media
 streams over QUIC. The repository does not implement the MoQ protocol itself; it wraps the
-Rust `moq-ffi` UniFFI crate from the `vendor/moq` submodule and adds platform-native
+published UniFFI bindings built from the Rust `moq-ffi` crate and adds platform-native
 capture, encoding, playback, lifecycle, and demo-app integrations.
 
 The stack is:
@@ -26,12 +26,13 @@ UniFFI Swift bindings and binary artifacts.
 
 `android/moqkit` is the Android Gradle project. The publishable Kotlin SDK module is
 `android/moqkit/moqkit`. Public Kotlin APIs live under `com.swmansion.moqkit`; generated
-UniFFI Kotlin bindings live under `uniffi.moq`.
+UniFFI Kotlin bindings and JNI libraries are resolved from the upstream `dev.moq:moq`
+Maven dependency.
 
 `vendor/moq` is a git submodule pointing at `moq-dev/moq`. The important crate for moq-kit
-is `moq-ffi`; Android builds it locally for Kotlin bindings and JNI libraries, while iOS
-consumes the published `moq-swift` package built from the same crate. `libmoq` also exists
-in the submodule, but moq-kit does not use it for platform bindings.
+is `moq-ffi`; iOS consumes the published `moq-swift` package, and Android consumes the
+published `dev.moq:moq` Maven package built from that crate. `libmoq` also exists in the
+submodule, but moq-kit does not use it for platform bindings.
 
 `Session` is the main SDK entry point on both platforms. It owns one relay connection,
 creates separate consume and publish origins, starts broadcast discovery, registers
@@ -61,20 +62,20 @@ The demo apps in `examples/ios/demo/MoQDemo` and `examples/android/demo/MoQDemo`
 integration references. They exercise player, publisher, and chat/data-track workflows and
 are usually the fastest manual validation path.
 
-`mise.toml` and `mise-tasks` are the local development command surface. Android FFI tasks
-build Rust artifacts, generate UniFFI bindings, and place platform artifacts where the
-Android module expects them. iOS package builds resolve `moq-swift` through Swift Package
-Manager instead of generating a local XCFramework.
+`mise.toml` and `mise-tasks` are the local development command surface. Android package
+builds resolve `dev.moq:moq` through Gradle/Maven Central, and iOS package builds resolve
+`moq-swift` through Swift Package Manager.
 
 ## Architectural Invariants
 
 Generated UniFFI bindings are build artifacts. Do not manually edit generated Swift or
 Kotlin bindings; change Rust `moq-ffi` upstream or the platform wrapper layer. For iOS,
 inspect `MoqFFI` in the resolved `moq-swift` checkout when generated type shapes are
-unclear. For Android, regenerate local `uniffi.moq` artifacts with the Android FFI task.
+unclear. For Android, inspect `uniffi.moq` from the resolved `dev.moq:moq` dependency.
 
-The platform SDKs depend on `moq-ffi`, not on `libmoq`. Public Swift and Kotlin APIs should
-hide generated UniFFI types unless there is a deliberate API reason to expose them.
+The platform SDKs depend on bindings built from `moq-ffi`, not on `libmoq`. Public Swift
+and Kotlin APIs should hide generated UniFFI types unless there is a deliberate API reason
+to expose them.
 
 A `Session` represents one relay connection. Publishing and consuming may share that
 connection, but their origins are separate.
@@ -111,5 +112,6 @@ publish, playback, and data-track flows.
 
 Release artifacts are platform-specific. iOS publishes a Swift package that depends on the
 published `moq-swift` package for the prebuilt `MoqFFI` XCFramework; moq-kit does not build
-or upload its own iOS XCFramework. Android publishes an AAR containing Kotlin wrappers,
-generated UniFFI bindings, and JNI libraries.
+or upload its own iOS XCFramework. Android publishes an AAR containing Kotlin wrappers and
+declares `dev.moq:moq` as the transitive dependency that supplies generated UniFFI bindings
+and JNI libraries.

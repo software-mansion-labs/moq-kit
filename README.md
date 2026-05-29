@@ -12,9 +12,9 @@ moq-kit gives iOS and Android apps platform-native APIs for Media over QUIC-styl
 streaming: connect to a relay, discover broadcasts, publish camera/microphone/screen
 tracks, play catalog-described streams, and send or receive raw data tracks.
 
-It is built on top of [`moq-ffi`](https://github.com/moq-dev/moq/tree/main/rs/moq-ffi),
-the UniFFI Rust bindings from Luke Curley's [`moq-dev/moq`](https://github.com/moq-dev/moq)
-project.
+It is built on top of the published UniFFI bindings generated from
+[`moq-ffi`](https://github.com/moq-dev/moq/tree/main/rs/moq-ffi), the Rust bindings from
+Luke Curley's [`moq-dev/moq`](https://github.com/moq-dev/moq) project.
 
 For the repository codemap, layer boundaries, and invariants, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -66,14 +66,13 @@ The repository's `mise.toml` is intentionally minimal and does **not** auto-inst
 language toolchains. Install the tools below manually before running the build commands.
 
 Consumers integrating the published Swift Package or Maven Central artifact do not need
-Rust, the Android NDK, or `cargo-ndk` — those are only required when working on moq-kit
-itself or rebuilding the FFI bindings locally.
+Rust, the Android NDK, or `cargo-ndk`.
 
 ### All platforms
 
 - [`mise-en-place`](https://mise.jdx.dev) — task runner used for every build and run command.
-- Rust toolchain (`rustup`, stable channel) — required for FFI builds. Skip if you only
-  consume the published packages.
+- Rust toolchain (`rustup`, stable channel) — required for `vendor/moq` tasks such as
+  running the local relay or Rust checks. Skip if you only consume the published packages.
 - Git with submodule support (`vendor/moq` is a submodule).
 
 ### iOS development
@@ -85,9 +84,7 @@ itself or rebuilding the FFI bindings locally.
 
 - Android Studio (Hedgehog or newer).
 - Android SDK with API 35 (`compileSdk`) and platform 29+ (`minSdk`).
-- NDK r27.
 - Java 11+.
-- `cargo-ndk` (`cargo install cargo-ndk`) for cross-compiling Rust to Android targets.
 
 ## Protocol
 
@@ -180,8 +177,8 @@ dependencies {
 }
 ```
 
-The Android SDK includes Kotlin APIs backed by UniFFI-generated JNI bindings to the Rust
-`moq-ffi` library.
+The Android SDK includes Kotlin APIs backed by the upstream `dev.moq:moq` Maven package,
+which provides the UniFFI-generated Kotlin bindings and JNI libraries.
 
 Android apps must declare the permissions they use. Typical integrations need `INTERNET`.
 Camera publishing needs `CAMERA`, microphone publishing needs `RECORD_AUDIO`, and screen
@@ -419,19 +416,16 @@ iOS resolves `moq-swift` through Swift Package Manager and compiles the Swift SD
 mise run ios:build
 ```
 
-Android builds Rust `moq-ffi` into JNI/shared-library artifacts and generates Kotlin
-UniFFI bindings:
+Android resolves the upstream `dev.moq:moq` Maven package and assembles the Kotlin SDK:
 
 ```bash
-mise run android:ffi
 mise run android:build
 ```
 
 The task scripts in [mise-tasks](mise-tasks) are the source of truth for exact build
-outputs and generated files. Android generated UniFFI bindings are overwritten by these
-builds and should not be edited manually. iOS generated bindings come from the resolved
-`moq-swift` package. See [ARCHITECTURE.md](ARCHITECTURE.md) for binding boundaries and
-invariants.
+outputs. Android generated bindings and JNI libraries come from the resolved `dev.moq:moq`
+package. iOS generated bindings come from the resolved `moq-swift` package. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for binding boundaries and invariants.
 
 For local SDK development, the demo apps are usually the fastest feedback loop. Prefer
 wiring demos to local Swift and Android modules instead of published package versions when
