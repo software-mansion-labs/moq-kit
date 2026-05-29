@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build Android FFI artifacts and publish the MoQKit AAR to Maven Central"
-#USAGE flag "--debug" help="Build Rust FFI artifacts with debug symbols before publishing"
+#MISE description="Build and publish the MoQKit Android AAR to Maven Central"
 set -euo pipefail
 
 # Requires in ~/.gradle/gradle.properties:
@@ -16,7 +15,7 @@ set -euo pipefail
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
 echo "==> Building Android AAR..."
-mise run android:build "$@"
+mise run android:build
 
 echo "==> Publishing MoQKit AAR to Maven Central..."
 (cd "$ROOT_DIR/android/moqkit" &&

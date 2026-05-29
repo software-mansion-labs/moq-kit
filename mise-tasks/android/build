@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-#MISE description="Build Android FFI artifacts and assemble the MoQKit AAR"
-#USAGE flag "--debug" help="Build Rust FFI artifacts with debug symbols before assembling the AAR"
+#MISE description="Assemble the MoQKit Android AAR"
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
-echo "==> Building Android FFI artifacts..."
-mise run android:ffi "$@"
+if [[ $# -gt 0 ]]; then
+  echo "Usage: android:build" >&2
+  exit 1
+fi
 
 echo "==> Assembling Android AAR..."
 cd "$ROOT_DIR/android/moqkit"

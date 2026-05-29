@@ -1,4 +1,7 @@
+import com.vanniktech.maven.publish.AndroidSingleVariantLibrary
 import com.vanniktech.maven.publish.SonatypeHost
+import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.jvm.tasks.Jar
 import org.jetbrains.dokka.gradle.DokkaTask
 import java.util.Properties
 
@@ -38,7 +41,12 @@ android {
     }
 }
 
+val emptyJavadocJar by tasks.registering(Jar::class) {
+    archiveClassifier.set("javadoc")
+}
+
 mavenPublishing {
+    configure(AndroidSingleVariantLibrary(variant = "release", sourcesJar = true, publishJavadocJar = false))
     publishToMavenCentral(SonatypeHost.CENTRAL_PORTAL)
     if (project.hasProperty("signing.keyId") || project.hasProperty("signingInMemoryKey")) {
         signAllPublications()
@@ -70,6 +78,11 @@ mavenPublishing {
     }
 }
 
+publishing {
+    publications.withType<MavenPublication>().configureEach {
+        artifact(emptyJavadocJar)
+    }
+}
 
 tasks.withType<DokkaTask>().configureEach {
     dokkaSourceSets {
@@ -87,7 +100,9 @@ tasks.withType<DokkaTask>().configureEach {
             if (sdkDir != null) {
                 classpath.from(files("$sdkDir/platforms/android-${android.compileSdk ?: 35}/android.jar"))
             }
-            classpath.from(configurations.getByName("releaseCompileClasspath"))
+            val releaseClasspath = configurations.getByName("releaseCompileClasspath")
+                .filter { file -> !file.name.startsWith("moq") }
+            classpath.from(releaseClasspath)
 
             perPackageOption {
                 matchingRegex.set("uniffi\\..*")
@@ -102,7 +117,7 @@ tasks.withType<DokkaTask>().configureEach {
 }
 
 dependencies {
-    implementation("net.java.dev.jna:jna:5.18.1@aar")
+    api(libs.moq)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.core.ktx)
 
@@ -114,7 +129,6 @@ dependencies {
     implementation("androidx.camera:camera-camera2:$cameraVersion")
 
     testImplementation(libs.junit)
-    testImplementation("net.java.dev.jna:jna:5.18.1@aar")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
