@@ -90,16 +90,19 @@ class MultiCameraCapture(
 
             try {
                 val provider = ProcessCameraProvider.getInstance(context).awaitResult()
+                val cameraPair = provider.frontBackConcurrentPair()
+                    ?: error("Concurrent front/back camera capture is not supported on this device")
+
                 provider.unbindAll()
                 provider.bindToLifecycle(
                     listOf(
                         ConcurrentCamera.SingleCameraConfig(
-                            CameraSelector.DEFAULT_FRONT_CAMERA,
+                            cameraPair.front.cameraSelector,
                             frontRoute.useCaseGroup(),
                             lifecycleOwner,
                         ),
                         ConcurrentCamera.SingleCameraConfig(
-                            CameraSelector.DEFAULT_BACK_CAMERA,
+                            cameraPair.back.cameraSelector,
                             backRoute.useCaseGroup(),
                             lifecycleOwner,
                         ),
@@ -260,10 +263,23 @@ class MultiCameraCapture(
     }
 }
 
+private data class FrontBackCameraPair(
+    val front: CameraInfo,
+    val back: CameraInfo,
+)
+
 private fun ProcessCameraProvider.hasFrontBackConcurrentPair(): Boolean =
-    availableConcurrentCameraInfos.any { cameraInfos ->
-        CameraSelector.DEFAULT_FRONT_CAMERA.safeFilter(cameraInfos).isNotEmpty()
-            && CameraSelector.DEFAULT_BACK_CAMERA.safeFilter(cameraInfos).isNotEmpty()
+    frontBackConcurrentPair() != null
+
+private fun ProcessCameraProvider.frontBackConcurrentPair(): FrontBackCameraPair? =
+    availableConcurrentCameraInfos.firstNotNullOfOrNull { cameraInfos ->
+        val front = CameraSelector.DEFAULT_FRONT_CAMERA.safeFilter(cameraInfos).firstOrNull()
+        val back = CameraSelector.DEFAULT_BACK_CAMERA.safeFilter(cameraInfos).firstOrNull()
+        if (front != null && back != null) {
+            FrontBackCameraPair(front = front, back = back)
+        } else {
+            null
+        }
     }
 
 private fun CameraSelector.safeFilter(cameraInfos: List<CameraInfo>): List<CameraInfo> =
