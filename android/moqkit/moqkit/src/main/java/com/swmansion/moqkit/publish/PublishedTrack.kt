@@ -31,7 +31,7 @@ sealed class TrackCodecInfo {
  * Use [state] to update UI for a specific track, or call [stop] to stop just this track
  * while leaving other publisher tracks running.
  *
- * @property name Track name announced in the broadcast.
+ * @property name Local SDK label used by publisher state and events.
  * @property codecInfo Media or data kind configured for this track.
  */
 class PublishedTrack internal constructor(
