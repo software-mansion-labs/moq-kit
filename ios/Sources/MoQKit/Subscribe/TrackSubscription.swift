@@ -106,8 +106,11 @@ public final class TrackSubscription: @unchecked Sendable {
         self.retainedBroadcast = broadcast
         self.track = try broadcast.subscribeTrack(name: name)
 
-        var continuation: AsyncThrowingStream<TrackObject, Error>.Continuation!
-        self.objects = AsyncThrowingStream { continuation = $0 }
+        var pendingContinuation: AsyncThrowingStream<TrackObject, Error>.Continuation?
+        self.objects = AsyncThrowingStream { pendingContinuation = $0 }
+        guard let continuation = pendingContinuation else {
+            preconditionFailure("AsyncThrowingStream did not provide a continuation")
+        }
         self.continuation = continuation
 
         continuation.onTermination = { [weak self] _ in
