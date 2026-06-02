@@ -109,8 +109,8 @@ When the main MOQ draft stabilizes further, moq-kit may consider moving toward i
 - **Native SDKs** for iOS Swift and Android Kotlin.
 - **Relay sessions** for publishing and consuming through the same MoQ relay.
 - **Broadcast discovery** with catalog-driven track selection.
-- **Publishing** from camera, iOS multi-camera capture, microphone, iOS ReplayKit screen
-  capture, Android screen capture, and raw data tracks.
+- **Publishing** from camera, iOS and Android multi-camera capture, microphone, iOS
+  ReplayKit screen capture, Android screen capture, and raw data tracks.
 - **Playback** with native low-latency renderers, dynamically adjustable target latency,
   track switching, and playback stats.
 - **Data tracks** for app-defined payloads such as JSON chat messages.
@@ -366,6 +366,52 @@ lifecycleScope.launch {
 }
 ```
 
+### Publish front and back cameras in Kotlin
+
+```kotlin
+lifecycleScope.launch {
+    if (!MultiCameraCapture.isFrontBackSupported(context)) {
+        error("Multi-camera capture is not supported")
+    }
+
+    val session = Session(
+        url = "http://localhost:4443/anon",
+        parentScope = lifecycleScope,
+    )
+    session.connect()
+
+    val cameras = MultiCameraCapture(
+        front = CameraStreamConfig(
+            position = CameraPosition.Front,
+            width = 1280,
+            height = 720,
+            frameRate = 30,
+        ),
+        back = CameraStreamConfig(
+            position = CameraPosition.Back,
+            width = 1280,
+            height = 720,
+            frameRate = 30,
+        ),
+    )
+    cameras.start(context, lifecycleOwner)
+
+    val videoConfig = VideoEncoderConfig(width = 1280, height = 720, bitrate = 900_000)
+
+    val publisher = Publisher()
+    publisher.addVideoTrack(name = "front-camera", source = cameras.frontSource, config = videoConfig)
+    publisher.addVideoTrack(name = "back-camera", source = cameras.backSource, config = videoConfig)
+
+    session.publish(path = "live/android-multicam", publisher = publisher)
+    publisher.start()
+
+    // When the broadcast ends:
+    // publisher.stop()
+    // cameras.stop()
+    // session.close()
+}
+```
+
 Use `VideoEncoderConfig.isSupported`, `AudioEncoderConfig.isSupported`, and the
 `supportedCodecs()` helpers before offering codec choices in UI. Use
 `Catalog.playableVideoTracks` and `Catalog.playableAudioTracks` when selecting tracks for
@@ -375,11 +421,14 @@ runtime. For app-defined messages or telemetry, add a `DataTrackEmitter` with
 `Publisher.addDataTrack` and read it with `Broadcast.subscribeTrack`.
 
 On iOS, camera and microphone publishing are app-owned integrations: your app handles the
-privacy usage strings and `AVAudioSession` setup. Multi-camera capture requires hardware
-support reported by `MultiCameraCapture.isSupported`. For screen publishing, use
-`ScreenCapture` when in-app capture is enough, and use the ReplayKit Broadcast Upload flow
-for full-device capture that survives app switches. The iOS demo shows the App Group and
-extension wiring for that path.
+privacy usage strings and `AVAudioSession` setup. On Android, your app declares and requests
+camera and audio permissions. Multi-camera capture requires hardware support reported by
+`MultiCameraCapture.isSupported` on iOS. On Android, `MultiCameraCapture.isSupported(context)`
+is the fast platform feature check, while `MultiCameraCapture.isFrontBackSupported(context)`
+verifies that CameraX exposes an actual concurrent front/back pair. For screen publishing,
+use `ScreenCapture` when in-app capture is enough, and use the ReplayKit Broadcast Upload
+flow for full-device iOS capture that survives app switches. The iOS demo shows the App
+Group and extension wiring for that path.
 
 For complete app-shaped code, use the native demos.
 

@@ -40,8 +40,8 @@ publishers, and tears down active work when the connection closes.
 
 Publishing is centered on `Publisher`. A publisher collects track descriptors before start,
 then connects frame sources to encoders and writes encoded frames or data objects to FFI
-producers. Camera, iOS multi-camera capture, microphone, screen capture, and raw data
-emitters are platform-specific sources feeding the same publish shape.
+producers. Camera, multi-camera capture, microphone, screen capture, and raw data emitters
+are platform-specific sources feeding the same publish shape.
 
 Subscription and discovery are centered on `BroadcastSubscription`, `Broadcast`, `Catalog`,
 and `TrackSubscription`. A session subscribes to announced broadcast paths by prefix. A

@@ -5,8 +5,9 @@ import android.view.Surface
 /**
  * Advanced extension point for custom video capture sources.
  *
- * Most apps should use [CameraCapture] or [ScreenCapture]. Implement this interface only
- * when the app needs to feed frames from its own rendering or capture pipeline.
+ * Most apps should use [CameraCapture], [MultiCameraCapture], or [ScreenCapture]. Implement
+ * this interface only when the app needs to feed frames from its own rendering or capture
+ * pipeline.
  */
 interface VideoFrameSource {
     /**
