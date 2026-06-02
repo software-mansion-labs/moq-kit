@@ -23,7 +23,9 @@ import com.swmansion.moqkit.publish.encoder.VideoCodec
 import com.swmansion.moqkit.publish.encoder.VideoEncoderConfig
 import com.swmansion.moqkit.publish.source.CameraCapture
 import com.swmansion.moqkit.publish.source.CameraPosition
+import com.swmansion.moqkit.publish.source.CameraStreamConfig
 import com.swmansion.moqkit.publish.source.MicrophoneCapture
+import com.swmansion.moqkit.publish.source.MultiCameraCapture
 import com.swmansion.moqkit.publish.source.ScreenCapture
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.launchIn
@@ -42,17 +44,23 @@ enum class VideoFrameRate(val label: String, val fps: Int) {
     FPS60("60", 60),
 }
 
+enum class CameraSourceMode(val label: String) {
+    SingleCamera("Single"),
+    MultiCamera("MultiCam"),
+}
+
 class PublisherViewModel(application: Application) : AndroidViewModel(application) {
 
     // Connection settings
-    var relayUrl by mutableStateOf("http://192.168.92.173:4443/anon")
     var broadcastPath by mutableStateOf("live/test")
 
     // Source toggles
     var cameraEnabled by mutableStateOf(true)
     var micEnabled by mutableStateOf(true)
     var screenEnabled by mutableStateOf(false)
+    var cameraSourceMode by mutableStateOf(CameraSourceMode.SingleCamera)
     var cameraPosition by mutableStateOf(CameraPosition.Front)
+    var multiCameraMainPreviewPosition by mutableStateOf(CameraPosition.Back)
 
     // Codec settings
     var videoCodec by mutableStateOf(VideoCodec.H264)
@@ -73,6 +81,9 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
 
     val supportedAudioCodecs: List<AudioCodec>
         get() = AudioEncoderConfig.supportedCodecs()
+
+    var isMultiCameraSupported by mutableStateOf(MultiCameraCapture.isSupported(getApplication()))
+        private set
 
     val isPublishing get() = publisherState == PublisherState.Publishing
     val canPublish get() = sessionState == Session.State.Idle
@@ -101,10 +112,13 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     private var session: Session? = null
     private var publisher: Publisher? = null
     private var camera: CameraCapture? = null
+    private var multiCamera: MultiCameraCapture? = null
     private var microphone: MicrophoneCapture? = null
     private var screenCapture: ScreenCapture? = null
     private var screenProjectionData: Pair<Int, Intent>? = null
     private var previewSurface: Surface? = null
+    private var frontPreviewSurface: Surface? = null
+    private var backPreviewSurface: Surface? = null
     private var sessionJob: Job? = null
     private var publisherJobs = mutableListOf<Job>()
 
@@ -115,6 +129,30 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         if (audioCodec !in supportedAudioCodecs) {
             audioCodec = supportedAudioCodecs.firstOrNull() ?: audioCodec
         }
+        refreshMultiCameraSupport()
+    }
+
+    fun refreshMultiCameraSupport() {
+        if (!MultiCameraCapture.isSupported(getApplication())) {
+            isMultiCameraSupported = false
+            if (cameraSourceMode == CameraSourceMode.MultiCamera) {
+                cameraSourceMode = CameraSourceMode.SingleCamera
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            val supported = try {
+                MultiCameraCapture.isFrontBackSupported(getApplication())
+            } catch (_: Exception) {
+                false
+            }
+            isMultiCameraSupported = supported
+            if (!supported && cameraSourceMode == CameraSourceMode.MultiCamera) {
+                lastError = "Multi-camera capture is not supported by this emulator/device"
+                cameraSourceMode = CameraSourceMode.SingleCamera
+            }
+        }
     }
 
     fun setPreviewSurface(surface: Surface?) {
@@ -122,8 +160,32 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         camera?.setPreviewSurface(surface)
     }
 
+    fun setMultiCameraPreviewSurface(position: CameraPosition, surface: Surface?) {
+        when (position) {
+            CameraPosition.Front -> {
+                frontPreviewSurface = surface
+                multiCamera?.frontSource?.setPreviewSurface(surface)
+            }
+            CameraPosition.Back -> {
+                backPreviewSurface = surface
+                multiCamera?.backSource?.setPreviewSurface(surface)
+            }
+        }
+    }
+
     fun startCamera(lifecycleOwner: LifecycleOwner) {
+        if (!cameraEnabled) return
+
+        when (cameraSourceMode) {
+            CameraSourceMode.SingleCamera -> startSingleCamera(lifecycleOwner)
+            CameraSourceMode.MultiCamera -> startMultiCamera(lifecycleOwner)
+        }
+    }
+
+    private fun startSingleCamera(lifecycleOwner: LifecycleOwner) {
+        stopMultiCamera()
         if (camera != null) return
+
         val cam = CameraCapture(position = cameraPosition)
         camera = cam
         viewModelScope.launch {
@@ -137,12 +199,55 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun startMultiCamera(lifecycleOwner: LifecycleOwner) {
+        if (!isMultiCameraSupported) {
+            lastError = "Multi-camera capture is not supported on this device"
+            cameraSourceMode = CameraSourceMode.SingleCamera
+            startSingleCamera(lifecycleOwner)
+            return
+        }
+
+        stopSingleCamera()
+
+        val videoConfig = currentVideoConfig()
+        val existing = multiCamera
+        if (existing != null && isMultiCamera(existing, videoConfig)) {
+            return
+        }
+
+        stopMultiCamera()
+
+        val capture = makeMultiCameraCapture(videoConfig)
+        applyMultiCameraPreviewSurfaces(capture)
+        multiCamera = capture
+
+        viewModelScope.launch {
+            try {
+                if (!MultiCameraCapture.isFrontBackSupported(getApplication())) {
+                    error("No concurrent front/back camera pair is available on this emulator/device")
+                }
+                capture.start(getApplication(), lifecycleOwner)
+            } catch (e: Exception) {
+                if (multiCamera === capture) {
+                    lastError = "Multi-camera start failed: ${e.message}"
+                    multiCamera = null
+                    isMultiCameraSupported = false
+                    cameraSourceMode = CameraSourceMode.SingleCamera
+                    startSingleCamera(lifecycleOwner)
+                }
+                capture.stop()
+            }
+        }
+    }
+
     fun stopCamera() {
-        camera?.stop()
-        camera = null
+        stopSingleCamera()
+        stopMultiCamera()
     }
 
     fun flipCamera() {
+        if (cameraSourceMode != CameraSourceMode.SingleCamera) return
+
         cameraPosition = if (cameraPosition == CameraPosition.Front) CameraPosition.Back else CameraPosition.Front
         viewModelScope.launch {
             try {
@@ -151,6 +256,15 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
                 lastError = "Camera flip failed: ${e.message}"
             }
         }
+    }
+
+    fun swapMultiCameraPreview() {
+        multiCameraMainPreviewPosition =
+            if (multiCameraMainPreviewPosition == CameraPosition.Front) {
+                CameraPosition.Back
+            } else {
+                CameraPosition.Front
+            }
     }
 
     fun setScreenProjection(resultCode: Int, intent: Intent) {
@@ -168,10 +282,16 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun publish(lifecycleOwner: LifecycleOwner) {
+    fun publish(lifecycleOwner: LifecycleOwner, relayUrl: String) {
         lastError = null
         trackStates.clear()
         publishedTracks = emptyList()
+
+        val url = relayUrl.trim()
+        if (url.isEmpty()) {
+            lastError = "Relay URL is required"
+            return
+        }
 
         val videoConfig = currentVideoConfig()
         val audioConfig = currentAudioConfig()
@@ -180,7 +300,7 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
-        val s = Session(url = relayUrl, parentScope = viewModelScope)
+        val s = Session(url = url, parentScope = viewModelScope)
         session = s
 
         sessionJob = s.state.onEach { sessionState = it }.launchIn(viewModelScope)
@@ -195,13 +315,34 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
                 val tracks = mutableListOf<PublishedTrack>()
 
                 if (cameraEnabled) {
-                    val cam = camera ?: CameraCapture(position = cameraPosition).also {
-                        it.start(getApplication(), lifecycleOwner)
-                        it.setPreviewSurface(previewSurface)
-                        camera = it
+                    when (cameraSourceMode) {
+                        CameraSourceMode.SingleCamera -> {
+                            val cam = camera ?: CameraCapture(position = cameraPosition).also {
+                                it.start(getApplication(), lifecycleOwner)
+                                it.setPreviewSurface(previewSurface)
+                                camera = it
+                            }
+                            tracks += pub.addVideoTrack(name = "camera", source = cam, config = videoConfig)
+                            trackStates["camera"] = PublishedTrackState.Idle
+                        }
+
+                        CameraSourceMode.MultiCamera -> {
+                            val capture = runningMultiCameraCapture(videoConfig, lifecycleOwner)
+                            tracks += pub.addVideoTrack(
+                                name = "front-camera",
+                                source = capture.frontSource,
+                                config = videoConfig,
+                            )
+                            trackStates["front-camera"] = PublishedTrackState.Idle
+
+                            tracks += pub.addVideoTrack(
+                                name = "back-camera",
+                                source = capture.backSource,
+                                config = videoConfig,
+                            )
+                            trackStates["back-camera"] = PublishedTrackState.Idle
+                        }
                     }
-                    tracks += pub.addVideoTrack(name = "camera", source = cam, config = videoConfig)
-                    trackStates["camera"] = PublishedTrackState.Idle
                 }
 
                 if (micEnabled) {
@@ -248,6 +389,10 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun stop() {
+        stopPublishing(keepCameraPreview = true)
+    }
+
+    private fun stopPublishing(keepCameraPreview: Boolean) {
         publisherJobs.forEach { it.cancel() }
         publisherJobs.clear()
         sessionJob?.cancel()
@@ -268,12 +413,12 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
             sess?.close()
         }
 
-        cleanupSources()
+        cleanupSources(keepCameraPreview = keepCameraPreview)
     }
 
     override fun onCleared() {
         super.onCleared()
-        stop()
+        stopPublishing(keepCameraPreview = false)
     }
 
     private fun resetAfterPublishFailure() {
@@ -301,10 +446,10 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (_: Exception) {}
         }
 
-        cleanupSources()
+        cleanupSources(keepCameraPreview = false)
     }
 
-    private fun cleanupSources() {
+    private fun cleanupSources(keepCameraPreview: Boolean) {
         microphone?.stop()
         microphone = null
         screenCapture?.stop()
@@ -312,8 +457,86 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         getApplication<Application>().stopService(
             Intent(getApplication(), ScreenCaptureService::class.java)
         )
-        // Camera is kept alive for preview — only stopped on demand
+        if (!keepCameraPreview) {
+            stopCamera()
+        }
     }
+
+    private fun stopSingleCamera() {
+        camera?.stop()
+        camera = null
+    }
+
+    private fun stopMultiCamera() {
+        multiCamera?.stop()
+        multiCamera = null
+    }
+
+    private suspend fun runningMultiCameraCapture(
+        videoConfig: VideoEncoderConfig,
+        lifecycleOwner: LifecycleOwner,
+    ): MultiCameraCapture {
+        check(isMultiCameraSupported) {
+            "Multi-camera capture is not supported on this device"
+        }
+        check(MultiCameraCapture.isFrontBackSupported(getApplication())) {
+            "No concurrent front/back camera pair is available on this emulator/device"
+        }
+
+        val existing = multiCamera
+        if (existing != null && isMultiCamera(existing, videoConfig)) {
+            existing.start(getApplication(), lifecycleOwner)
+            return existing
+        }
+
+        stopMultiCamera()
+
+        val capture = makeMultiCameraCapture(videoConfig)
+        applyMultiCameraPreviewSurfaces(capture)
+        multiCamera = capture
+        try {
+            capture.start(getApplication(), lifecycleOwner)
+            return capture
+        } catch (e: Exception) {
+            if (multiCamera === capture) {
+                multiCamera = null
+            }
+            capture.stop()
+            throw e
+        }
+    }
+
+    private fun makeMultiCameraCapture(videoConfig: VideoEncoderConfig): MultiCameraCapture =
+        MultiCameraCapture(
+            front = CameraStreamConfig(
+                position = CameraPosition.Front,
+                width = videoConfig.width,
+                height = videoConfig.height,
+                frameRate = videoConfig.frameRate,
+            ),
+            back = CameraStreamConfig(
+                position = CameraPosition.Back,
+                width = videoConfig.width,
+                height = videoConfig.height,
+                frameRate = videoConfig.frameRate,
+            ),
+        )
+
+    private fun applyMultiCameraPreviewSurfaces(capture: MultiCameraCapture) {
+        capture.frontSource.setPreviewSurface(frontPreviewSurface)
+        capture.backSource.setPreviewSurface(backPreviewSurface)
+    }
+
+    private fun isMultiCamera(
+        capture: MultiCameraCapture,
+        videoConfig: VideoEncoderConfig,
+    ): Boolean =
+        capture.front.width == videoConfig.width
+            && capture.front.height == videoConfig.height
+            && capture.front.frameRate == videoConfig.frameRate
+            && capture.back.width == videoConfig.width
+            && capture.back.height == videoConfig.height
+            && capture.back.frameRate == videoConfig.frameRate
 
     private fun currentVideoConfig(): VideoEncoderConfig = VideoEncoderConfig(
         codec = videoCodec,
@@ -331,6 +554,9 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         videoConfig: VideoEncoderConfig = currentVideoConfig(),
         audioConfig: AudioEncoderConfig = currentAudioConfig(),
     ): String? {
+        if (cameraEnabled && cameraSourceMode == CameraSourceMode.MultiCamera && !isMultiCameraSupported) {
+            return "Multi-camera capture is not supported on this device"
+        }
         if ((cameraEnabled || screenEnabled) && !videoConfig.isSupported) {
             return videoConfig.unsupportedReason ?: "Selected video codec is not supported"
         }

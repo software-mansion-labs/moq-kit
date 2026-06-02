@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -77,7 +78,11 @@ import java.time.Duration
 import java.time.Instant
 
 @Composable
-fun PlayerDemoScreen(vm: PlayerDemoViewModel = viewModel()) {
+fun PlayerDemoScreen(
+    initialRelayUrl: String,
+    vm: PlayerDemoViewModel = viewModel(),
+) {
+    var relayUrl by rememberSaveable(initialRelayUrl) { mutableStateOf(initialRelayUrl) }
     var fullscreenEntry by remember { mutableStateOf<BroadcastEntry?>(null) }
 
     val context = LocalContext.current
@@ -110,8 +115,8 @@ fun PlayerDemoScreen(vm: PlayerDemoViewModel = viewModel()) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             OutlinedTextField(
-                value = vm.relayUrl,
-                onValueChange = { vm.relayUrl = it },
+                value = relayUrl,
+                onValueChange = { relayUrl = it },
                 label = { Text("Relay URL") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -127,8 +132,8 @@ fun PlayerDemoScreen(vm: PlayerDemoViewModel = viewModel()) {
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
-                    onClick = { vm.connect() },
-                    enabled = canConnect(vm.sessionState) && vm.relayUrl.isNotEmpty(),
+                    onClick = { vm.connect(relayUrl) },
+                    enabled = canConnect(vm.sessionState) && relayUrl.trim().isNotEmpty(),
                 ) {
                     Text("Connect")
                 }

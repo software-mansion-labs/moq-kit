@@ -17,7 +17,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class ChatDemoViewModel : ViewModel() {
-    var relayUrl by mutableStateOf("http://192.168.92.140:4443")
     var subscribePrefix by mutableStateOf("chat")
     var publishPath by mutableStateOf("chat/android")
     var displayName by mutableStateOf("Android")
@@ -54,7 +53,7 @@ class ChatDemoViewModel : ViewModel() {
     val canSend: Boolean
         get() = sessionState is Session.State.Connected && emitter != null
 
-    fun connect() {
+    fun connect(relayUrl: String) {
         stop()
 
         val url = relayUrl.trim()

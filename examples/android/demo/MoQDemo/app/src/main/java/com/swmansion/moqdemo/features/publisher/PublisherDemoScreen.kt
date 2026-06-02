@@ -4,12 +4,17 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.graphics.SurfaceTexture
 import android.media.projection.MediaProjectionManager
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.TextureView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -19,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.swmansion.moqkit.Session
@@ -34,17 +41,26 @@ import com.swmansion.moqkit.publish.PublishedTrackState
 import com.swmansion.moqkit.publish.PublisherState
 import com.swmansion.moqkit.publish.encoder.AudioCodec
 import com.swmansion.moqkit.publish.encoder.VideoCodec
+import com.swmansion.moqkit.publish.source.CameraPosition
 
 @Composable
-fun PublisherDemoScreen(vm: PublisherViewModel = viewModel()) {
+fun PublisherDemoScreen(
+    initialRelayUrl: String,
+    vm: PublisherViewModel = viewModel(),
+) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
+    var relayUrl by rememberSaveable(initialRelayUrl) { mutableStateOf(initialRelayUrl) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         val allGranted = results.values.all { it }
         if (allGranted) vm.startCamera(lifecycleOwner)
+    }
+
+    LaunchedEffect(Unit) {
+        vm.refreshMultiCameraSupport()
     }
 
     val screenCaptureLauncher = rememberLauncherForActivityResult(
@@ -61,8 +77,8 @@ fun PublisherDemoScreen(vm: PublisherViewModel = viewModel()) {
         }
     }
 
-    // Start camera preview when screen appears if camera is enabled
-    LaunchedEffect(vm.cameraEnabled) {
+    // Start camera preview when screen appears or camera configuration changes.
+    LaunchedEffect(vm.cameraEnabled, vm.cameraSourceMode, vm.videoResolution, vm.videoFrameRate) {
         if (vm.cameraEnabled) {
             permissionLauncher.launch(
                 arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
@@ -91,9 +107,15 @@ fun PublisherDemoScreen(vm: PublisherViewModel = viewModel()) {
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         // Connection controls
-        ConnectionSection(vm = vm, lifecycleOwner = lifecycleOwner, permissionLauncher = { permissions ->
-            permissionLauncher.launch(permissions)
-        })
+        ConnectionSection(
+            vm = vm,
+            relayUrl = relayUrl,
+            onRelayUrlChange = { relayUrl = it },
+            lifecycleOwner = lifecycleOwner,
+            permissionLauncher = { permissions ->
+                permissionLauncher.launch(permissions)
+            },
+        )
 
         // Session state indicator
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -142,6 +164,8 @@ fun PublisherDemoScreen(vm: PublisherViewModel = viewModel()) {
 @Composable
 private fun ConnectionSection(
     vm: PublisherViewModel,
+    relayUrl: String,
+    onRelayUrlChange: (String) -> Unit,
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
     permissionLauncher: (Array<String>) -> Unit,
 ) {
@@ -150,8 +174,8 @@ private fun ConnectionSection(
             Text("Connection", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
 
             OutlinedTextField(
-                value = vm.relayUrl,
-                onValueChange = { vm.relayUrl = it },
+                value = relayUrl,
+                onValueChange = onRelayUrlChange,
                 label = { Text("Relay URL") },
                 singleLine = true,
                 enabled = !vm.isPublishing,
@@ -170,9 +194,9 @@ private fun ConnectionSection(
                 Button(
                     onClick = {
                         permissionLauncher(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
-                        vm.publish(lifecycleOwner)
+                        vm.publish(lifecycleOwner, relayUrl)
                     },
-                    enabled = vm.canPublish,
+                    enabled = vm.canPublish && relayUrl.trim().isNotEmpty(),
                     modifier = Modifier.weight(1f),
                 ) { Text("Publish") }
 
@@ -188,6 +212,14 @@ private fun ConnectionSection(
 
 @Composable
 private fun CameraPreviewCard(vm: PublisherViewModel) {
+    when (vm.cameraSourceMode) {
+        CameraSourceMode.SingleCamera -> SingleCameraPreviewCard(vm)
+        CameraSourceMode.MultiCamera -> MultiCameraPreviewCard(vm)
+    }
+}
+
+@Composable
+private fun SingleCameraPreviewCard(vm: PublisherViewModel) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -221,6 +253,109 @@ private fun CameraPreviewCard(vm: PublisherViewModel) {
 }
 
 @Composable
+private fun MultiCameraPreviewCard(vm: PublisherViewModel) {
+    val mainPosition = vm.multiCameraMainPreviewPosition
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color.Black),
+    ) {
+        MultiCameraTexture(
+            position = CameraPosition.Front,
+            vm = vm,
+            modifier = multiCameraLayerModifier(
+                isMain = mainPosition == CameraPosition.Front,
+                onSwap = vm::swapMultiCameraPreview,
+            ),
+        )
+
+        MultiCameraTexture(
+            position = CameraPosition.Back,
+            vm = vm,
+            modifier = multiCameraLayerModifier(
+                isMain = mainPosition == CameraPosition.Back,
+                onSwap = vm::swapMultiCameraPreview,
+            ),
+        )
+    }
+}
+
+private fun BoxScope.multiCameraLayerModifier(
+    isMain: Boolean,
+    onSwap: () -> Unit,
+): Modifier =
+    if (isMain) {
+        Modifier
+            .fillMaxSize()
+            .zIndex(0f)
+    } else {
+        Modifier
+            .align(Alignment.TopEnd)
+            .padding(10.dp)
+            .width(128.dp)
+            .aspectRatio(16f / 9f)
+            .zIndex(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .border(
+                width = 1.dp,
+                color = Color.White.copy(alpha = 0.75f),
+                shape = RoundedCornerShape(8.dp),
+            )
+            .clickable(onClick = onSwap)
+    }
+
+@Composable
+private fun MultiCameraTexture(
+    position: CameraPosition,
+    vm: PublisherViewModel,
+    modifier: Modifier = Modifier,
+) {
+    AndroidView(
+        modifier = modifier.background(Color.Black),
+        factory = { context ->
+            TextureView(context).apply {
+                val listener = object : TextureView.SurfaceTextureListener {
+                    private var surface: Surface? = null
+
+                    override fun onSurfaceTextureAvailable(
+                        texture: SurfaceTexture,
+                        width: Int,
+                        height: Int,
+                    ) {
+                        surface = Surface(texture).also {
+                            vm.setMultiCameraPreviewSurface(position, it)
+                        }
+                    }
+
+                    override fun onSurfaceTextureSizeChanged(
+                        texture: SurfaceTexture,
+                        width: Int,
+                        height: Int,
+                    ) = Unit
+
+                    override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+                        vm.setMultiCameraPreviewSurface(position, null)
+                        surface?.release()
+                        surface = null
+                        return true
+                    }
+
+                    override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
+                }
+
+                surfaceTextureListener = listener
+                if (isAvailable) {
+                    surfaceTexture?.let { listener.onSurfaceTextureAvailable(it, width, height) }
+                }
+            }
+        },
+    )
+}
+
+@Composable
 private fun SourceConfigCard(vm: PublisherViewModel) {
     Card {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -238,6 +373,20 @@ private fun SourceConfigCard(vm: PublisherViewModel) {
             ) {
                 Text("Camera", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                 Switch(checked = vm.cameraEnabled, onCheckedChange = { vm.cameraEnabled = it })
+            }
+            if (vm.cameraEnabled) {
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    CameraSourceMode.entries.forEachIndexed { i, mode ->
+                        val supported = mode != CameraSourceMode.MultiCamera || vm.isMultiCameraSupported
+                        SegmentedButton(
+                            selected = vm.cameraSourceMode == mode,
+                            onClick = { if (supported) vm.cameraSourceMode = mode },
+                            enabled = !vm.isPublishing && supported,
+                            shape = SegmentedButtonDefaults.itemShape(i, CameraSourceMode.entries.size),
+                            label = { Text(mode.label) },
+                        )
+                    }
+                }
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
