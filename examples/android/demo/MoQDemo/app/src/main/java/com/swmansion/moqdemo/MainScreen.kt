@@ -54,22 +54,22 @@ private enum class MoQDemo(
 }
 
 @Composable
-fun MainScreen() {
+fun MainScreen(relayUrls: MoQDemoRelayUrls) {
     var selectedDemo by remember { mutableStateOf<MoQDemo?>(null) }
 
     when (selectedDemo) {
         null -> DemoSelectionScreen(onDemoSelected = { selectedDemo = it })
         MoQDemo.Player -> {
             BackHandler { selectedDemo = null }
-            PlayerDemoScreen()
+            PlayerDemoScreen(initialRelayUrl = relayUrls.sharedRelayUrl)
         }
         MoQDemo.Chat -> {
             BackHandler { selectedDemo = null }
-            ChatDemoScreen()
+            ChatDemoScreen(initialRelayUrl = relayUrls.sharedRelayUrl)
         }
         MoQDemo.Publisher -> {
             BackHandler { selectedDemo = null }
-            PublisherDemoScreen()
+            PublisherDemoScreen(initialRelayUrl = relayUrls.sharedRelayUrl)
         }
     }
 }

@@ -50,7 +50,6 @@ class BroadcastEntry(catalog: Catalog) {
 }
 
 class PlayerDemoViewModel(application: Application) : AndroidViewModel(application) {
-    var relayUrl by mutableStateOf("http://192.168.92.140:4443/anon")
     var broadcastPath by mutableStateOf("")
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
@@ -61,11 +60,17 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     private val catalogJobs = mutableMapOf<String, Job>()
     private var subscription: BroadcastSubscription? = null
 
-    fun connect() {
+    fun connect(relayUrl: String) {
         stop()
 
+        val url = relayUrl.trim()
+        if (url.isEmpty()) {
+            sessionState = Session.State.Error("Relay URL is required")
+            return
+        }
+
         val s = Session(
-            url = relayUrl,
+            url = url,
             parentScope = viewModelScope,
         )
         session = s

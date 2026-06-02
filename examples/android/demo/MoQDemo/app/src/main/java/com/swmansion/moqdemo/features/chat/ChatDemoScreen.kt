@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,7 +45,11 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun ChatDemoScreen(vm: ChatDemoViewModel = viewModel()) {
+fun ChatDemoScreen(
+    initialRelayUrl: String,
+    vm: ChatDemoViewModel = viewModel(),
+) {
+    var relayUrl by rememberSaveable(initialRelayUrl) { mutableStateOf(initialRelayUrl) }
     var draftMessage by remember { mutableStateOf("") }
     val messagesListState = rememberLazyListState()
 
@@ -65,7 +70,11 @@ fun ChatDemoScreen(vm: ChatDemoViewModel = viewModel()) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 16.dp),
         ) {
-            ConnectionPanel(vm = vm)
+            ConnectionPanel(
+                vm = vm,
+                relayUrl = relayUrl,
+                onRelayUrlChange = { relayUrl = it },
+            )
         }
 
         LazyColumn(
@@ -101,15 +110,19 @@ fun ChatDemoScreen(vm: ChatDemoViewModel = viewModel()) {
 }
 
 @Composable
-private fun ConnectionPanel(vm: ChatDemoViewModel) {
+private fun ConnectionPanel(
+    vm: ChatDemoViewModel,
+    relayUrl: String,
+    onRelayUrlChange: (String) -> Unit,
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             OutlinedTextField(
-                value = vm.relayUrl,
-                onValueChange = { vm.relayUrl = it },
+                value = relayUrl,
+                onValueChange = onRelayUrlChange,
                 label = { Text("Relay URL") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -138,9 +151,9 @@ private fun ConnectionPanel(vm: ChatDemoViewModel) {
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
-                    onClick = { vm.connect() },
+                    onClick = { vm.connect(relayUrl) },
                     enabled = vm.canConnect &&
-                        vm.relayUrl.trim().isNotEmpty() &&
+                        relayUrl.trim().isNotEmpty() &&
                         vm.subscribePrefix.trim().isNotEmpty() &&
                         vm.publishPath.trim().isNotEmpty(),
                 ) {
