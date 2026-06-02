@@ -1,4 +1,5 @@
 [daemons.relay]
+env = { RUST_BACKTRACE = "full" }
 run = "mise run relay:run"
 
 [daemons.web]

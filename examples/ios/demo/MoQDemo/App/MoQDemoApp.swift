@@ -17,6 +17,7 @@ struct MoQDemoApp: App {
 
     init() {
         PublisherViewModel.configurePlaybackAudioSession()
+        KitLogger.setNativeLogLevel("trace")
     }
 
     var body: some Scene {
