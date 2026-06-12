@@ -10,10 +10,12 @@ import uniffi.moq.MoqAudio
 import uniffi.moq.MoqBroadcastConsumer
 import uniffi.moq.MoqCatalog
 import uniffi.moq.MoqCatalogConsumer
+import uniffi.moq.MoqException
 import uniffi.moq.MoqOriginConsumer
 import uniffi.moq.MoqVideo
 
 private const val TAG = "Broadcast"
+private const val REMOTE_NOT_FOUND_MESSAGE = "remote error: code=13"
 
 /**
  * A pair of pixel dimensions used to describe video resolution or display ratio.
@@ -207,7 +209,9 @@ class Broadcast internal constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (!owner.isClosed()) {
+            if (e.isCatalogNotFoundError()) {
+                Log.w(TAG, "Catalog not found for broadcast '$path'; ending catalog stream")
+            } else if (!owner.isClosed()) {
                 throw e
             }
         } finally {
@@ -400,6 +404,16 @@ internal class BroadcastOwner(
                 Log.w(TAG, "Failed to close broadcast '$path'", e)
             }
         }
+    }
+}
+
+internal fun Throwable.isCatalogNotFoundError(): Boolean {
+    if (this !is MoqException.Mux) return false
+
+    return when (message?.trim()) {
+        "moq: $REMOTE_NOT_FOUND_MESSAGE",
+        REMOTE_NOT_FOUND_MESSAGE -> true
+        else -> false
     }
 }
 
