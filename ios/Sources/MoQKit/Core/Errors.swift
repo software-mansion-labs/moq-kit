@@ -60,7 +60,9 @@ extension MoqError {
              .Reject(message: let value),
              .AlreadyResponded(message: let value),
              .Codec(message: let value),
+             .InvalidErrorCode(message: let value),
              .Unauthorized(message: let value),
+             .Forbidden(message: let value),
              .Log(message: let value):
             message = value
         }
