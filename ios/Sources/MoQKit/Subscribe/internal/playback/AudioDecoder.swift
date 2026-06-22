@@ -3,7 +3,7 @@ import AVFoundation
 
 // MARK: - AudioDecoder
 
-/// Decodes compressed audio (AAC/Opus) to PCM Float32 interleaved using `AVAudioConverter`.
+/// Decodes compressed audio (AAC/Opus) to non-interleaved Float32 PCM using `AVAudioConverter`.
 final class AudioDecoder: @unchecked Sendable {
     let outputFormat: AVAudioFormat
     let framesPerPacket: AVAudioFrameCount
