@@ -123,33 +123,39 @@ public struct Catalog: Sendable {
     /// Available audio renditions. Typically one or more language/codec variants.
     public let audioTracks: [AudioTrackInfo]
 
-    let broadcast: MoqBroadcastConsumer
+    let mediaSource: BroadcastMediaSource
 
-    init(path: String, catalog: MoqCatalog, broadcast: MoqBroadcastConsumer) {
+    init(
+        path: String,
+        catalog: MoqCatalog,
+        mediaSource: BroadcastMediaSource
+    ) {
         self.path = path
-        self.broadcast = broadcast
         self.videoTracks = catalog.video.map { name, rendition in
             VideoTrackInfo(name: name, config: rendition)
         }
         self.audioTracks = catalog.audio.map { name, rendition in
             AudioTrackInfo(name: name, config: rendition)
         }
+        self.mediaSource = mediaSource
     }
 }
 
 /// Live broadcast surfaced by a ``BroadcastSubscription``.
 ///
 /// Use ``catalogs()`` for media-track metadata, or ``subscribeTrack(name:delivery:)`` for
-/// raw MoQ object tracks such as chat, telemetry, or app-defined messages.
+/// raw MoQ object tracks such as chat, telemetry, or app-defined messages. Advanced callers
+/// that already know a media track's container can also use ``subscribeMedia(_:)`` directly.
 public struct Broadcast: Sendable {
     /// The relay path that identifies this broadcast (e.g. `"live/game1"`).
     public let path: String
 
-    let consumer: MoqBroadcastConsumer
+    let mediaSource: BroadcastMediaSource
+    var consumer: MoqBroadcastConsumer { mediaSource.consumer }
 
     init(path: String, consumer: MoqBroadcastConsumer) {
         self.path = path
-        self.consumer = consumer
+        self.mediaSource = BroadcastMediaSource(consumer: consumer)
     }
 
     /// Subscribes to a raw MoQ track by name.
@@ -165,6 +171,18 @@ public struct Broadcast: Sendable {
         delivery: TrackDelivery = .monotonic
     ) throws -> TrackSubscription {
         try TrackSubscription(broadcast: consumer, name: name, delivery: delivery)
+    }
+
+    /// Subscribes to a compressed MoQ media track by name and container.
+    ///
+    /// This does not require the track to appear in the broadcast catalog. Use this when your
+    /// app already knows the media track parameters. For catalog-advertised playback, prefer
+    /// ``Player``.
+    public func subscribeMedia(
+        _ request: MediaTrackRequest,
+        options: MediaTrackOptions = MediaTrackOptions()
+    ) throws -> MediaTrack {
+        try mediaSource.subscribeMedia(request, options: options)
     }
 
     /// Streams catalog updates for this broadcast.
@@ -192,7 +210,13 @@ public struct Broadcast: Sendable {
                             return
                         }
                         guard !Task.isCancelled else { return }
-                        continuation.yield(Catalog(path: self.path, catalog: catalog, broadcast: self.consumer))
+                        continuation.yield(
+                            Catalog(
+                                path: self.path,
+                                catalog: catalog,
+                                mediaSource: self.mediaSource
+                            )
+                        )
                     } catch MoqError.Cancelled {
                         return
                     } catch {
@@ -207,6 +231,30 @@ public struct Broadcast: Sendable {
                 task.cancel()
             }
         }
+    }
+}
+
+// MARK: - Broadcast Media Source
+
+final class BroadcastMediaSource: @unchecked Sendable {
+    let consumer: MoqBroadcastConsumer
+
+    private let mediaSubscriptions: MediaSubscriptionRegistry
+
+    init(consumer: MoqBroadcastConsumer) {
+        self.consumer = consumer
+        self.mediaSubscriptions = MediaSubscriptionRegistry(broadcast: consumer)
+    }
+
+    func subscribeMedia(
+        _ request: MediaTrackRequest,
+        options: MediaTrackOptions = MediaTrackOptions()
+    ) throws -> MediaTrack {
+        let media = try mediaSubscriptions.subscribeMedia(
+            request,
+            bufferingPolicy: options.bufferingPolicy
+        )
+        return MediaTrack(media: media, options: options)
     }
 }
 

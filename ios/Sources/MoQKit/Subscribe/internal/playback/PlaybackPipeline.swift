@@ -24,7 +24,7 @@ private struct PlaybackSubscriptions {
 /// The mode is determined by which of `audioRenderer` / `videoRenderer` is non-nil.
 /// Player resolves track selection up front, so the pipeline always has at least one half.
 final class PlaybackPipeline {
-    private let catalog: Catalog
+    private let mediaSource: BroadcastMediaSource
     private var targetBuffering: Duration
     private let tracker: PlaybackStatsTracker
     private let aligner: MediaTimestampAligner
@@ -45,7 +45,7 @@ final class PlaybackPipeline {
     private var pendingVideoCleanup: TrackIngestHandle?
 
     init(
-        catalog: Catalog,
+        mediaSource: BroadcastMediaSource,
         videoTrack: VideoTrackInfo?,
         audioTrack: AudioTrackInfo?,
         targetBuffering: Duration,
@@ -67,12 +67,12 @@ final class PlaybackPipeline {
             videoEpoch: initialVideoEpoch,
             audioTrack: audioTrack,
             audioEpoch: initialAudioEpoch,
-            catalog: catalog,
+            mediaSource: mediaSource,
             maxLatency: targetBuffering,
             tracker: tracker
         )
 
-        self.catalog = catalog
+        self.mediaSource = mediaSource
         self.targetBuffering = targetBuffering
         self.tracker = tracker
         self.aligner = aligner
@@ -194,11 +194,8 @@ final class PlaybackPipeline {
         tracker.emitSubscribeStart(kind: .video, trackName: track.name, trackEpoch: nextEpoch)
         let newSub: MediaTrack
         do {
-            newSub = try Self.makeMediaTrack(
-                name: track.name,
-                container: track.rawConfig.container,
-                catalog: catalog,
-                maxLatency: targetBuffering
+            newSub = try mediaSource.subscribeMedia(
+                MediaTrackRequest(track: track, targetBuffering: targetBuffering)
             )
         } catch {
             tracker.emitSubscribeError(
@@ -267,11 +264,8 @@ final class PlaybackPipeline {
         tracker.emitSubscribeStart(kind: .audio, trackName: track.name, trackEpoch: nextEpoch)
         let newSub: MediaTrack
         do {
-            newSub = try Self.makeMediaTrack(
-                name: track.name,
-                container: track.rawConfig.container,
-                catalog: catalog,
-                maxLatency: targetBuffering
+            newSub = try mediaSource.subscribeMedia(
+                MediaTrackRequest(track: track, targetBuffering: targetBuffering)
             )
         } catch {
             tracker.emitSubscribeError(
@@ -404,7 +398,7 @@ extension PlaybackPipeline {
         videoEpoch: TrackEpoch,
         audioTrack: AudioTrackInfo?,
         audioEpoch: TrackEpoch,
-        catalog: Catalog,
+        mediaSource: BroadcastMediaSource,
         maxLatency: Duration,
         tracker: PlaybackStatsTracker
     ) throws -> PlaybackSubscriptions {
@@ -422,11 +416,8 @@ extension PlaybackPipeline {
                 "Video track: \(videoTrack.name), codec=\(videoTrack.config.codec), config=\(videoTrack.config.debugDescription), container=\(videoTrack.rawConfig.container.moqKitDescription)"
             )
             do {
-                subscriptions.video = try makeMediaTrack(
-                    name: videoTrack.name,
-                    container: videoTrack.rawConfig.container,
-                    catalog: catalog,
-                    maxLatency: maxLatency
+                subscriptions.video = try mediaSource.subscribeMedia(
+                    MediaTrackRequest(track: videoTrack, targetBuffering: maxLatency)
                 )
             } catch {
                 if firstError == nil { firstError = error }
@@ -449,11 +440,8 @@ extension PlaybackPipeline {
                 "Audio track: \(audioTrack.name), config = \(audioTrack.config.debugDescription), container=\(audioTrack.rawConfig.container.moqKitDescription)"
             )
             do {
-                subscriptions.audio = try makeMediaTrack(
-                    name: audioTrack.name,
-                    container: audioTrack.rawConfig.container,
-                    catalog: catalog,
-                    maxLatency: maxLatency
+                subscriptions.audio = try mediaSource.subscribeMedia(
+                    MediaTrackRequest(track: audioTrack, targetBuffering: maxLatency)
                 )
             } catch {
                 if firstError == nil { firstError = error }
@@ -472,20 +460,6 @@ extension PlaybackPipeline {
             throw firstError
         }
         return subscriptions
-    }
-
-    fileprivate static func makeMediaTrack(
-        name: String,
-        container: Container,
-        catalog: Catalog,
-        maxLatency: Duration
-    ) throws -> MediaTrack {
-        try MediaTrack(
-            broadcast: catalog.broadcast,
-            name: name,
-            container: container,
-            maxLatencyMs: maxLatency.millisecondsUInt64Clamped
-        )
     }
 
     fileprivate static func playbackLatency(
@@ -520,41 +494,54 @@ extension PlaybackPipeline {
                 KitLogger.player.debug("Exited video reading task track=\(trackName), cancelled=\(Task.isCancelled)")
             }
 
-            for await frame in subscription.frames {
-                if Task.isCancelled { break }
-                if let gap = discontinuityGapUs(frame: frame, lastPtsUs: lastPtsUs) {
-                    KitLogger.player.debug("Video discontinuity detected (gap: \(gap)us)")
-                    frameObserver.onMediaDiscontinuity(kind: .video, gapUs: gap)
+            do {
+                for try await frame in subscription.frames {
+                    if Task.isCancelled { break }
+                    if let gap = discontinuityGapUs(frame: frame, lastPtsUs: lastPtsUs) {
+                        KitLogger.player.debug("Video discontinuity detected (gap: \(gap)us)")
+                        frameObserver.onMediaDiscontinuity(kind: .video, gapUs: gap)
+                    }
+                    lastPtsUs = frame.timestampUs
+
+                    frameObserver.onMediaFrame(kind: .video, frame: frame)
+
+                    let accepted = track.insert(
+                        payload: frame.payload,
+                        timestampUs: frame.timestampUs,
+                        keyframe: frame.keyframe
+                    )
+
+                    if accepted && firstAcceptedFrame {
+                        firstAcceptedFrame = false
+                        KitLogger.player.debug(
+                            "First video frame accepted track=\(trackName), timestampUs=\(frame.timestampUs), keyframe=\(frame.keyframe), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
+                        )
+                        tracker.emitTrackReady(
+                            kind: .video,
+                            trackName: trackName,
+                            trackEpoch: trackEpoch,
+                            sourceTimestampUs: frame.timestampUs,
+                            targetBuffering: targetBuffering,
+                            keyframe: frame.keyframe,
+                            payloadBytes: frame.payload.count
+                        )
+                    }
                 }
-                lastPtsUs = frame.timestampUs
-
-                frameObserver.onMediaFrame(kind: .video, frame: frame)
-
-                let accepted = track.insert(
-                    payload: frame.payload,
-                    timestampUs: frame.timestampUs,
-                    keyframe: frame.keyframe
+                if !Task.isCancelled {
+                    KitLogger.player.debug("Video track stream ended track=\(trackName)")
+                    tracker.emitSubscribeEnd(kind: .video, trackName: trackName, trackEpoch: trackEpoch)
+                }
+            } catch MoqError.Cancelled {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                KitLogger.player.error("Video track stream failed track=\(trackName): \(error)")
+                tracker.emitSubscribeError(
+                    kind: .video,
+                    trackName: trackName,
+                    message: error.localizedDescription,
+                    trackEpoch: trackEpoch
                 )
-
-                if accepted && firstAcceptedFrame {
-                    firstAcceptedFrame = false
-                    KitLogger.player.debug(
-                        "First video frame accepted track=\(trackName), timestampUs=\(frame.timestampUs), keyframe=\(frame.keyframe), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
-                    )
-                    tracker.emitTrackReady(
-                        kind: .video,
-                        trackName: trackName,
-                        trackEpoch: trackEpoch,
-                        sourceTimestampUs: frame.timestampUs,
-                        targetBuffering: targetBuffering,
-                        keyframe: frame.keyframe,
-                        payloadBytes: frame.payload.count
-                    )
-                }
-            }
-            if !Task.isCancelled {
-                KitLogger.player.debug("Video track stream ended track=\(trackName)")
-                tracker.emitSubscribeEnd(kind: .video, trackName: trackName, trackEpoch: trackEpoch)
             }
         }
     }
@@ -592,60 +579,73 @@ extension PlaybackPipeline {
                 KitLogger.player.debug("Exited audio reading task track=\(trackName), cancelled=\(Task.isCancelled)")
             }
 
-            for await frame in subscription.frames {
-                if Task.isCancelled { break }
-                do {
-                    if let gap = discontinuityGapUs(frame: frame, lastPtsUs: lastPtsUs) {
-                        KitLogger.player.debug(
-                            "Audio discontinuity detected (gap: \(gap)us), flushing")
-                        renderer.flush()
-                        frameObserver.onMediaDiscontinuity(kind: .audio, gapUs: gap)
-                    }
-                    lastPtsUs = frame.timestampUs
+            do {
+                for try await frame in subscription.frames {
+                    if Task.isCancelled { break }
+                    do {
+                        if let gap = discontinuityGapUs(frame: frame, lastPtsUs: lastPtsUs) {
+                            KitLogger.player.debug(
+                                "Audio discontinuity detected (gap: \(gap)us), flushing")
+                            renderer.flush()
+                            frameObserver.onMediaDiscontinuity(kind: .audio, gapUs: gap)
+                        }
+                        lastPtsUs = frame.timestampUs
 
-                    frameObserver.onMediaFrame(kind: .audio, frame: frame)
+                        frameObserver.onMediaFrame(kind: .audio, frame: frame)
 
-                    let pcm = try decoder.decode(payload: frame.payload)
-                    renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
+                        let pcm = try decoder.decode(payload: frame.payload)
+                        renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
 
-                    if firstFrame {
-                        firstFrame = false
-                        KitLogger.player.debug(
-                            "First audio frame decoded track=\(trackName), timestampUs=\(frame.timestampUs), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
-                        )
-                        renderer.expectPlaybackStart(
-                            trackName: trackName,
-                            sourceTimestampUs: frame.timestampUs,
-                            targetBuffering: targetBuffering,
-                            trackEpoch: trackEpoch
-                        )
-                        tracker.emitTrackReady(
+                        if firstFrame {
+                            firstFrame = false
+                            KitLogger.player.debug(
+                                "First audio frame decoded track=\(trackName), timestampUs=\(frame.timestampUs), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
+                            )
+                            renderer.expectPlaybackStart(
+                                trackName: trackName,
+                                sourceTimestampUs: frame.timestampUs,
+                                targetBuffering: targetBuffering,
+                                trackEpoch: trackEpoch
+                            )
+                            tracker.emitTrackReady(
+                                kind: .audio,
+                                trackName: trackName,
+                                trackEpoch: trackEpoch,
+                                sourceTimestampUs: frame.timestampUs,
+                                targetBuffering: targetBuffering,
+                                keyframe: frame.keyframe,
+                                payloadBytes: frame.payload.count
+                            )
+                            if trackEpoch > 1 {
+                                tracker.emitTrackSwitch(
+                                    kind: .audio, trackName: trackName, trackEpoch: trackEpoch
+                                )
+                            }
+                        }
+                    } catch {
+                        KitLogger.player.error("Audio decode error: \(error)")
+                        tracker.emitDecodeError(
                             kind: .audio,
                             trackName: trackName,
-                            trackEpoch: trackEpoch,
-                            sourceTimestampUs: frame.timestampUs,
-                            targetBuffering: targetBuffering,
-                            keyframe: frame.keyframe,
-                            payloadBytes: frame.payload.count
+                            message: error.localizedDescription
                         )
-                        if trackEpoch > 1 {
-                            tracker.emitTrackSwitch(
-                                kind: .audio, trackName: trackName, trackEpoch: trackEpoch
-                            )
-                        }
                     }
-                } catch {
-                    KitLogger.player.error("Audio decode error: \(error)")
-                    tracker.emitDecodeError(
-                        kind: .audio,
-                        trackName: trackName,
-                        message: error.localizedDescription
-                    )
                 }
-            }
-            if !Task.isCancelled {
-                KitLogger.player.debug("Audio track stream ended track=\(trackName)")
-                tracker.emitSubscribeEnd(kind: .audio, trackName: trackName, trackEpoch: trackEpoch)
+                if !Task.isCancelled {
+                    KitLogger.player.debug("Audio track stream ended track=\(trackName)")
+                    tracker.emitSubscribeEnd(kind: .audio, trackName: trackName, trackEpoch: trackEpoch)
+                }
+            } catch MoqError.Cancelled {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                KitLogger.player.error("Audio track stream failed track=\(trackName): \(error)")
+                tracker.emitSubscribeError(
+                    kind: .audio,
+                    trackName: trackName,
+                    message: error.localizedDescription,
+                    trackEpoch: trackEpoch
+                )
             }
         }
     }

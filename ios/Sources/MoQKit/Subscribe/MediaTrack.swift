@@ -1,6 +1,86 @@
 import Foundation
 import MoqFFI
 
+// MARK: - Media Container
+
+/// Container format used by a MoQ media track.
+///
+/// Catalog-advertised tracks provide this automatically via ``AudioTrackInfo`` and
+/// ``VideoTrackInfo``. Advanced callers can provide it directly when subscribing to a known
+/// media track that is not advertised in the catalog.
+public enum MediaContainer: Sendable, Equatable, Hashable {
+    /// Legacy MoQ media container.
+    case legacy
+    /// CMAF/fMP4 media container with the initialization segment bytes.
+    case cmaf(initializationData: Data)
+    /// LOC media container.
+    case loc
+
+    init(_ raw: Container) {
+        switch raw {
+        case .legacy:
+            self = .legacy
+        case .cmaf(let initializationData):
+            self = .cmaf(initializationData: initializationData)
+        case .loc:
+            self = .loc
+        }
+    }
+
+    var rawContainer: Container {
+        switch self {
+        case .legacy:
+            return .legacy
+        case .cmaf(let initializationData):
+            return .cmaf(init: initializationData)
+        case .loc:
+            return .loc
+        }
+    }
+}
+
+// MARK: - Media Track Request
+
+/// Parameters needed to subscribe to a MoQ media track.
+///
+/// Use this when subscribing to media by name from a ``Broadcast`` without relying on catalog
+/// metadata. When multiple consumers subscribe to the same track, the first subscriber creates
+/// the shared upstream subscription and chooses its ``targetBuffering``.
+public struct MediaTrackRequest: Sendable, Equatable {
+    /// Track name on the broadcast.
+    public let name: String
+    /// Track container format.
+    public let container: MediaContainer
+    /// Target live buffering depth for the upstream media subscription.
+    public let targetBuffering: Duration
+
+    public init(
+        name: String,
+        container: MediaContainer,
+        targetBuffering: Duration = .milliseconds(100)
+    ) {
+        self.name = name
+        self.container = container
+        self.targetBuffering = targetBuffering
+    }
+
+    init(track: AudioTrackInfo, targetBuffering: Duration) {
+        self.init(
+            name: track.name,
+            container: MediaContainer(track.rawConfig.container),
+            targetBuffering: targetBuffering
+        )
+    }
+
+    init(track: VideoTrackInfo, targetBuffering: Duration) {
+        self.init(
+            name: track.name,
+            container: MediaContainer(track.rawConfig.container),
+            targetBuffering: targetBuffering
+        )
+    }
+}
+
 // MARK: - MediaFrame
 
 /// A single compressed media frame received from the relay.
@@ -29,6 +109,39 @@ public struct MediaFrame: Sendable {
     }
 }
 
+// MARK: - Media Track Options
+
+/// Buffering behavior for frames emitted by a ``MediaTrack``.
+public enum MediaTrackBufferingPolicy: Sendable, Equatable {
+    /// Buffers every frame until the consumer reads it.
+    case unbounded
+    /// Keeps only the newest `limit` frames when the consumer falls behind.
+    ///
+    /// Non-positive limits are treated as `1`.
+    case bufferingNewest(Int)
+
+    var streamPolicy: AsyncThrowingStream<MediaFrame, Error>.Continuation.BufferingPolicy {
+        switch self {
+        case .unbounded:
+            return .unbounded
+        case .bufferingNewest(let limit):
+            return .bufferingNewest(max(1, limit))
+        }
+    }
+}
+
+/// Options for subscribing to a compressed media track.
+public struct MediaTrackOptions: Sendable, Equatable {
+    /// Buffering behavior for delivered frames.
+    public let bufferingPolicy: MediaTrackBufferingPolicy
+
+    public init(
+        bufferingPolicy: MediaTrackBufferingPolicy = .unbounded
+    ) {
+        self.bufferingPolicy = bufferingPolicy
+    }
+}
+
 // MARK: - Track State
 
 /// The lifecycle state of a ``MediaTrack``.
@@ -51,29 +164,30 @@ public enum MediaTrackState: Sendable, Equatable {
 /// your own decoder or processing pipeline. In most apps, use ``Player`` instead, because
 /// it manages subscriptions, decoding, buffering, and rendering for you.
 ///
-/// Both ``frames`` and ``state`` are `AsyncStream`s that complete when the track ends or when
-/// ``close()`` is called.
+/// ``frames`` is an `AsyncThrowingStream` that completes when the track ends or throws when
+/// the underlying media subscription fails. ``state`` mirrors the same lifecycle for consumers
+/// that prefer state events.
 public final class MediaTrack: @unchecked Sendable {
     /// A stream of raw media frames as they arrive from the relay.
-    public let frames: AsyncStream<MediaFrame>
+    public let frames: AsyncThrowingStream<MediaFrame, Error>
     /// A stream of ``MediaTrackState`` transitions. Always yields `.idle` as its first element.
     public let state: AsyncStream<MediaTrackState>
 
-    private let track: MoqMediaConsumer
-    private let framesContinuation: AsyncStream<MediaFrame>.Continuation
+    private let media: MediaFrameStream
+    private let framesContinuation: AsyncThrowingStream<MediaFrame, Error>.Continuation
     private let stateContinuation: AsyncStream<MediaTrackState>.Continuation
     private var readTask: Task<Void, Never>?
 
     init(
-        broadcast: MoqBroadcastConsumer, name: String, container: Container,
-        maxLatencyMs: UInt64
-    ) throws {
-        let track = try broadcast.subscribeMedia(name: name, container: container, maxLatencyMs: maxLatencyMs)
+        media: MediaFrameStream,
+        options: MediaTrackOptions = MediaTrackOptions()
+    ) {
+        self.media = media
 
-        self.track = track
-
-        var framesCont: AsyncStream<MediaFrame>.Continuation!
-        let framesStream = AsyncStream<MediaFrame> { framesCont = $0 }
+        var framesCont: AsyncThrowingStream<MediaFrame, Error>.Continuation!
+        let framesStream = AsyncThrowingStream<MediaFrame, Error>(
+            bufferingPolicy: options.bufferingPolicy.streamPolicy
+        ) { framesCont = $0 }
 
         var stateCont: AsyncStream<MediaTrackState>.Continuation!
         let stateStream = AsyncStream<MediaTrackState> { stateCont = $0 }
@@ -87,25 +201,32 @@ public final class MediaTrack: @unchecked Sendable {
 
         readTask = Task.detached {
             var isFirstFrame = true
+            var didFinishFrames = false
             defer {
-                framesCont.finish()
+                if !didFinishFrames {
+                    framesCont.finish()
+                }
                 stateCont.finish()
             }
 
-            while !Task.isCancelled {
-                do {
-                    guard let frame = try await track.next() else {
-                        stateCont.yield(.closed)
-                        return
-                    }
+            do {
+                for try await frame in media.frames {
+                    guard !Task.isCancelled else { return }
                     if isFirstFrame {
                         stateCont.yield(.active)
                         isFirstFrame = false
                     }
-                    framesCont.yield(MediaFrame(frame))
-                } catch {
+                    framesCont.yield(frame)
+                }
+
+                if !Task.isCancelled {
+                    stateCont.yield(.closed)
+                }
+            } catch {
+                if !Task.isCancelled {
                     stateCont.yield(.error(error.localizedDescription))
-                    return
+                    framesCont.finish(throwing: error)
+                    didFinishFrames = true
                 }
             }
         }
@@ -115,7 +236,7 @@ public final class MediaTrack: @unchecked Sendable {
     ///
     /// Safe to call multiple times.
     public func close() {
-        track.cancel()
+        media.close()
         readTask?.cancel()
         readTask = nil
         // Do not yield .closed here — the read task's defer handles that on a normal
@@ -125,7 +246,7 @@ public final class MediaTrack: @unchecked Sendable {
     }
 
     deinit {
-        track.cancel()
+        media.close()
         readTask?.cancel()
         stateContinuation.finish()
         framesContinuation.finish()

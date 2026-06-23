@@ -19,6 +19,32 @@ final class AudioDataStreamTests: XCTestCase {
 
         XCTAssertEqual(timestamps, [2, 3, 4])
     }
+
+    func testAudioTrackRequestBuildsDecoderConfig() {
+        let codecDescription = Data([0x11, 0x22])
+        let initializationData = Data([0x01, 0x02, 0x03])
+        let request = AudioTrackRequest(
+            name: "known-audio",
+            container: .cmaf(initializationData: initializationData),
+            codec: "opus",
+            codecDescription: codecDescription,
+            sampleRate: 48_000,
+            channelCount: 2,
+            bitrate: 96_000,
+            targetBuffering: .milliseconds(250)
+        )
+
+        let raw = request.rawConfig
+        XCTAssertEqual(request.media.name, "known-audio")
+        XCTAssertEqual(request.media.container, .cmaf(initializationData: initializationData))
+        XCTAssertEqual(request.media.targetBuffering, .milliseconds(250))
+        XCTAssertEqual(raw.codec, "opus")
+        XCTAssertEqual(raw.description, codecDescription)
+        XCTAssertEqual(raw.sampleRate, 48_000)
+        XCTAssertEqual(raw.channelCount, 2)
+        XCTAssertEqual(raw.bitrate, 96_000)
+        XCTAssertEqual(raw.container, .cmaf(init: initializationData))
+    }
 }
 
 final class AudioDataConverterTests: XCTestCase {
