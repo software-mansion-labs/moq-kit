@@ -159,8 +159,8 @@ public struct TrackSwitch: Sendable {
 
 /// Adaptive real-time player for MoQ media streams.
 ///
-/// `Player` subscribes to one or two tracks from a ``Catalog`` (one video and/or one
-/// audio track), decodes the incoming frames, and renders them in sync:
+/// `Player` subscribes to one or two tracks from a ``Catalog`` (one video and/or one audio
+/// track), decodes the incoming frames, and renders them in sync:
 ///
 /// - Video frames are rendered into ``videoLayer`` — an `AVSampleBufferDisplayLayer` you can
 ///   embed in any `UIView` or `CALayer` hierarchy.
@@ -206,12 +206,14 @@ public final class Player {
     /// Creates a player for the given catalog and selected track names.
     ///
     /// - Parameters:
-    ///   - catalog: The catalog to play.
+    ///   - catalog: The catalog whose media tracks should be played.
     ///   - videoTrackName: The selected video track name, or `nil` to disable video.
     ///   - audioTrackName: The selected audio track name, or `nil` to disable audio.
     ///   - targetBuffering: Target playback delay. Higher values improve
     ///     resilience to network jitter at the cost of increased end-to-end latency. Defaults
-    ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(_:)``.
+    ///     to 100 ms. Can be adjusted live via ``updateTargetLatency(_:)``. If another
+    ///     consumer already subscribed to a selected track from the same catalog source, the existing
+    ///     shared media subscription's upstream latency is reused.
     ///   - volume: Initial per-player audio output volume, clamped to `0...1`.
     /// - Throws: ``SessionError/noTracksSelected`` if both media types are disabled.
     /// - Throws: ``SessionError/invalidConfiguration(_:)`` if a requested track name does
@@ -487,7 +489,7 @@ public final class Player {
             throw SessionError.noTracksSelected
         }
         return try PlaybackPipeline(
-            catalog: catalog,
+            mediaSource: catalog.mediaSource,
             videoTrack: selectedVideoTrack,
             audioTrack: selectedAudioTrack,
             targetBuffering: targetBuffering,

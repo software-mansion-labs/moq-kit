@@ -12,6 +12,93 @@ public enum AudioSampleFormat: Sendable, Equatable {
     case int16
 }
 
+// MARK: - Audio Track Request
+
+/// Parameters needed to subscribe to and decode a MoQ audio track.
+///
+/// Catalog-advertised tracks provide these values through ``AudioTrackInfo``. Advanced callers
+/// can provide them directly when subscribing to an audio track that is not listed in the
+/// catalog.
+public struct AudioTrackRequest: Sendable, Equatable {
+    /// Compressed media subscription parameters.
+    public let media: MediaTrackRequest
+    /// Audio codec identifier, such as `"opus"` or `"mp4a.40.2"`.
+    public let codec: String
+    /// Optional codec description/magic cookie bytes.
+    public let codecDescription: Data?
+    /// Source audio sample rate in Hz.
+    public let sampleRate: UInt32
+    /// Source audio channel count.
+    public let channelCount: UInt32
+    /// Optional advertised bitrate in bits per second.
+    public let bitrate: UInt64?
+
+    public init(
+        media: MediaTrackRequest,
+        codec: String,
+        codecDescription: Data? = nil,
+        sampleRate: UInt32,
+        channelCount: UInt32,
+        bitrate: UInt64? = nil
+    ) {
+        self.media = media
+        self.codec = codec
+        self.codecDescription = codecDescription
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.bitrate = bitrate
+    }
+
+    public init(
+        name: String,
+        container: MediaContainer,
+        codec: String,
+        codecDescription: Data? = nil,
+        sampleRate: UInt32,
+        channelCount: UInt32,
+        bitrate: UInt64? = nil,
+        targetBuffering: Duration = .milliseconds(100)
+    ) {
+        self.init(
+            media: MediaTrackRequest(
+                name: name,
+                container: container,
+                targetBuffering: targetBuffering
+            ),
+            codec: codec,
+            codecDescription: codecDescription,
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            bitrate: bitrate
+        )
+    }
+
+    init(track: AudioTrackInfo, targetBuffering: Duration) {
+        let raw = track.rawConfig
+        self.init(
+            name: track.name,
+            container: MediaContainer(raw.container),
+            codec: raw.codec,
+            codecDescription: raw.description,
+            sampleRate: raw.sampleRate,
+            channelCount: raw.channelCount,
+            bitrate: raw.bitrate,
+            targetBuffering: targetBuffering
+        )
+    }
+
+    var rawConfig: MoqAudio {
+        MoqAudio(
+            codec: codec,
+            description: codecDescription,
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            bitrate: bitrate,
+            container: media.container.rawContainer
+        )
+    }
+}
+
 // MARK: - Audio Data Format
 
 /// Requested PCM format for ``AudioDataStream`` output.
@@ -57,10 +144,12 @@ public struct AudioData: Sendable, Equatable {
 
 // MARK: - Audio Data Stream
 
-/// Subscribes to one catalog audio track and emits decoded PCM chunks.
+/// Subscribes to one audio media track and emits decoded PCM chunks.
 ///
 /// `AudioDataStream` is independent from ``Player`` and is intended for apps that want to
-/// process audio instead of rendering it.
+/// process audio instead of rendering it. When used alongside ``Player`` with the same catalog
+/// audio track, MoQKit shares the compressed media subscription and each consumer decodes
+/// independently.
 public final class AudioDataStream: @unchecked Sendable {
     /// Decoded PCM chunks.
     ///
@@ -72,7 +161,7 @@ public final class AudioDataStream: @unchecked Sendable {
 
     private static let bufferedAudioDataLimit = 3
     private let lock = UnfairLock()
-    private let consumer: MoqMediaConsumer
+    private let track: MediaTrack
     private let continuation: AsyncThrowingStream<AudioData, Error>.Continuation
     private var readTask: Task<Void, Never>?
     private var closed = false
@@ -80,43 +169,81 @@ public final class AudioDataStream: @unchecked Sendable {
     /// Creates a decoded audio stream for an advertised catalog audio track.
     ///
     /// - Parameters:
-    ///   - catalog: Catalog that advertised `track`.
+    ///   - catalog: Catalog that owns the media subscription.
     ///   - track: Audio track to subscribe to and decode.
     ///   - format: Requested PCM output format. Defaults to source-rate Float32 PCM.
     ///   - targetBuffering: Target live buffering depth. Higher values improve resilience to
-    ///     network jitter at the cost of increased end-to-end latency.
-    public init(
+    ///     network jitter at the cost of increased end-to-end latency. If another consumer
+    ///     already subscribed to this track from the same catalog source, the existing shared media
+    ///     subscription's upstream latency is reused.
+    public convenience init(
         catalog: Catalog,
         track: AudioTrackInfo,
         format: AudioDataFormat = AudioDataFormat(),
         targetBuffering: Duration = .milliseconds(100)
     ) throws {
+        guard let catalogTrack = catalog.audioTracks.first(where: { $0.name == track.name }) else {
+            throw SessionError.invalidConfiguration(
+                "Unknown audio track '\(track.name)' for catalog '\(catalog.path)'"
+            )
+        }
+        try self.init(
+            mediaSource: catalog.mediaSource,
+            track: AudioTrackRequest(track: catalogTrack, targetBuffering: targetBuffering),
+            format: format
+        )
+    }
+
+    /// Creates a decoded audio stream for a known audio track on a broadcast.
+    ///
+    /// Use this when the audio track is not advertised in the catalog but the app knows the
+    /// track name, container, codec, and source audio parameters.
+    public convenience init(
+        broadcast: Broadcast,
+        track: AudioTrackRequest,
+        format: AudioDataFormat = AudioDataFormat()
+    ) throws {
+        try self.init(mediaSource: broadcast.mediaSource, track: track, format: format)
+    }
+
+    private init(
+        mediaSource: BroadcastMediaSource,
+        track: AudioTrackRequest,
+        format: AudioDataFormat
+    ) throws {
+        guard track.sampleRate > 0 else {
+            throw SessionError.invalidConfiguration("Audio track sample rate must be greater than zero")
+        }
+        guard track.channelCount > 0 else {
+            throw SessionError.invalidConfiguration("Audio track channel count must be greater than zero")
+        }
+
         let decoder = try AudioDecoder(config: track.rawConfig)
         let converter = try AudioDataConverter(
             sourceFormat: decoder.outputFormat,
             requestedFormat: format
         )
-        let consumer = try catalog.broadcast.subscribeMedia(
-            name: track.name,
-            container: track.rawConfig.container,
-            maxLatencyMs: targetBuffering.millisecondsUInt64Clamped
+        let mediaTrack = try mediaSource.subscribeMedia(
+            track.media,
+            options: MediaTrackOptions(
+                bufferingPolicy: .bufferingNewest(Self.bufferedAudioDataLimit)
+            )
         )
 
         let audioStream = Self.makeBufferedAudioStream()
         let audioContinuation = audioStream.continuation
         self.audio = audioStream.stream
-        self.consumer = consumer
+        self.track = mediaTrack
         self.continuation = audioContinuation
 
         self.readTask = Task.detached {
             defer {
-                consumer.cancel()
+                mediaTrack.close()
                 audioContinuation.finish()
             }
 
-            while !Task.isCancelled {
-                do {
-                    guard let frame = try await consumer.next() else { return }
+            do {
+                for try await frame in mediaTrack.frames {
                     guard !Task.isCancelled else { return }
 
                     let pcm = try decoder.decode(payload: frame.payload)
@@ -125,12 +252,12 @@ public final class AudioDataStream: @unchecked Sendable {
                         timestampUs: frame.timestampUs
                     )
                     audioContinuation.yield(audioData)
-                } catch MoqError.Cancelled {
-                    return
-                } catch {
-                    audioContinuation.finish(throwing: error)
-                    return
                 }
+            } catch MoqError.Cancelled {
+                return
+            } catch {
+                audioContinuation.finish(throwing: error)
+                return
             }
         }
 
@@ -176,7 +303,7 @@ public final class AudioDataStream: @unchecked Sendable {
         }
 
         guard shouldClose else { return }
-        consumer.cancel()
+        track.close()
         taskToCancel?.cancel()
         continuation.finish()
     }
