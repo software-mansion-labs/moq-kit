@@ -204,8 +204,19 @@ public final class AudioDataStream: @unchecked Sendable {
 
 // MARK: - Audio Data Converter
 
+/// Normalizes decoder output into the public ``AudioData`` byte layout.
+///
+/// `AudioDecoder` produces non-interleaved Float32 PCM because that is the format
+/// AVFoundation playback internals consume. This converter optionally resamples or remaps
+/// channels while staying in non-interleaved Float32 PCM, then serializes the final buffer
+/// into the interleaved bytes exposed on ``AudioData/bytes``.
 final class AudioDataConverter: @unchecked Sendable {
     private let sampleFormat: AudioSampleFormat
+    /// Intermediate processing format used before byte serialization.
+    ///
+    /// This stays non-interleaved Float32 even when the caller requests Int16 output. Keeping a
+    /// single internal PCM representation means resampling/channel conversion and final sample
+    /// packing are separate steps.
     private let processingFormat: AVAudioFormat
     private let converter: AVAudioConverter?
 
@@ -220,6 +231,8 @@ final class AudioDataConverter: @unchecked Sendable {
         let sampleRate = requestedFormat.sampleRate ?? sourceFormat.sampleRate
         let channelCount = requestedFormat.channelCount ?? UInt32(sourceFormat.channelCount)
 
+        // AVAudioConverter handles resampling and channel mapping. The final interleaved
+        // public layout is produced below when packing the AVAudioPCMBuffer into Data.
         guard
             let processingFormat = AVAudioFormat(
                 commonFormat: .pcmFormatFloat32,
@@ -244,6 +257,11 @@ final class AudioDataConverter: @unchecked Sendable {
         }
     }
 
+    /// Converts one decoded PCM buffer into one ``AudioData`` chunk.
+    ///
+    /// The incoming buffer is expected to match the decoder's non-interleaved Float32 output
+    /// format. The returned bytes are always interleaved, with the sample representation chosen
+    /// by ``AudioDataFormat/sampleFormat``.
     func convert(_ sourceBuffer: AVAudioPCMBuffer, timestampUs: UInt64) throws -> AudioData {
         let outputBuffer = try convertFormatIfNeeded(sourceBuffer)
         let bytes: Data
@@ -265,6 +283,10 @@ final class AudioDataConverter: @unchecked Sendable {
         )
     }
 
+    /// Applies optional sample-rate or channel-count conversion.
+    ///
+    /// If the caller kept the source format, this returns the original buffer so we avoid an
+    /// unnecessary AVAudioConverter pass.
     private func convertFormatIfNeeded(_ sourceBuffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
         guard let converter else { return sourceBuffer }
 
@@ -308,6 +330,7 @@ final class AudioDataConverter: @unchecked Sendable {
         return outputBuffer
     }
 
+    /// Serializes planar Float32 PCM into frame-interleaved Float32 bytes.
     private static func float32InterleavedBytes(from buffer: AVAudioPCMBuffer) throws -> Data {
         let channelCount = Int(buffer.format.channelCount)
         let frameCount = Int(buffer.frameLength)
@@ -328,6 +351,7 @@ final class AudioDataConverter: @unchecked Sendable {
         return data
     }
 
+    /// Serializes planar Float32 PCM into frame-interleaved signed 16-bit PCM bytes.
     private static func int16InterleavedBytes(from buffer: AVAudioPCMBuffer) throws -> Data {
         let channelCount = Int(buffer.format.channelCount)
         let frameCount = Int(buffer.frameLength)
@@ -353,6 +377,7 @@ final class AudioDataConverter: @unchecked Sendable {
 }
 
 private extension Data {
+    /// Appends integer sample bits in a deterministic PCM byte order.
     mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
         var littleEndian = value.littleEndian
         Swift.withUnsafeBytes(of: &littleEndian) { bytes in
