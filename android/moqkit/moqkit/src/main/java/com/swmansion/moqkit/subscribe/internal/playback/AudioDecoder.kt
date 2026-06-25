@@ -19,6 +19,7 @@ private const val TAG = "AudioDecoder"
 internal class AudioDecoder(
     format: MediaFormat,
     private val onDecoded: (pcmData: ShortArray, frameCount: Int, timestampUs: Long) -> Unit,
+    private val onError: (Throwable) -> Unit = {},
 ) {
     private val codec: MediaCodec
     private val handlerThread = HandlerThread("AudioDecoder").apply { start() }
@@ -60,6 +61,9 @@ internal class AudioDecoder(
                 if (released) return
                 try {
                     val outBuf = codec.getOutputBuffer(index) ?: return
+                    if (info.size <= 0) return
+                    outBuf.position(info.offset)
+                    outBuf.limit(info.offset + info.size)
                     outBuf.order(ByteOrder.nativeOrder())
                     val shortBuf = outBuf.asShortBuffer()
                     val sampleCount = info.size / 2 // 16-bit samples
@@ -70,6 +74,7 @@ internal class AudioDecoder(
                 } catch (e: Exception) {
                     if (!released) {
                         Log.e(TAG, "Error processing output buffer: $e")
+                        onError(e)
                     }
                 } finally {
                     releaseOutputBuffer(codec, index)
@@ -79,6 +84,7 @@ internal class AudioDecoder(
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
                 if (released) return
                 Log.e(TAG, "MediaCodec error: $e")
+                onError(e)
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
@@ -127,6 +133,7 @@ internal class AudioDecoder(
         } catch (e: Exception) {
             if (!released) {
                 Log.e(TAG, "Error flushing codec: $e")
+                onError(e)
             }
         }
     }
@@ -159,6 +166,7 @@ internal class AudioDecoder(
         } catch (e: Exception) {
             if (!released) {
                 Log.e(TAG, "Error filling input buffer: $e")
+                onError(e)
             }
         }
     }
@@ -170,6 +178,7 @@ internal class AudioDecoder(
         } catch (e: Exception) {
             if (!released) {
                 Log.e(TAG, "Error releasing output buffer: $e")
+                onError(e)
             }
         }
     }

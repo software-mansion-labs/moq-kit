@@ -92,25 +92,28 @@ internal class AudioRenderer(
         val format = AudioMediaFormatFactory.from(config)
             ?: throw IllegalStateException("Unsupported audio codec: ${config.codec}")
 
-        decoder = AudioDecoder(format) { pcmData, frameCount, timestampUs ->
-            var readyContext: TrackReadyContext? = null
-            lock.withLock {
-                // Seed the audio clock from the first decoded frame.
-                if (clock.currentTimeUs == 0L) {
-                    clock.setCurrentTimeUs(timestampUs)
+        decoder = AudioDecoder(
+            format = format,
+            onDecoded = { pcmData, frameCount, timestampUs ->
+                var readyContext: TrackReadyContext? = null
+                lock.withLock {
+                    // Seed the audio clock from the first decoded frame.
+                    if (clock.currentTimeUs == 0L) {
+                        clock.setCurrentTimeUs(timestampUs)
+                    }
+                    val discarded = ringBuffer.write(timestampUs, pcmData, frameCount)
+                    metrics?.recordAudioFramesDropped(discarded)
+                    readyContext = pendingReadyContext
+                    pendingReadyContext = null
                 }
-                val discarded = ringBuffer.write(timestampUs, pcmData, frameCount)
-                metrics?.recordAudioFramesDropped(discarded)
-                readyContext = pendingReadyContext
-                pendingReadyContext = null
-            }
-            readyContext?.let { context ->
-                metrics?.emitTrackReady(context)
-                if (context.trackEpoch > 1L) {
-                    metrics?.emitTrackSwitch(MediaFrameKind.AUDIO, context.trackName, context.trackEpoch)
+                readyContext?.let { context ->
+                    metrics?.emitTrackReady(context)
+                    if (context.trackEpoch > 1L) {
+                        metrics?.emitTrackSwitch(MediaFrameKind.AUDIO, context.trackName, context.trackEpoch)
+                    }
                 }
-            }
-        }
+            },
+        )
         decoder!!.start()
 
         // Start playback thread
