@@ -777,7 +777,12 @@ internal class VideoRenderer(
         if (mediaClock.isVideoDriven) {
             return if (timelineStarted) currentPlaybackTimeUs() else null
         }
-        return mediaClock.currentTimeUs.takeIf { it > 0L }
+        val clockUs = mediaClock.currentTimeUs.takeIf { it > 0L } ?: return null
+
+        // Keep the audio-driven clock from advancing past the video playhead, so a clock that has
+        // drifted ahead of the video timeline can't strand every frame as "late" and freeze video.
+        val videoPlayheadUs = activeTrack.targetPlaybackPTS()?.let(::audioTime)
+        return clampSchedulingClockToVideoPlayhead(clockUs, videoPlayheadUs)
     }
 
     private fun currentPlaybackTimeUs(): Long {
