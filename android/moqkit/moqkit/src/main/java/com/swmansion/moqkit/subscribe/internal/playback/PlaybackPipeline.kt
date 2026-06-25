@@ -4,15 +4,16 @@ import android.util.Log
 import android.view.Surface
 import com.swmansion.moqkit.subscribe.AudioTrackInfo
 import com.swmansion.moqkit.subscribe.BroadcastOwner
-import com.swmansion.moqkit.subscribe.Catalog
+import com.swmansion.moqkit.subscribe.MediaFrame
+import com.swmansion.moqkit.subscribe.MediaTrackRequest
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
-import com.swmansion.moqkit.subscribe.internal.subscribeTrack
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import uniffi.moq.MoqFrame
 import java.time.Duration
 
 private const val TAG = "PlaybackPipeline"
@@ -32,7 +33,6 @@ internal enum class PlaybackPipelineSwitchOutcome {
  * - video only: the video renderer drives a wall-clock-backed timeline
  */
 internal class PlaybackPipeline(
-    private val catalog: Catalog,
     private val broadcastOwner: BroadcastOwner,
     videoTrack: VideoTrackInfo?,
     audioTrack: AudioTrackInfo?,
@@ -223,9 +223,15 @@ internal class PlaybackPipeline(
             clock = audioClock,
         )
         audioRenderer = renderer
-        renderer.start()
-        statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, audioInfo.name, audioEpoch)
-        audioIngestJob = launchAudioIngestJob(audioInfo, renderer, audioEpoch)
+        try {
+            renderer.start()
+            statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, audioInfo.name, audioEpoch)
+            audioIngestJob = launchAudioIngestJob(audioInfo, renderer, audioEpoch)
+        } catch (t: Throwable) {
+            renderer.stop()
+            audioRenderer = null
+            throw t
+        }
     }
 
     private fun startVideo(surface: Surface) {
@@ -252,9 +258,15 @@ internal class PlaybackPipeline(
             onError = ::handleVideoRendererError,
         )
         videoRenderer = renderer
-        renderer.start()
-        statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, videoInfo.name, videoEpoch)
-        videoIngestJob = launchVideoIngestJob(videoInfo, track, videoEpoch)
+        try {
+            renderer.start()
+            statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, videoInfo.name, videoEpoch)
+            videoIngestJob = launchVideoIngestJob(videoInfo, track, videoEpoch)
+        } catch (t: Throwable) {
+            renderer.stop()
+            videoRenderer = null
+            throw t
+        }
     }
 
     private fun launchAudioIngestJob(
@@ -262,11 +274,8 @@ internal class PlaybackPipeline(
         renderer: AudioRenderer,
         trackEpoch: Long,
     ): Job {
-        val audioFlow = subscribeTrack(
-            broadcastOwner.consumer(),
-            audioInfo.name,
-            audioInfo.rawConfig.container,
-            targetBuffering.toMillisecondsLongClamped().toULong(),
+        val audioTrack = broadcastOwner.subscribeMedia(
+            MediaTrackRequest(track = audioInfo, targetBuffering = targetBuffering),
         )
 
         return scope.launch {
@@ -274,8 +283,8 @@ internal class PlaybackPipeline(
             var lastPtsUs: Long? = null
             try {
                 frameObserver.onMediaTrackStarted(MediaFrameKind.AUDIO)
-                audioFlow.collect { frame ->
-                    val timestampUs = frame.timestampUs.toLong()
+                audioTrack.frames.collect { frame ->
+                    val timestampUs = frame.timestampUs
                     val previousPtsUs = lastPtsUs
                     if (isDiscontinuity(timestampUs, previousPtsUs, keyframe = true)) {
                         val gapUs = timestampGapUs(timestampUs, requireNotNull(previousPtsUs))
@@ -285,7 +294,7 @@ internal class PlaybackPipeline(
                     }
                     lastPtsUs = timestampUs
 
-                    frameObserver.onMediaFrame(frame, MediaFrameKind.AUDIO)
+                    frameObserver.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.AUDIO)
                     if (firstFrame) {
                         firstFrame = false
                         Log.d(TAG, "First audio frame received track='${audioInfo.name}' epoch=$trackEpoch")
@@ -315,6 +324,8 @@ internal class PlaybackPipeline(
                     e.message ?: "Unknown error",
                     trackEpoch,
                 )
+            } finally {
+                audioTrack.close()
             }
         }
     }
@@ -325,11 +336,8 @@ internal class PlaybackPipeline(
         trackEpoch: Long,
     ): Job {
         Log.d(TAG, "Subscribing to video track '${videoInfo.name}'")
-        val videoFlow = subscribeTrack(
-            broadcastOwner.consumer(),
-            videoInfo.name,
-            videoInfo.rawConfig.container,
-            targetBuffering.toMillisecondsLongClamped().toULong(),
+        val videoMediaTrack = broadcastOwner.subscribeMedia(
+            MediaTrackRequest(track = videoInfo, targetBuffering = targetBuffering),
         )
 
         return scope.launch {
@@ -337,8 +345,8 @@ internal class PlaybackPipeline(
             var lastPtsUs: Long? = null
             try {
                 frameObserver.onMediaTrackStarted(MediaFrameKind.VIDEO)
-                videoFlow.collect { frame ->
-                    val timestampUs = frame.timestampUs.toLong()
+                videoMediaTrack.frames.collect { frame ->
+                    val timestampUs = frame.timestampUs
                     val previousPtsUs = lastPtsUs
                     if (isDiscontinuity(timestampUs, previousPtsUs, frame.keyframe)) {
                         val gapUs = timestampGapUs(timestampUs, requireNotNull(previousPtsUs))
@@ -347,7 +355,7 @@ internal class PlaybackPipeline(
                     }
                     lastPtsUs = timestampUs
 
-                    frameObserver.onMediaFrame(frame, MediaFrameKind.VIDEO)
+                    frameObserver.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.VIDEO)
                     val accepted = track.insert(frame.payload, timestampUs, frame.keyframe)
 
                     if (accepted && firstFrame) {
@@ -378,6 +386,8 @@ internal class PlaybackPipeline(
                     e.message ?: "Unknown error",
                     trackEpoch,
                 )
+            } finally {
+                videoMediaTrack.close()
             }
         }
     }
@@ -500,3 +510,10 @@ private class TrackIngestHandle(
         jobToCancel?.cancel()
     }
 }
+
+private fun MediaFrame.toMoqFrame(): MoqFrame =
+    MoqFrame(
+        payload = payload,
+        timestampUs = timestampUs.coerceAtLeast(0L).toULong(),
+        keyframe = keyframe,
+    )

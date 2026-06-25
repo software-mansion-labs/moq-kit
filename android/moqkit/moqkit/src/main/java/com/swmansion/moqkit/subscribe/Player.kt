@@ -318,7 +318,6 @@ class Player(
         }
 
         return PlaybackPipeline(
-            catalog = catalog,
             broadcastOwner = broadcastOwner,
             videoTrack = selectedVideoTrack,
             audioTrack = selectedAudioTrack,
