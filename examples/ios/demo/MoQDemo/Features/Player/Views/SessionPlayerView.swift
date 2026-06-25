@@ -151,6 +151,10 @@ private struct BroadcastPlayerView: View {
                     }
                 }
 
+                if entry.hasAudio {
+                    AudioWaveformCardView(entry: entry)
+                }
+
                 if entry.player != nil {
                     DiagnosticsCardView(entry: entry)
                 }
