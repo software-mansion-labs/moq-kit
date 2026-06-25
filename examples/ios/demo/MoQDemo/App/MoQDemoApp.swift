@@ -7,7 +7,7 @@ struct MoQDemoRelayURLs {
 
     static let defaults = MoQDemoRelayURLs(
         boyDemoURL: "https://cdn.moq.dev/demo",
-         sharedRelayURL: "http://192.168.92.131:4443/anon"
+         sharedRelayURL: "http://192.168.92.95:4443/anon"
     )
 }
 
@@ -17,7 +17,7 @@ struct MoQDemoApp: App {
 
     init() {
         PublisherViewModel.configurePlaybackAudioSession()
-        KitLogger.setNativeLogLevel("trace")
+        KitLogger.setNativeLogLevel("info")
     }
 
     var body: some Scene {
