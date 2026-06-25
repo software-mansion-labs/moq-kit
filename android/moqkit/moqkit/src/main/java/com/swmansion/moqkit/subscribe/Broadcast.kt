@@ -1,6 +1,8 @@
 package com.swmansion.moqkit.subscribe
 
 import android.util.Log
+import com.swmansion.moqkit.subscribe.internal.MediaSubscriptionRegistry
+import com.swmansion.moqkit.subscribe.internal.UniFfiMediaSubscriptionSource
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackCodecSupport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -153,6 +155,7 @@ class Catalog internal constructor(
  * Keep this broadcast open for as long as you need to create players or observe catalog updates.
  * A [Player] created from one of this broadcast's catalogs retains the underlying broadcast handle
  * until the player is closed.
+ * A [MediaTrack] or [AudioDataStream] created from this broadcast does the same.
  *
  * @property path Announced broadcast path.
  */
@@ -184,6 +187,30 @@ class Broadcast internal constructor(
                 owner = retainedOwner,
                 track = track,
                 delivery = delivery,
+            )
+        } catch (t: Throwable) {
+            retainedOwner.release()
+            throw t
+        }
+    }
+
+    /**
+     * Subscribes to a compressed MoQ media track by name and container.
+     *
+     * This does not require the track to appear in the broadcast catalog. Use this when your
+     * app already knows the media track parameters. For catalog-advertised playback, prefer
+     * [Player].
+     */
+    fun subscribeMedia(
+        request: MediaTrackRequest,
+        options: MediaTrackOptions = MediaTrackOptions(),
+    ): MediaTrack {
+        val retainedOwner = owner.retain()
+        return try {
+            retainedOwner.subscribeMedia(
+                request = request,
+                options = options,
+                onClose = { retainedOwner.release() },
             )
         } catch (t: Throwable) {
             retainedOwner.release()
@@ -239,6 +266,10 @@ class Broadcast internal constructor(
             owner.release()
         }
     }
+
+    internal fun retainBroadcastOwner(): BroadcastOwner = owner.retain()
+
+    internal fun broadcastOwner(): BroadcastOwner = owner
 }
 
 /**
@@ -372,6 +403,9 @@ internal class BroadcastOwner(
     private val lock = Any()
     private var refCount = 1
     private var consumer: MoqBroadcastConsumer? = consumer
+    private val mediaSubscriptions = MediaSubscriptionRegistry(
+        UniFfiMediaSubscriptionSource { consumer() },
+    )
 
     fun retain(): BroadcastOwner = synchronized(lock) {
         check(refCount > 0 && consumer != null) { "Broadcast '$path' is already closed" }
@@ -384,6 +418,18 @@ internal class BroadcastOwner(
     }
 
     fun isClosed(): Boolean = synchronized(lock) { consumer == null }
+
+    fun subscribeMedia(
+        request: MediaTrackRequest,
+        options: MediaTrackOptions = MediaTrackOptions(),
+        onClose: (() -> Unit)? = null,
+    ): MediaTrack {
+        val media = mediaSubscriptions.subscribeMedia(
+            request = request,
+            bufferingPolicy = options.bufferingPolicy,
+        )
+        return MediaTrack(media = media, onClose = onClose)
+    }
 
     fun release() {
         val consumerToClose = synchronized(lock) {
@@ -398,6 +444,7 @@ internal class BroadcastOwner(
 
         if (consumerToClose != null) {
             Log.d(TAG, "Closing broadcast '$path'")
+            mediaSubscriptions.close()
             try {
                 consumerToClose.close()
             } catch (e: Exception) {
