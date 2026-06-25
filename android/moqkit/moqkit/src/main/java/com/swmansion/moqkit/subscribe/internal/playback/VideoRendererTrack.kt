@@ -67,8 +67,8 @@ internal class VideoRendererTrack(
     /** Returns the PTS of the oldest entry only when in PLAYING state. */
     fun peekNextTimestampUs(): Long? = buffer.peekNextTimestampUs()
 
-    fun dequeue(mediaTimeUs: Long? = null): Pair<JitterBuffer.Entry<ProcessedFrame>?, Boolean> =
-        buffer.dequeue(mediaTimeUs)
+    fun dequeue(): Pair<JitterBuffer.Entry<ProcessedFrame>?, Boolean> =
+        buffer.dequeue()
     fun setBufferState(state: JitterBuffer.State) {
         buffer.setState(state)
     }
