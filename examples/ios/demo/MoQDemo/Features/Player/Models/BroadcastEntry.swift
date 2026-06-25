@@ -11,6 +11,7 @@ private let broadcastEntryLogger = Logger(
 final class BroadcastEntry: ObservableObject, Identifiable {
     let id: String
     let broadcastPath: String
+    let audioAnalysis = BroadcastAudioAnalysis()
 
     @Published var selectedVideoTrackName: String?
     @Published var selectedAudioTrackName: String?
@@ -45,6 +46,10 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     var selectedAudioTrack: AudioTrackInfo? {
         guard let selectedAudioTrackName else { return nil }
         return catalog.playableAudioTracks.first(where: { $0.name == selectedAudioTrackName })
+    }
+
+    var canStartAudioAnalysis: Bool {
+        selectedAudioTrack != nil && !offline
     }
 
     init(
@@ -108,6 +113,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         broadcastEntryLogger.debug(
             "Stopping broadcast entry path=\(self.broadcastPath), reason=\(reason), hasPlayer=\(self.player != nil), isPlaying=\(self.isPlaying), isPaused=\(self.isPaused), offline=\(self.offline)"
         )
+        audioAnalysis.stop(reset: true)
         eventsSubscription?.cancel()
         eventsSubscription = nil
         statsSubscription?.cancel()
@@ -148,6 +154,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             isPlaying = false
             isPaused = false
             offline = true
+            audioAnalysis.stop()
             statsSubscription?.cancel()
             statsSubscription = nil
             playbackStats = nil
@@ -163,7 +170,6 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             self?.playbackStats = stats
         }
     }
-
 }
 
 struct PlayerStartupDiagnostics {
