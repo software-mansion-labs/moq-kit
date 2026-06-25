@@ -17,8 +17,8 @@ internal class AudioRingBuffer(
     latency: Duration,
 ) {
     private var buffer: ShortArray
-    private var writeFrame: Int = 0
-    private var readFrame: Int = 0
+    private var writeFrame: Long = 0L
+    private var readFrame: Long = 0L
 
     var stalled: Boolean = true
         private set
@@ -34,17 +34,17 @@ internal class AudioRingBuffer(
     val capacity: Int get() = buffer.size / channels
 
     /** Number of frames available to read. */
-    val length: Int get() = writeFrame - readFrame
+    val length: Int get() = (writeFrame - readFrame).toInt()
 
     /** Timestamp of the current read position in microseconds. */
-    val timestampUs: Long get() = (readFrame.toLong() * 1_000_000L) / rate
+    val timestampUs: Long get() = (readFrame * 1_000_000L) / rate
 
     // -- Bulk copy helpers (operate on interleaved samples = frames * channels shorts) --
 
     /** Copy [frameCount] frames from [src] (offset [srcOffset] in frames) into ring at logical [pos] (in frames). */
-    private fun ringCopy(pos: Int, src: ShortArray, srcOffset: Int, frameCount: Int) {
+    private fun ringCopy(pos: Long, src: ShortArray, srcOffset: Int, frameCount: Int) {
         val cap = capacity
-        val start = (pos % cap) * channels
+        val start = (pos % cap).toInt() * channels
         val count = frameCount * channels
         val firstChunk = min(count, buffer.size - start)
 
@@ -55,9 +55,9 @@ internal class AudioRingBuffer(
     }
 
     /** Copy [frameCount] frames from ring at logical [pos] into [dst] (at offset 0). */
-    private fun ringRead(pos: Int, dst: ShortArray, frameCount: Int) {
+    private fun ringRead(pos: Long, dst: ShortArray, frameCount: Int) {
         val cap = capacity
-        val start = (pos % cap) * channels
+        val start = (pos % cap).toInt() * channels
         val count = frameCount * channels
         val firstChunk = min(count, buffer.size - start)
 
@@ -68,9 +68,9 @@ internal class AudioRingBuffer(
     }
 
     /** Zero-fill [frameCount] frames in ring starting at logical [pos]. */
-    private fun ringZero(pos: Int, frameCount: Int) {
+    private fun ringZero(pos: Long, frameCount: Int) {
         val cap = capacity
-        val start = (pos % cap) * channels
+        val start = (pos % cap).toInt() * channels
         val count = frameCount * channels
         val firstChunk = min(count, buffer.size - start)
 
@@ -88,12 +88,12 @@ internal class AudioRingBuffer(
      * Returns the number of frames discarded (too-old + overflow).
      */
     fun write(timestampUs: Long, data: ShortArray, frameCount: Int): Int {
-        var start = ((timestampUs.toDouble() / 1_000_000.0) * rate).let { Math.round(it).toInt() }
+        var start = Math.round((timestampUs.toDouble() / 1_000_000.0) * rate)
         var frames = frameCount
         var discarded = 0
 
         // First write after init/reset: anchor indices to the incoming timestamp
-        if (stalled && writeFrame == 0 && readFrame == 0) {
+        if (stalled && writeFrame == 0L && readFrame == 0L) {
             readFrame = start
             writeFrame = start
         }
@@ -103,8 +103,8 @@ internal class AudioRingBuffer(
         if (offset > frames) {
             return frames
         } else if (offset > 0) {
-            discarded += offset
-            frames -= offset
+            discarded += offset.toInt()
+            frames -= offset.toInt()
             start += offset
         }
 
@@ -114,13 +114,13 @@ internal class AudioRingBuffer(
         val overflow = end - readFrame - capacity
         if (overflow >= 0) {
             stalled = false
-            discarded += overflow
+            discarded += overflow.toInt()
             readFrame += overflow
         }
 
         // Fill gaps with zeros if there's a discontinuity
         if (start > writeFrame) {
-            val gapSize = min(start - writeFrame, capacity)
+            val gapSize = min(start - writeFrame, capacity.toLong()).toInt()
             ringZero(writeFrame, gapSize)
         }
 
@@ -142,7 +142,7 @@ internal class AudioRingBuffer(
     fun read(output: ShortArray, maxFrames: Int): Int {
         if (stalled) return 0
 
-        val frames = min(writeFrame - readFrame, maxFrames)
+        val frames = min(writeFrame - readFrame, maxFrames.toLong()).toInt()
         if (frames <= 0) return 0
 
         ringRead(readFrame, output, frames)
@@ -181,8 +181,8 @@ internal class AudioRingBuffer(
 
     /** Reset all state, clearing the buffer and re-entering stalled mode. */
     fun reset() {
-        writeFrame = 0
-        readFrame = 0
+        writeFrame = 0L
+        readFrame = 0L
         stalled = true
         buffer.fill(0)
     }

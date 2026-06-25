@@ -42,6 +42,21 @@ class AudioRingBufferTest {
     }
 
     @Test
+    fun timestampSurvivesLargeAbsolutePts() {
+        val buffer = AudioRingBuffer(
+            rate = 48_000,
+            channels = 2,
+            latency = Duration.ofMillis(200),
+        )
+
+        val ptsUs = 2_544_371_617_638L
+        val frameCount = 960
+        buffer.write(ptsUs, ShortArray(frameCount * 2), frameCount)
+
+        assertEquals(ptsUs.toDouble(), buffer.timestampUs.toDouble(), 1_000.0)
+    }
+
+    @Test
     fun zeroLatencyIsInvalid() {
         try {
             AudioRingBuffer(
