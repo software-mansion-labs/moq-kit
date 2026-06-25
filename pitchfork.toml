@@ -7,7 +7,7 @@ dir = "vendor/moq/demo"
 run = "just web"
 
 [daemons.publish-shrek]
-run = "mise run stream:file --name public/shrek"
+run = "mise run stream:file --name public/shrek.hang"
 
 [daemons.publish-another-shrek]
 run = "mise run stream:file --name bbb/another-shrek"
