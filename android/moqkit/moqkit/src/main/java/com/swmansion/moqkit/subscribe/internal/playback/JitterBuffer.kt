@@ -125,10 +125,12 @@ internal class JitterBuffer<T>(
      * Returns (entry, playable) where playable indicates the frame should be rendered vs dropped.
      * Returns (null, false) if buffering or empty.
      *
-     * @param mediaTimeUs When non-null, uses audio hardware clock for the drop decision
-     *                    instead of wall-clock estimate.
+     * Playability is decided against the estimated video live-edge target
+     * (`estimatedLivePTS - targetBufferingUs`), mirroring the iOS `dequeue()` path. The
+     * finer-grained late-drop and render-scheduling decisions happen later in VideoRenderer
+     * against the playback clock, so this gate intentionally carries headroom.
      */
-    fun dequeue(mediaTimeUs: Long? = null): Pair<Entry<T>?, Boolean> {
+    fun dequeue(): Pair<Entry<T>?, Boolean> {
         synchronized(lock) {
             if (mode != State.PLAYING || entries.isEmpty()) {
                 if (mode != State.PENDING) exhausted = true
@@ -138,13 +140,9 @@ internal class JitterBuffer<T>(
             exhausted = false
 
             val entry = entries.removeAt(0)
-            val playable = if (mediaTimeUs != null) {
-                entry.timestampUs >= mediaTimeUs
-            } else {
-                val estimatedLivePts = wallClockTimeUs() + maxOffset
-                val targetPlaybackPts = estimatedLivePts - targetBufferingUs
-                entry.timestampUs >= targetPlaybackPts
-            }
+            val estimatedLivePts = wallClockTimeUs() + maxOffset
+            val targetPlaybackPts = estimatedLivePts - targetBufferingUs
+            val playable = entry.timestampUs >= targetPlaybackPts
 
             return entry to playable
         }

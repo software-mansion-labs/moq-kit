@@ -307,9 +307,7 @@ internal class VideoRenderer(
             }
 
             val frontFrameIntervalUs = activeTrack.frontFrameIntervalUs
-            val (entry, playable) = activeTrack.dequeue(
-                mediaTimeUs = mediaTimeUs?.let(::videoTime),
-            )
+            val (entry, playable) = activeTrack.dequeue()
             if (entry == null) {
                 requestVideoStallCheck()
                 return
@@ -802,11 +800,5 @@ internal class VideoRenderer(
             videoTime = videoTime,
             threshold = PTS_CORRECTION_THRESHOLD_US,
         ) ?: videoTime
-
-    private fun videoTime(audioTime: Long): Long =
-        timestampAligner?.videoTime(
-            audioTime = audioTime,
-            threshold = PTS_CORRECTION_THRESHOLD_US,
-        ) ?: audioTime
 
 }
