@@ -34,7 +34,7 @@ internal interface MediaConsumerHandle : AutoCloseable {
     fun cancel()
 }
 
-internal class UniFfiMediaSubscriptionSource(
+internal class UniFFIMediaSubscriptionSource(
     private val consumerProvider: () -> MoqBroadcastConsumer,
 ) : MediaSubscriptionSource {
     override fun subscribeMedia(
@@ -42,7 +42,7 @@ internal class UniFfiMediaSubscriptionSource(
         container: Container,
         maxLatencyMs: ULong,
     ): MediaConsumerHandle =
-        UniFfiMediaConsumerHandle(
+        UniFFIMediaConsumerHandle(
             consumerProvider().subscribeMedia(
                 name = name,
                 container = container,
@@ -51,7 +51,7 @@ internal class UniFfiMediaSubscriptionSource(
         )
 }
 
-private class UniFfiMediaConsumerHandle(
+private class UniFFIMediaConsumerHandle(
     private val consumer: MoqMediaConsumer,
 ) : MediaConsumerHandle {
     override suspend fun next(): MoqFrame? = consumer.next()
@@ -131,10 +131,10 @@ internal class MediaSubscriptionRegistry(
 ) : AutoCloseable {
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val hubs = mutableMapOf<MediaSubscriptionKey, MediaFrameHub>()
+    private val subscriptions = mutableMapOf<MediaSubscriptionKey, SharedMediaSubscription>()
 
     val activeSubscriptionCount: Int
-        get() = synchronized(lock) { hubs.size }
+        get() = synchronized(lock) { subscriptions.size }
 
     fun subscribeMedia(
         request: MediaTrackRequest,
@@ -143,10 +143,11 @@ internal class MediaSubscriptionRegistry(
         val key = MediaSubscriptionKey(request)
 
         return synchronized(lock) {
-            val existing = hubs[key]
+            val existing = subscriptions[key]
             if (existing != null) {
                 existing.subscribe(bufferingPolicy)?.let { return@synchronized it }
-                hubs.remove(key)
+                // The finished subscription can still be present before its finish callback runs.
+                subscriptions.remove(key)
             }
 
             val consumer = source.subscribeMedia(
@@ -154,40 +155,43 @@ internal class MediaSubscriptionRegistry(
                 container = request.container.toRawContainer(),
                 maxLatencyMs = request.targetBuffering.toMillisecondsLongClamped().toULong(),
             )
-            val hub = MediaFrameHub(
+            val subscription = SharedMediaSubscription(
                 consumer = consumer,
                 scope = scope,
-                onFinished = { finishedHub ->
-                    removeHub(key, matchingHub = finishedHub)
+                onFinished = { finishedSubscription ->
+                    removeSubscription(key, matchingSubscription = finishedSubscription)
                 },
             )
-            hubs[key] = hub
-            hub.subscribe(bufferingPolicy)
-                ?: error("Newly created media frame hub was unexpectedly finished")
+            subscriptions[key] = subscription
+            subscription.subscribe(bufferingPolicy)
+                ?: error("Newly created shared media subscription was unexpectedly finished")
         }
     }
 
     override fun close() {
-        val activeHubs = synchronized(lock) {
-            hubs.values.toList().also { hubs.clear() }
+        val activeSubscriptions = synchronized(lock) {
+            subscriptions.values.toList().also { subscriptions.clear() }
         }
-        activeHubs.forEach { it.close() }
+        activeSubscriptions.forEach { it.close() }
         scope.cancel()
     }
 
-    private fun removeHub(key: MediaSubscriptionKey, matchingHub: MediaFrameHub) {
+    private fun removeSubscription(
+        key: MediaSubscriptionKey,
+        matchingSubscription: SharedMediaSubscription,
+    ) {
         synchronized(lock) {
-            if (hubs[key] === matchingHub) {
-                hubs.remove(key)
+            if (subscriptions[key] === matchingSubscription) {
+                subscriptions.remove(key)
             }
         }
     }
 }
 
-private class MediaFrameHub(
+private class SharedMediaSubscription(
     private val consumer: MediaConsumerHandle,
     private val scope: CoroutineScope,
-    private val onFinished: (MediaFrameHub) -> Unit,
+    private val onFinished: (SharedMediaSubscription) -> Unit,
 ) : AutoCloseable {
     private data class Subscriber(
         val id: Long,
