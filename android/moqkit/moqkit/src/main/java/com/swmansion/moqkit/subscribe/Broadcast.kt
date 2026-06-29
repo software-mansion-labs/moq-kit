@@ -2,7 +2,7 @@ package com.swmansion.moqkit.subscribe
 
 import android.util.Log
 import com.swmansion.moqkit.subscribe.internal.MediaSubscriptionRegistry
-import com.swmansion.moqkit.subscribe.internal.UniFfiMediaSubscriptionSource
+import com.swmansion.moqkit.subscribe.internal.UniFFIMediaSubscriptionSource
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackCodecSupport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -404,7 +404,7 @@ internal class BroadcastOwner(
     private var refCount = 1
     private var consumer: MoqBroadcastConsumer? = consumer
     private val mediaSubscriptions = MediaSubscriptionRegistry(
-        UniFfiMediaSubscriptionSource { consumer() },
+        UniFFIMediaSubscriptionSource { consumer() },
     )
 
     fun retain(): BroadcastOwner = synchronized(lock) {

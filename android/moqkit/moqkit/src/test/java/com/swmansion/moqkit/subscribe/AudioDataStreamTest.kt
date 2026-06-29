@@ -1,5 +1,6 @@
 package com.swmansion.moqkit.subscribe
 
+import com.swmansion.moqkit.subscribe.internal.media.AudioDataConverter
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
