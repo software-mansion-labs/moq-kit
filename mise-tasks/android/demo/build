@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Build the Android demo debug APK without installing it"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+
+echo "==> Building Android demo debug APK..."
+cd "$ROOT_DIR/examples/android/demo/MoQDemo"
+./gradlew :app:assembleDebug

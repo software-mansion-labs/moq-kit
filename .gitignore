@@ -48,6 +48,8 @@ Thumbs.db
 
 # Build artifacts
 .build/
+.swiftpm/
+Packages/
 
 # Vendor builds
 vendor/moq/target/

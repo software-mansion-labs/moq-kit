@@ -4,11 +4,6 @@ set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
-if [[ $# -gt 0 ]]; then
-  echo "Usage: android:build" >&2
-  exit 1
-fi
-
 echo "==> Assembling Android AAR..."
 cd "$ROOT_DIR/android/moqkit"
 ./gradlew :moqkit:build

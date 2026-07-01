@@ -4,6 +4,8 @@
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
+RUN_ON_SIMULATOR="${usage_simulator:-false}"
+
 PROJECT="$ROOT_DIR/examples/ios/demo/MoQDemo.xcodeproj"
 SCHEME="MoQDemo"
 TARGET="MoQDemo"
@@ -69,7 +71,7 @@ else:
   APP_PATH="${build_info[1]}"
 }
 
-if [[ "${usage_simulator:-false}" = "true" ]]; then
+if [[ "$RUN_ON_SIMULATOR" = "true" ]]; then
   echo "==> Selecting an iPhone simulator..."
   SIM_INFO=$(xcrun simctl list devices available -j | python3 -c '
 import json

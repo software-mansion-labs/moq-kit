@@ -4,15 +4,6 @@ set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
 
-for arg in "$@"; do
-  case "$arg" in
-  *)
-    echo "Unknown argument: $arg" >&2
-    exit 1
-    ;;
-  esac
-done
-
 echo "==> Building Swift package for iOS simulator..."
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 SWIFTPM_CACHE_DIR="$ROOT_DIR/.build/swiftpm-cache"

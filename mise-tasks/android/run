@@ -2,11 +2,6 @@
 #MISE description="Build, install, and launch the Android demo on a connected device"
 set -euo pipefail
 
-if [[ $# -gt 0 ]]; then
-  echo "Usage: android:run" >&2
-  exit 1
-fi
-
 echo "==> Checking for connected device..."
 if ! adb devices | grep -q "device$"; then
   echo "Error: No Android device connected. Connect a device and enable USB debugging." >&2

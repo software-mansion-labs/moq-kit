@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#MISE description="Build local arm64 Android moq-ffi and publish dev.moq:moq to Maven local"
+#USAGE flag "--clean" help="Remove local Android moq-ffi artifacts from vendor/moq and exit"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+VENDOR_DIR="$ROOT_DIR/vendor/moq"
+KT_DIR="$VENDOR_DIR/kt"
+OUTPUT_DIR="$VENDOR_DIR/dist/android-local"
+TARGET="aarch64-linux-android"
+ABI="arm64-v8a"
+GRADLE_WRAPPER="$ROOT_DIR/examples/android/demo/MoQDemo/gradlew"
+CLEAN="${usage_clean:-false}"
+
+if [[ "$CLEAN" == true ]]; then
+  rm -rf \
+    "$OUTPUT_DIR" \
+    "$KT_DIR/moq/src/androidMain/jniLibs" \
+    "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi"
+
+  echo "Removed local Android moq-ffi artifacts from vendor/moq."
+  exit 0
+fi
+
+VERSION="${MOQ_FFI_LOCAL_VERSION:-}"
+if [[ -z "$VERSION" ]]; then
+  VERSION=$(grep '^version' "$VENDOR_DIR/rs/moq-ffi/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+fi
+
+if [[ -z "$VERSION" ]]; then
+  echo "Failed to resolve dev.moq:moq version from vendor/moq/rs/moq-ffi/Cargo.toml" >&2
+  exit 1
+fi
+
+command -v cargo >/dev/null || {
+  echo "android:ffi-local requires cargo on PATH" >&2
+  exit 1
+}
+
+command -v cargo-ndk >/dev/null || {
+  echo "android:ffi-local requires cargo-ndk on PATH" >&2
+  exit 1
+}
+
+command -v python3 >/dev/null || {
+  echo "android:ffi-local requires python3 on PATH" >&2
+  exit 1
+}
+
+[[ -x "$GRADLE_WRAPPER" ]] || {
+  echo "android:ffi-local requires $GRADLE_WRAPPER" >&2
+  exit 1
+}
+
+install_rustls_platform_verifier() {
+  local manifest_path maven_dir maven_local
+
+  manifest_path=$(
+    cargo metadata \
+      --format-version 1 \
+      --filter-platform "$TARGET" \
+      --manifest-path "$VENDOR_DIR/Cargo.toml" |
+      python3 -c '
+import json
+import sys
+
+metadata = json.load(sys.stdin)
+for package in metadata["packages"]:
+    if package["name"] == "rustls-platform-verifier-android":
+        print(package["manifest_path"])
+        break
+else:
+    raise SystemExit("rustls-platform-verifier-android not found in cargo metadata")
+'
+  )
+
+  maven_dir="$(dirname "$manifest_path")/maven"
+  [[ -d "$maven_dir/rustls" ]] || {
+    echo "rustls-platform-verifier Android Maven repo not found at $maven_dir" >&2
+    exit 1
+  }
+
+  maven_local="${HOME}/.m2/repository"
+  mkdir -p "$maven_local"
+  cp -R "$maven_dir/rustls" "$maven_local/"
+}
+
+echo "==> Ensuring Rust target $TARGET is installed..."
+rustup target add "$TARGET"
+
+echo "==> Building moq-ffi $VERSION Kotlin bindings..."
+cd "$VENDOR_DIR"
+./rs/moq-ffi/build.sh --bindings-only --version "$VERSION" --output "$OUTPUT_DIR"
+
+echo "==> Building moq-ffi $TARGET library..."
+./rs/moq-ffi/build.sh --target "$TARGET" --version "$VERSION" --output "$OUTPUT_DIR"
+
+echo "==> Installing rustls-platform-verifier Android support AAR to Maven local..."
+install_rustls_platform_verifier
+
+echo "==> Staging Kotlin bindings and $ABI JNI library..."
+rm -rf \
+  "$KT_DIR/moq/src/androidMain/jniLibs" \
+  "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi" \
+  "$KT_DIR/moq/src/jvmMain/resources"
+
+mkdir -p \
+  "$KT_DIR/moq/src/androidMain/jniLibs/$ABI" \
+  "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi/moq"
+
+cp \
+  "$OUTPUT_DIR/moq-ffi-$VERSION-$TARGET/lib/libmoq_ffi.so" \
+  "$KT_DIR/moq/src/androidMain/jniLibs/$ABI/libmoq_ffi.so"
+
+cp \
+  "$OUTPUT_DIR/bindings/kotlin/uniffi/moq/moq.kt" \
+  "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi/moq/moq.kt"
+
+echo "==> Publishing dev.moq:moq:$VERSION to Maven local..."
+"$GRADLE_WRAPPER" \
+  -p "$KT_DIR" \
+  -Pandroid.enabled=true \
+  -Pmoqffi.version="$VERSION" \
+  -Pmoqffi.skipSigning=true \
+  :moq:publishToMavenLocal
+
+echo ""
+echo "Done. To test with Gradle or Android Studio, make a temporary settings.gradle.kts mavenLocal() edit; see AGENTS.md."
