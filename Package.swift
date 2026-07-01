@@ -11,7 +11,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.5"),
         .package(url: "https://github.com/apple/swift-atomics", from: "1.2.0"),
-        .package(url: "https://github.com/moq-dev/moq-swift", from: "0.2.21")
+        .package(url: "https://github.com/moq-dev/moq-swift", from: "0.2.25")
     ],
     targets: [
         .target(
