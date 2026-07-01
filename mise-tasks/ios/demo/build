@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT_DIR="$MISE_PROJECT_ROOT"
+
 PROJECT="$ROOT_DIR/examples/ios/demo/MoQDemo.xcodeproj"
 SCHEME="MoQDemo"
 DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData/MoQDemo"

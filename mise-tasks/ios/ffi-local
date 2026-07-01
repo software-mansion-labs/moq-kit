@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#MISE description="Build local arm64 iOS moq-ffi artifacts for vendor/moq/swift"
+#USAGE flag "--clean" help="Remove local iOS moq-ffi artifacts and exit"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+VENDOR_DIR="$ROOT_DIR/vendor/moq"
+SWIFT_DIR="$VENDOR_DIR/swift"
+OUTPUT_DIR="$VENDOR_DIR/dist/ios-local"
+HEADERS_DIR="$OUTPUT_DIR/headers"
+IOS_DEPLOYMENT_TARGET="${IOS_DEPLOYMENT_TARGET:-16.0}"
+CLEAN="${usage_clean:-false}"
+
+if [[ "$CLEAN" == true ]]; then
+  rm -rf \
+    "$OUTPUT_DIR" \
+    "$SWIFT_DIR/MoqFFI.xcframework" \
+    "$SWIFT_DIR/Sources/MoqFFI"
+
+  echo "Removed local iOS moq-ffi artifacts."
+  exit 0
+fi
+
+[[ "$(uname)" == "Darwin" ]] || {
+  echo "ios:ffi-local requires macOS" >&2
+  exit 1
+}
+
+command -v xcodebuild >/dev/null || {
+  echo "ios:ffi-local requires xcodebuild on PATH" >&2
+  exit 1
+}
+
+VERSION=$(grep '^version' "$VENDOR_DIR/rs/moq-ffi/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
+echo "==> Building moq-ffi $VERSION bindings..."
+cd "$VENDOR_DIR"
+./rs/moq-ffi/build.sh --bindings-only --version "$VERSION" --output "$OUTPUT_DIR"
+
+echo "==> Building moq-ffi iOS arm64 device library..."
+IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+  ./rs/moq-ffi/build.sh --target aarch64-apple-ios --version "$VERSION" --output "$OUTPUT_DIR"
+
+echo "==> Building moq-ffi iOS arm64 simulator library..."
+IPHONEOS_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+  ./rs/moq-ffi/build.sh --target aarch64-apple-ios-sim --version "$VERSION" --output "$OUTPUT_DIR"
+
+echo "==> Creating local MoqFFI.xcframework..."
+rm -rf "$SWIFT_DIR/MoqFFI.xcframework" "$HEADERS_DIR"
+mkdir -p "$HEADERS_DIR" "$SWIFT_DIR/Sources/MoqFFI"
+cp "$OUTPUT_DIR/bindings/swift/moqFFI.h" "$HEADERS_DIR/moqFFI.h"
+cp "$OUTPUT_DIR/bindings/swift/moqFFI.modulemap" "$HEADERS_DIR/module.modulemap"
+cp "$OUTPUT_DIR/bindings/swift/moq.swift" "$SWIFT_DIR/Sources/MoqFFI/Generated.swift"
+
+xcodebuild -create-xcframework \
+  -library "$OUTPUT_DIR/moq-ffi-$VERSION-aarch64-apple-ios/lib/libmoq_ffi.a" -headers "$HEADERS_DIR" \
+  -library "$OUTPUT_DIR/moq-ffi-$VERSION-aarch64-apple-ios-sim/lib/libmoq_ffi.a" -headers "$HEADERS_DIR" \
+  -output "$SWIFT_DIR/MoqFFI.xcframework"
+
+echo ""
+echo "Done. To test with Xcode or SwiftPM, make a temporary local Package.swift edit; see AGENTS.md."

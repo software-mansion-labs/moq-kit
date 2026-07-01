@@ -67,6 +67,74 @@ mise run android:run
 Use `ios:run` and `ios:run --simulator` for manual runtime smoke tests after the demo
 builds successfully. These commands install and launch the demo on a device or simulator.
 
+## Local moq-ffi Development
+
+The committed package setup must keep using published `moq-ffi` artifacts. Do not commit
+local path dependencies, generated UniFFI bindings, XCFrameworks, JNI libraries, or
+`Package.swift` changes made only for local `vendor/moq` testing.
+
+### Android local moq-ffi
+
+Android local FFI testing uses Maven local plus an intentionally uncommitted
+`settings.gradle.kts` edit.
+
+- `mise run android:ffi-local` builds local arm64 `moq-ffi`, publishes `dev.moq:moq` to
+  Maven local.
+- To make Gradle or Android Studio resolve that local artifact, temporarily add
+  `mavenLocal()` before `mavenCentral()` in the relevant `dependencyResolutionManagement`
+  repositories block.
+- For the Android SDK project, edit `android/moqkit/settings.gradle.kts` locally:
+
+  ```kotlin
+  dependencyResolutionManagement {
+      repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+      repositories {
+          mavenLocal()
+          google()
+          mavenCentral()
+      }
+  }
+  ```
+
+- For the Android demo, make the same local edit in
+  `examples/android/demo/MoQDemo/settings.gradle.kts`. If the demo also builds the included
+  SDK project, keep the matching local edit in `android/moqkit/settings.gradle.kts`.
+- Before committing, restore any `settings.gradle.kts` files changed only for local FFI
+  testing.
+- `mise run android:ffi-local --clean` removes the local staged artifacts from
+  `vendor/moq`; remove the temporary `mavenLocal()` edits separately.
+
+### iOS local moq-ffi
+
+iOS local FFI testing requires an intentionally uncommitted `Package.swift` edit. SwiftPM
+and Xcode do not have a repo-local Gradle-style property that can swap the dependency
+without changing the manifest.
+
+1. Run `mise run ios:ffi-local` to build `vendor/moq/swift/MoqFFI.xcframework` and
+   `vendor/moq/swift/Sources/MoqFFI/Generated.swift`.
+2. Temporarily change `Package.swift` locally, replacing the published dependency:
+
+   ```swift
+   .package(url: "https://github.com/moq-dev/moq-swift", from: "0.2.25")
+   ```
+
+   with:
+
+   ```swift
+   .package(name: "moq-swift", path: "vendor/moq/swift")
+   ```
+
+3. If local code needs APIs that are not in the published package, add this temporary
+   setting to the `MoQKit` target:
+
+   ```swift
+   swiftSettings: [.define("MOQKIT_LOCAL_MOQ_FFI")]
+   ```
+
+4. Build from Xcode or run the usual iOS mise tasks. Before committing, restore
+   `Package.swift` and any changed `Package.resolved` files.
+5. Use `mise run ios:ffi-local --clean` to remove local iOS FFI artifacts when done.
+
 ## Platform Notes
 
 ### iOS
