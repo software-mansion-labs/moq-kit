@@ -12,7 +12,8 @@ data class MoQDemoRelayUrls(
 ) {
     companion object {
         val defaults = MoQDemoRelayUrls(
-            sharedRelayUrl = "http://192.168.92.134:4443/anon",
+            // sharedRelayUrl = "http://192.168.92.134:4443/anon",
+            sharedRelayUrl = "https://cdn.moq.dev/demo/bbb.hang",
         )
     }
 }
