@@ -115,7 +115,7 @@ without changing the manifest.
 2. Temporarily change `Package.swift` locally, replacing the published dependency:
 
    ```swift
-   .package(url: "https://github.com/moq-dev/moq-swift", from: "0.2.25")
+   .package(url: "https://github.com/moq-dev/moq-swift", from: "0.2.27")
    ```
 
    with:
