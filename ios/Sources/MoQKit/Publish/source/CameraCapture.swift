@@ -82,6 +82,8 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     public private(set) var camera: Camera
     private var currentInput: AVCaptureDeviceInput?
     private var currentOutput: AVCaptureVideoDataOutput?
+    private var isConfigured = false
+    private var isRunning = false
 
     /// Creates a camera capture source with the requested device and format preferences.
     public init(camera: Camera = Camera()) {
@@ -98,50 +100,15 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
             (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 do {
-                    captureSession.beginConfiguration()
-
-                    let preset = sessionPreset(for: camera.width, height: camera.height)
-                    if captureSession.canSetSessionPreset(preset) {
-                        captureSession.sessionPreset = preset
+                    if !isConfigured {
+                        try configureSession()
                     }
 
-                    guard
-                        let device = AVCaptureDevice.default(
-                            .builtInWideAngleCamera, for: .video, position: camera.position.position
-                        )
-                    else {
-                        throw SessionError.invalidConfiguration(
-                            "No camera available for position \(camera.position.position)")
+                    if !isRunning {
+                        captureSession.startRunning()
+                        isRunning = true
                     }
 
-                    let input = try AVCaptureDeviceInput(device: device)
-                    guard captureSession.canAddInput(input) else {
-                        throw SessionError.invalidConfiguration("Cannot add camera input")
-                    }
-                    captureSession.addInput(input)
-                    currentInput = input
-
-                    let output = AVCaptureVideoDataOutput()
-                    output.videoSettings = [
-                        kCVPixelBufferPixelFormatTypeKey as String:
-                            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-                    ]
-                    output.alwaysDiscardsLateVideoFrames = true
-                    output.setSampleBufferDelegate(self, queue: queue)
-
-                    guard captureSession.canAddOutput(output) else {
-                        throw SessionError.invalidConfiguration("Cannot add video output")
-                    }
-                    captureSession.addOutput(output)
-                    currentOutput = output
-
-                    if let connection = output.connection(with: .video),
-                       connection.isVideoOrientationSupported {
-                        connection.videoOrientation = camera.orientation.avOrientation
-                    }
-
-                    captureSession.commitConfiguration()
-                    captureSession.startRunning()
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -152,10 +119,13 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
 
     /// Stops camera capture and detaches any active frame consumer.
     public func stop() {
-        queue.async { [self] in
-            self.captureSession.stopRunning()
-        }
         onFrame = nil
+        queue.async { [self] in
+            if isRunning {
+                captureSession.stopRunning()
+                isRunning = false
+            }
+        }
     }
 
     /// Switches to a different camera device or capture configuration while running.
@@ -164,6 +134,11 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     /// recreating the capture source.
     public func `switch`(to newCamera: Camera) throws {
         try queue.sync {
+            guard isConfigured else {
+                camera = newCamera
+                return
+            }
+
             guard let oldInput = currentInput else {
                 throw SessionError.invalidConfiguration("No current camera input")
             }
@@ -202,6 +177,80 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
             }
             captureSession.commitConfiguration()
         }
+    }
+
+    private func configureSession() throws {
+        captureSession.beginConfiguration()
+        do {
+            let preset = sessionPreset(for: camera.width, height: camera.height)
+            if captureSession.canSetSessionPreset(preset) {
+                captureSession.sessionPreset = preset
+            }
+
+            guard
+                let device = AVCaptureDevice.default(
+                    .builtInWideAngleCamera, for: .video, position: camera.position.position
+                )
+            else {
+                throw SessionError.invalidConfiguration(
+                    "No camera available for position \(camera.position.position)")
+            }
+
+            let input = try AVCaptureDeviceInput(device: device)
+            guard captureSession.canAddInput(input) else {
+                throw SessionError.invalidConfiguration("Cannot add camera input")
+            }
+            captureSession.addInput(input)
+            currentInput = input
+
+            let output = AVCaptureVideoDataOutput()
+            output.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String:
+                    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            ]
+            output.alwaysDiscardsLateVideoFrames = true
+            output.setSampleBufferDelegate(self, queue: queue)
+
+            guard captureSession.canAddOutput(output) else {
+                throw SessionError.invalidConfiguration("Cannot add video output")
+            }
+            captureSession.addOutput(output)
+            currentOutput = output
+
+            if let connection = output.connection(with: .video),
+               connection.isVideoOrientationSupported {
+                connection.videoOrientation = camera.orientation.avOrientation
+            }
+
+            captureSession.commitConfiguration()
+            isConfigured = true
+        } catch {
+            captureSession.commitConfiguration()
+            resetSession()
+            throw error
+        }
+    }
+
+    private func resetSession() {
+        guard currentInput != nil || currentOutput != nil else { return }
+
+        if isRunning {
+            captureSession.stopRunning()
+            isRunning = false
+        }
+
+        captureSession.beginConfiguration()
+        if let output = currentOutput {
+            output.setSampleBufferDelegate(nil, queue: nil)
+            captureSession.removeOutput(output)
+        }
+        if let input = currentInput {
+            captureSession.removeInput(input)
+        }
+        captureSession.commitConfiguration()
+        currentInput = nil
+        currentOutput = nil
+        isConfigured = false
     }
 
     private func sessionPreset(for width: Int32, height: Int32) -> AVCaptureSession.Preset {

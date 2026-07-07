@@ -10,6 +10,10 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
     private let queue = DispatchQueue(label: "com.swmansion.MoQKit.MicrophoneCapture")
     /// Advanced frame callback used by ``Publisher``.
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
+    private var currentInput: AVCaptureDeviceInput?
+    private var currentOutput: AVCaptureAudioDataOutput?
+    private var isConfigured = false
+    private var isRunning = false
 
     /// Creates a microphone capture source for the current system input route.
     public override init() {
@@ -25,31 +29,15 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
             (continuation: CheckedContinuation<Void, Error>) in
             queue.async { [self] in
                 do {
-                    captureSession.usesApplicationAudioSession = true
-                    captureSession.automaticallyConfiguresApplicationAudioSession = false
-                    captureSession.beginConfiguration()
-
-                    // Checking for empty uniqueID ensures that we didn't receive a mock device, i.e. the one created by iOS Simulator
-                    // Otherwise AVCaptureDeviceInput will crash the app
-                    guard let device = AVCaptureDevice.default(for: .audio), !device.uniqueID.isEmpty else {
-                        throw SessionError.invalidConfiguration("No microphone available")
+                    if !isConfigured {
+                        try configureSession()
                     }
 
-                    let input = try AVCaptureDeviceInput(device: device)
-                    guard captureSession.canAddInput(input) else {
-                        throw SessionError.invalidConfiguration("Cannot add microphone input")
+                    if !isRunning {
+                        captureSession.startRunning()
+                        isRunning = true
                     }
-                    captureSession.addInput(input)
 
-                    let output = AVCaptureAudioDataOutput()
-                    output.setSampleBufferDelegate(self, queue: queue)
-                    guard captureSession.canAddOutput(output) else {
-                        throw SessionError.invalidConfiguration("Cannot add audio output")
-                    }
-                    captureSession.addOutput(output)
-
-                    captureSession.commitConfiguration()
-                    captureSession.startRunning()
                     continuation.resume()
                 } catch {
                     continuation.resume(throwing: error)
@@ -60,10 +48,71 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
 
     /// Stops microphone capture and detaches any active frame consumer.
     public func stop() {
-        queue.async { [self] in
-            self.captureSession.stopRunning()
-        }
         onFrame = nil
+        queue.async { [self] in
+            if isRunning {
+                captureSession.stopRunning()
+                isRunning = false
+            }
+        }
+    }
+
+    private func configureSession() throws {
+        captureSession.usesApplicationAudioSession = true
+        captureSession.automaticallyConfiguresApplicationAudioSession = false
+
+        captureSession.beginConfiguration()
+        do {
+            // Checking for empty uniqueID ensures that we didn't receive a mock device, i.e. the one created by iOS Simulator.
+            // Otherwise AVCaptureDeviceInput will crash the app.
+            guard let device = AVCaptureDevice.default(for: .audio), !device.uniqueID.isEmpty else {
+                throw SessionError.invalidConfiguration("No microphone available")
+            }
+
+            let input = try AVCaptureDeviceInput(device: device)
+            guard captureSession.canAddInput(input) else {
+                throw SessionError.invalidConfiguration("Cannot add microphone input")
+            }
+            captureSession.addInput(input)
+            currentInput = input
+
+            let output = AVCaptureAudioDataOutput()
+            output.setSampleBufferDelegate(self, queue: queue)
+            guard captureSession.canAddOutput(output) else {
+                throw SessionError.invalidConfiguration("Cannot add audio output")
+            }
+            captureSession.addOutput(output)
+            currentOutput = output
+
+            captureSession.commitConfiguration()
+            isConfigured = true
+        } catch {
+            captureSession.commitConfiguration()
+            resetSession()
+            throw error
+        }
+    }
+
+    private func resetSession() {
+        guard currentInput != nil || currentOutput != nil else { return }
+
+        if isRunning {
+            captureSession.stopRunning()
+            isRunning = false
+        }
+
+        captureSession.beginConfiguration()
+        if let output = currentOutput {
+            output.setSampleBufferDelegate(nil, queue: nil)
+            captureSession.removeOutput(output)
+        }
+        if let input = currentInput {
+            captureSession.removeInput(input)
+        }
+        captureSession.commitConfiguration()
+        currentInput = nil
+        currentOutput = nil
+        isConfigured = false
     }
 }
 
