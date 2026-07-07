@@ -122,9 +122,9 @@ public actor Session {
     ///
     /// - Parameter url: The WebTransport URL of the MoQ relay (e.g. `"https://relay.example.com/moq"`).
     public init(url: String) {
-//        do {
-//            try moqLogLevel(level: "TRACE")
-//        } catch {}
+        //        do {
+        //            try moqLogLevel(level: "TRACE")
+        //        } catch {}
         self.url = url
 
         var stateCont: AsyncStream<SessionState>.Continuation!
@@ -135,7 +135,7 @@ public actor Session {
     }
 
     /// Establishes the QUIC connection to the relay.
-///
+    ///
     /// Transitions the session through `.connecting` to `.connected`. After this succeeds,
     /// you can start watching broadcasts with ``subscribe(prefix:)`` and register
     /// publishers with ``publish(path:publisher:)``.
@@ -161,7 +161,7 @@ public actor Session {
             self.publishOrigin = publishOrigin
 
             let client = MoqClient()
-            client.setTlsDisableVerify(disable: true)
+            client.setTlsSystemRoots(systemRoots: true)
             client.setConsume(origin: consumeOrigin)
             client.setPublish(origin: publishOrigin)
             self.client = client
@@ -207,7 +207,7 @@ public actor Session {
     }
 
     /// Starts watching for broadcast announcements on the relay.
-///
+    ///
     /// Call this after ``connect()`` to receive broadcasts whose path starts with `prefix`.
     /// Keep the returned subscription alive for as long as you want updates, then call
     /// ``BroadcastSubscription/cancel()`` when that part of your app is done.
@@ -246,7 +246,7 @@ public actor Session {
     }
 
     /// Registers a broadcast publisher at the given relay path.
-///
+    ///
     /// This makes the publisher available on the relay, but it does not start your capture
     /// sources or encoders. Call ``Publisher/start()`` after this to begin sending frames.
     ///
@@ -268,7 +268,7 @@ public actor Session {
     }
 
     /// Stops publishing at the given path.
-///
+    ///
     /// If a publisher is registered for that path, this calls ``Publisher/stop()`` and
     /// removes it from the session. Other subscriptions and publish paths continue running.
     public func unpublish(path: String) {
@@ -325,7 +325,8 @@ public actor Session {
     private func handleSessionEnded(error: Error?) async {
         if let error {
             KitLogger.session.warning("Session ended with error: \(error)")
-            transition(to: .error(.connectionFailed("Session ended: \(error.localizedDescription)")))
+            transition(
+                to: .error(.connectionFailed("Session ended: \(error.localizedDescription)")))
             await close()
             return
         }

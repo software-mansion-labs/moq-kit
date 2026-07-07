@@ -101,7 +101,7 @@ class Session(
             Log.d(TAG, "Publish origin created")
 
             val newClient = MoqClient()
-            newClient.setTlsDisableVerify(true)
+            newClient.setTlsSystemRoots(true)
             client = newClient
             newClient.setConsume(newConsumeOrigin)
             newClient.setPublish(newPublishOrigin)
