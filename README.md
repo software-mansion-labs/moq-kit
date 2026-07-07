@@ -152,7 +152,7 @@ Add the Swift package and depend on the `MoQKit` product:
 .product(name: "MoQKit", package: "moq-kit")
 ```
 
-The Swift package depends on `https://github.com/moq-dev/moq-swift` from `0.2.25` for the
+The Swift package depends on `https://github.com/moq-dev/moq-swift` from `0.2.27` for the
 generated `MoqFFI` Swift bindings and prebuilt XCFramework.
 
 The iOS SDK does not add permissions, entitlements, or audio-session configuration for
