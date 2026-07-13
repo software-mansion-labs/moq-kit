@@ -25,6 +25,8 @@ internal class VideoDecoder(
     val handler: Handler,
     private val onInputBufferAvailable: (bufferIndex: Int) -> Unit,
     private val onOutputBufferAvailable: (bufferIndex: Int, timestampUs: Long) -> Unit,
+    private val onFrameRendered: (timestampUs: Long, renderTimeNs: Long) -> Unit,
+    private val onError: (Throwable) -> Unit,
 ) {
     private val codec: MediaCodec
 
@@ -48,12 +50,19 @@ internal class VideoDecoder(
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
                 Log.e(TAG, "MediaCodec error: $e")
+                onError(e)
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
                 Log.d(TAG, "Output format changed: $format")
             }
         }, handler)
+        codec.setOnFrameRenderedListener(
+            { _, presentationTimeUs, nanoTime ->
+                onFrameRendered(presentationTimeUs, nanoTime)
+            },
+            handler,
+        )
 
         codec.configure(format, surface, null, 0)
         // codec.configure(format, null, null, 0)
@@ -84,6 +93,7 @@ internal class VideoDecoder(
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error queuing codec config: $e")
+            onError(e)
             false
         }
     }
@@ -98,6 +108,7 @@ internal class VideoDecoder(
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error filling input buffer: $e")
+            onError(e)
             false
         }
     }
@@ -109,6 +120,7 @@ internal class VideoDecoder(
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing output buffer for render: $e")
+            onError(e)
             false
         }
     }
@@ -120,6 +132,7 @@ internal class VideoDecoder(
             true
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing output buffer: $e")
+            onError(e)
             false
         }
     }
@@ -135,6 +148,7 @@ internal class VideoDecoder(
             codec.start()
         } catch (e: Exception) {
             Log.e(TAG, "Error flushing codec: $e")
+            onError(e)
         }
         Log.d(TAG, "VideoDecoder flushed")
     }

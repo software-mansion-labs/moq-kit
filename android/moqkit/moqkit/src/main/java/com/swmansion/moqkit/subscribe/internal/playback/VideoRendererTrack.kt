@@ -22,7 +22,7 @@ internal data class ProcessedFrame(
  * [dequeue], [peekFront], and state-control methods are called from the
  * VideoRenderer's HandlerThread.
  *
- * [onDataAvailable] is fired **outside** the lock to avoid deadlocks.
+ * [onDataAvailable] only schedules renderer-thread work and never calls back into the track.
  */
 internal class VideoRendererTrack(
     val trackName: String,
@@ -35,6 +35,7 @@ internal class VideoRendererTrack(
     private val buffer = JitterBuffer<ProcessedFrame>(targetBuffering.toMicrosecondsLongClamped())
     private val lock = Object()
     private var onDataAvailable: (() -> Unit)? = null
+    private var awaitingKeyframe = false
 
     init {
         buffer.setOnDataAvailable {
@@ -44,10 +45,15 @@ internal class VideoRendererTrack(
     }
 
     fun insert(payload: ByteArray, timestampUs: Long, keyframe: Boolean): Boolean {
-        val processed = processor.processPayload(payload, keyframe) ?: return false
-        val frame = ProcessedFrame(processed, timestampUs, keyframe)
+        synchronized(lock) {
+            if (awaitingKeyframe && !keyframe) return false
 
-        buffer.insert(frame, timestampUs)
+            val processed = processor.processPayload(payload, keyframe) ?: return false
+            val frame = ProcessedFrame(processed, timestampUs, keyframe)
+            if (keyframe) awaitingKeyframe = false
+
+            buffer.insert(frame, timestampUs)
+        }
 
         // When in PENDING state, the jitter buffer won't notify on insert.
         // Fire ourselves when a keyframe arrives so the swap state machine
@@ -98,6 +104,13 @@ internal class VideoRendererTrack(
 
     fun flush() {
         buffer.flush()
+    }
+
+    fun requireKeyframe() {
+        synchronized(lock) {
+            awaitingKeyframe = true
+            buffer.flush()
+        }
     }
 
     val state: JitterBuffer.State get() = buffer.state

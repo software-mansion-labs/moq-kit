@@ -8,6 +8,7 @@ import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.MediaTrackRequest
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
+import com.swmansion.moqkit.subscribe.internal.MediaFrameEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -17,7 +18,6 @@ import uniffi.moq.MoqFrame
 import java.time.Duration
 
 private const val TAG = "PlaybackPipeline"
-private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
 
 internal enum class PlaybackPipelineSwitchOutcome {
     HANDLED,
@@ -80,7 +80,7 @@ internal class PlaybackPipeline(
         val hasVideo = videoRenderer != null
         val currentTimeUs = clock.currentTimeUs
         val audioLiveTime = if (hasAudio) timestampAligner.audioLiveEdge.estimatedLivePTS() else null
-        val videoLiveTime = if (hasVideo) videoLiveTimeForStats(hasAudio) else null
+        val videoLiveTime = if (hasVideo) videoLiveTimeForStats() else null
 
         return statsTracker.snapshot(
             audioLatency = playbackLatency(audioLiveTime, currentTimeUs),
@@ -157,7 +157,7 @@ internal class PlaybackPipeline(
 
         selectedVideoTrack = track
         videoEpoch = nextEpoch
-        videoIngestJob = launchVideoIngestJob(track, newTrack, nextEpoch)
+        videoIngestJob = launchVideoIngestJob(track, newTrack, renderer, nextEpoch)
         restartCoordinator()
         return PlaybackPipelineSwitchOutcome.HANDLED
     }
@@ -253,7 +253,6 @@ internal class PlaybackPipeline(
             activeTrack = track,
             outputSurface = surface,
             clock = clock,
-            timestampAligner = timestampAligner,
             metrics = statsTracker,
             onError = ::handleVideoRendererError,
         )
@@ -261,7 +260,7 @@ internal class PlaybackPipeline(
         try {
             renderer.start()
             statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, videoInfo.name, videoEpoch)
-            videoIngestJob = launchVideoIngestJob(videoInfo, track, videoEpoch)
+            videoIngestJob = launchVideoIngestJob(videoInfo, track, renderer, videoEpoch)
         } catch (t: Throwable) {
             renderer.stop()
             videoRenderer = null
@@ -333,29 +332,67 @@ internal class PlaybackPipeline(
     private fun launchVideoIngestJob(
         videoInfo: VideoTrackInfo,
         track: VideoRendererTrack,
+        renderer: VideoRenderer,
         trackEpoch: Long,
     ): Job {
         Log.d(TAG, "Subscribing to video track '${videoInfo.name}'")
-        val videoMediaTrack = broadcastOwner.subscribeMedia(
+        val videoMediaTrack = broadcastOwner.subscribeLiveVideo(
             MediaTrackRequest(track = videoInfo, targetBuffering = targetBuffering),
         )
 
         return scope.launch {
             var firstFrame = true
             var lastPtsUs: Long? = null
+            val freshnessGate = VideoFreshnessGate()
             try {
                 frameObserver.onMediaTrackStarted(MediaFrameKind.VIDEO)
-                videoMediaTrack.frames.collect { frame ->
+                videoMediaTrack.events.collect { event ->
+                    if (event is MediaFrameEvent.Discontinuity) {
+                        freshnessGate.forceResync()
+                        lastPtsUs = null
+                        renderer.resetForDiscontinuity(track, "live backlog exceeded target latency")
+                        return@collect
+                    }
+                    val frame = (event as? MediaFrameEvent.Frame)?.frame ?: return@collect
                     val timestampUs = frame.timestampUs
                     val previousPtsUs = lastPtsUs
+                    frameObserver.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.VIDEO)
+
+                    val playbackTimeUs = clock.currentTimeUs
+                        .takeIf { !clock.isVideoDriven && it > 0L }
+                    when (
+                        freshnessGate.evaluate(
+                            timestampUs = timestampUs,
+                            keyframe = frame.keyframe,
+                            playbackTimeUs = playbackTimeUs,
+                            targetBufferingUs = targetBuffering.toMicrosecondsLongClamped(),
+                        )
+                    ) {
+                        VideoFreshnessDecision.Drop -> {
+                            statsTracker.recordVideoFrameDropped()
+                            lastPtsUs = timestampUs
+                            return@collect
+                        }
+                        VideoFreshnessDecision.DropAndReset -> {
+                            statsTracker.recordVideoFrameDropped()
+                            lastPtsUs = timestampUs
+                            renderer.resetForDiscontinuity(
+                                track,
+                                "video GOP exceeded target latency",
+                            )
+                            return@collect
+                        }
+                        VideoFreshnessDecision.Accept -> Unit
+                    }
+
                     if (isDiscontinuity(timestampUs, previousPtsUs, frame.keyframe)) {
                         val gapUs = timestampGapUs(timestampUs, requireNotNull(previousPtsUs))
                         Log.d(TAG, "Video discontinuity detected (gap=${gapUs}us)")
+                        renderer.resetForDiscontinuity(track, "timestamp gap ${gapUs}us")
                         frameObserver.onFrameDiscontinuity(MediaFrameKind.VIDEO, gapUs)
                     }
                     lastPtsUs = timestampUs
 
-                    frameObserver.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.VIDEO)
                     val accepted = track.insert(frame.payload, timestampUs, frame.keyframe)
 
                     if (accepted && firstFrame) {
@@ -465,15 +502,11 @@ internal class PlaybackPipeline(
         restartCoordinator()
     }
 
-    private fun videoLiveTimeForStats(hasAudio: Boolean): Long? {
+    private fun videoLiveTimeForStats(): Long? {
         val videoTime = timestampAligner.videoLiveEdge.estimatedLivePTS()
             ?.takeIf { it >= 0L }
             ?: return null
-        if (!hasAudio) return videoTime
-        return timestampAligner.audioTime(
-            videoTime = videoTime,
-            threshold = PTS_CORRECTION_THRESHOLD_US,
-        )
+        return videoTime
     }
 
     private fun playbackLatency(liveTime: Long?, currentTimeUs: Long): Duration? {

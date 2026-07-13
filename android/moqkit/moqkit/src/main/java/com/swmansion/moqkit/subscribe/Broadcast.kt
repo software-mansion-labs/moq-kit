@@ -431,6 +431,9 @@ internal class BroadcastOwner(
         return MediaTrack(media = media, onClose = onClose)
     }
 
+    internal fun subscribeLiveVideo(request: MediaTrackRequest): MediaTrack =
+        MediaTrack(media = mediaSubscriptions.subscribeLiveVideo(request))
+
     fun release() {
         val consumerToClose = synchronized(lock) {
             check(refCount > 0) { "Broadcast '$path' has already been released" }

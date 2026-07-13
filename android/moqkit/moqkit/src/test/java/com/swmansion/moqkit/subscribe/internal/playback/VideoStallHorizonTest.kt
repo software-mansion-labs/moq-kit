@@ -8,6 +8,50 @@ import org.junit.Test
 
 class VideoStallHorizonTest {
     @Test
+    fun codecInputTimesOutInsteadOfSuppressingStallForever() {
+        val horizon = VideoStallHorizon(codecProgressTimeoutNs = 1_000_000_000L)
+
+        horizon.recordCodecInputSubmitted(submittedAtNs = 1_000_000_000L)
+
+        assertEquals(
+            VideoStallDecision.Wait(delayNs = 500_000_000L),
+            horizon.evaluateStallStart(nowNs = 1_500_000_000L),
+        )
+        assertEquals(
+            VideoStallDecision.RecoverDecoder,
+            horizon.evaluateStallStart(nowNs = 2_000_000_000L),
+        )
+    }
+
+    @Test
+    fun scheduledSurfaceFrameTimesOutWhenRenderIsNeverConfirmed() {
+        val horizon = VideoStallHorizon(surfaceProgressTimeoutNs = 1_000_000_000L)
+
+        horizon.recordSurfaceFrameSubmitted(
+            playable = true,
+            scheduledRenderTimeNs = 1_000_000_000L,
+        )
+
+        assertEquals(
+            VideoStallDecision.Wait(delayNs = 500_000_000L),
+            horizon.evaluateStallStart(nowNs = 1_500_000_000L),
+        )
+        assertEquals(
+            VideoStallDecision.RecoverDecoder,
+            horizon.evaluateStallStart(nowNs = 2_000_000_000L),
+        )
+
+        horizon.recordSurfaceFrameResolved(
+            playable = true,
+            scheduledRenderTimeNs = 1_000_000_000L,
+        )
+        assertEquals(
+            VideoStallDecision.BeginStall,
+            horizon.evaluateStallStart(nowNs = 2_000_000_000L),
+        )
+    }
+
+    @Test
     fun futureVisibleHorizonDelaysStallStart() {
         val horizon = VideoStallHorizon()
 
@@ -48,19 +92,19 @@ class VideoStallHorizonTest {
     }
 
     @Test
-    fun playableCodecInputSuppressesStallUntilOutputResolves() {
+    fun codecInputSuppressesStallUntilOutputResolves() {
         val horizon = VideoStallHorizon()
 
-        horizon.recordCodecInputSubmitted(playable = true)
+        horizon.recordCodecInputSubmitted(submittedAtNs = 0L)
 
         assertEquals(
-            VideoStallDecision.WaitingForFrame,
-            horizon.evaluateStallStart(nowNs = 1_000_000_000L),
+            VideoStallDecision.Wait(delayNs = 500_000_000L),
+            horizon.evaluateStallStart(nowNs = 500_000_000L),
         )
         assertFalse(horizon.hasPendingStallMarker)
         assertFalse(horizon.isStalled)
 
-        horizon.recordCodecInputResolved(playable = true)
+        horizon.recordCodecInputResolved()
 
         assertEquals(
             VideoStallDecision.BeginStall,
@@ -93,7 +137,7 @@ class VideoStallHorizonTest {
     fun nonPlayableFramesDoNotExtendVisibleHorizon() {
         val horizon = VideoStallHorizon()
 
-        horizon.recordCodecInputSubmitted(playable = false)
+        horizon.recordCodecInputSubmitted()
         assertFalse(
             horizon.recordSurfaceFrameScheduled(
                 playable = false,
@@ -103,9 +147,10 @@ class VideoStallHorizonTest {
             ),
         )
 
-        assertEquals(0, horizon.playableInputFramesInFlight)
+        assertEquals(1, horizon.codecInputFramesInFlight)
         assertNull(horizon.lastVisibleFramePTSUs)
         assertNull(horizon.lastVisibleFrameEndNs)
+        horizon.recordCodecInputResolved()
         assertEquals(
             VideoStallDecision.BeginStall,
             horizon.evaluateStallStart(nowNs = 1_000_000_000L),
@@ -167,7 +212,7 @@ class VideoStallHorizonTest {
     fun resetClearsState() {
         val horizon = VideoStallHorizon()
 
-        horizon.recordCodecInputSubmitted(playable = true)
+        horizon.recordCodecInputSubmitted()
         horizon.recordSurfaceFrameScheduled(
             playable = true,
             presentationTimeUs = 1_000_000L,
@@ -178,10 +223,37 @@ class VideoStallHorizonTest {
 
         horizon.reset()
 
-        assertEquals(0, horizon.playableInputFramesInFlight)
+        assertEquals(0, horizon.codecInputFramesInFlight)
         assertNull(horizon.lastVisibleFramePTSUs)
         assertNull(horizon.lastVisibleFrameEndNs)
         assertFalse(horizon.hasPendingStallMarker)
         assertFalse(horizon.isStalled)
+    }
+}
+
+class DecoderRecoveryBudgetTest {
+    @Test
+    fun rejectsThirdRecoveryInsideWindowAndExpiresOldAttempts() {
+        val budget = DecoderRecoveryBudget(
+            maxRecoveries = 2,
+            windowNs = 10_000_000_000L,
+        )
+
+        assertTrue(budget.tryAcquire(nowNs = 0L))
+        assertTrue(budget.tryAcquire(nowNs = 1_000_000_000L))
+        assertFalse(budget.tryAcquire(nowNs = 9_999_999_999L))
+        assertTrue(budget.tryAcquire(nowNs = 10_000_000_000L))
+    }
+
+    @Test
+    fun clearAllowsRecoveryImmediately() {
+        val budget = DecoderRecoveryBudget(maxRecoveries = 1, windowNs = 10L)
+
+        assertTrue(budget.tryAcquire(nowNs = 0L))
+        assertFalse(budget.tryAcquire(nowNs = 1L))
+
+        budget.clear()
+
+        assertTrue(budget.tryAcquire(nowNs = 1L))
     }
 }

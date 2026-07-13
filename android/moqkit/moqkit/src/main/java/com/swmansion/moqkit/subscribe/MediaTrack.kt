@@ -1,5 +1,6 @@
 package com.swmansion.moqkit.subscribe
 
+import com.swmansion.moqkit.subscribe.internal.MediaFrameEvent
 import com.swmansion.moqkit.subscribe.internal.MediaFrameStream
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -175,16 +176,15 @@ class MediaTrack internal constructor(
     private val _state = MutableStateFlow<MediaTrackState>(MediaTrackState.Idle)
     private var closed = false
 
-    /** A stream of raw media frames as they arrive from the relay. */
-    val frames: Flow<MediaFrame> = flow {
+    internal val events: Flow<MediaFrameEvent> = flow {
         var firstFrame = true
         try {
-            media.frames.collect { frame ->
-                if (firstFrame) {
+            media.events.collect { event ->
+                if (firstFrame && event is MediaFrameEvent.Frame) {
                     firstFrame = false
                     _state.value = MediaTrackState.Active
                 }
-                emit(frame)
+                emit(event)
             }
             _state.value = MediaTrackState.Closed
         } catch (t: Throwable) {
@@ -194,6 +194,13 @@ class MediaTrack internal constructor(
             throw t
         } finally {
             close()
+        }
+    }
+
+    /** A stream of raw media frames as they arrive from the relay. */
+    val frames: Flow<MediaFrame> = flow {
+        events.collect { event ->
+            if (event is MediaFrameEvent.Frame) emit(event.frame)
         }
     }
 

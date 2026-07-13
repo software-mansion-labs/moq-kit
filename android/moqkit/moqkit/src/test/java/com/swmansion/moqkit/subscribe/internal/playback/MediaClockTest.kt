@@ -167,6 +167,19 @@ class MediaClockTest {
 
 class JitterBufferTest {
     @Test
+    fun dequeuePreservesDecodeOrderWhenPresentationTimestampsReorder() {
+        val buffer = JitterBuffer<Int>(targetBufferingUs = 100L, wallClockUs = { 0L })
+
+        buffer.insert(item = 1, timestampUs = 1_000L)
+        buffer.insert(item = 2, timestampUs = 1_200L)
+        buffer.insert(item = 3, timestampUs = 1_100L)
+
+        assertEquals(1_000L, buffer.dequeue().first?.timestampUs)
+        assertEquals(1_200L, buffer.dequeue().first?.timestampUs)
+        assertEquals(1_100L, buffer.dequeue().first?.timestampUs)
+    }
+
+    @Test
     fun targetPlaybackPtsUsesEstimatedLiveEdgeMinusTargetBuffering() {
         var wallClock = 1_000L
         val buffer = JitterBuffer<Int>(

@@ -4,16 +4,19 @@ internal sealed class VideoStallDecision {
     data class Wait(val delayNs: Long) : VideoStallDecision()
     object BeginStall : VideoStallDecision()
     object AlreadyStalled : VideoStallDecision()
-    object WaitingForFrame : VideoStallDecision()
+    object RecoverDecoder : VideoStallDecision()
 }
 
-internal class VideoStallHorizon {
+internal class VideoStallHorizon(
+    private val codecProgressTimeoutNs: Long = 1_000_000_000L,
+    private val surfaceProgressTimeoutNs: Long = 1_000_000_000L,
+) {
     companion object {
         private const val FALLBACK_VISIBLE_FRAME_DURATION_US = 33_333L
     }
 
-    var playableInputFramesInFlight: Int = 0
-        private set
+    val codecInputFramesInFlight: Int
+        get() = codecInputSubmissionTimesNs.size
 
     var lastVisibleFramePTSUs: Long? = null
         private set
@@ -28,16 +31,40 @@ internal class VideoStallHorizon {
         private set
 
     private var lastVisibleFrameIntervalUs: Long? = null
+    private val codecInputSubmissionTimesNs = ArrayDeque<Long>()
+    private val playableSurfaceRenderTimesNs = ArrayDeque<Long>()
 
-    fun recordCodecInputSubmitted(playable: Boolean) {
-        if (playable) {
-            playableInputFramesInFlight++
+    fun recordCodecInputSubmitted(
+        submittedAtNs: Long = System.nanoTime(),
+    ) {
+        codecInputSubmissionTimesNs.addLast(submittedAtNs)
+    }
+
+    fun recordCodecInputResolved(
+        submittedAtNs: Long? = null,
+    ) {
+        if (submittedAtNs != null) {
+            codecInputSubmissionTimesNs.remove(submittedAtNs)
+        } else if (codecInputSubmissionTimesNs.isNotEmpty()) {
+            codecInputSubmissionTimesNs.removeFirst()
         }
     }
 
-    fun recordCodecInputResolved(playable: Boolean) {
-        if (playable && playableInputFramesInFlight > 0) {
-            playableInputFramesInFlight--
+    fun recordSurfaceFrameSubmitted(
+        playable: Boolean,
+        scheduledRenderTimeNs: Long,
+    ) {
+        if (playable) {
+            playableSurfaceRenderTimesNs.addLast(scheduledRenderTimeNs)
+        }
+    }
+
+    fun recordSurfaceFrameResolved(
+        playable: Boolean,
+        scheduledRenderTimeNs: Long,
+    ) {
+        if (playable) {
+            playableSurfaceRenderTimesNs.remove(scheduledRenderTimeNs)
         }
     }
 
@@ -75,20 +102,44 @@ internal class VideoStallHorizon {
     }
 
     fun evaluateStallStart(nowNs: Long): VideoStallDecision {
-        if (isStalled) {
-            hasPendingStallMarker = false
-            return VideoStallDecision.AlreadyStalled
+        val codecDeadlineNs = codecInputSubmissionTimesNs.minOrNull()?.let {
+            addClamping(it, codecProgressTimeoutNs)
+        }
+        val surfaceDeadlineNs = playableSurfaceRenderTimesNs.minOrNull()?.let {
+            addClamping(it, surfaceProgressTimeoutNs)
+        }
+        val progressDeadlineNs = when {
+            codecDeadlineNs == null -> surfaceDeadlineNs
+            surfaceDeadlineNs == null -> codecDeadlineNs
+            else -> minOf(codecDeadlineNs, surfaceDeadlineNs)
         }
 
-        if (playableInputFramesInFlight > 0) {
+        if (isStalled) {
             hasPendingStallMarker = false
-            return VideoStallDecision.WaitingForFrame
+            if (progressDeadlineNs != null) {
+                return if (nowNs >= progressDeadlineNs) {
+                    VideoStallDecision.RecoverDecoder
+                } else {
+                    VideoStallDecision.Wait(progressDeadlineNs - nowNs)
+                }
+            }
+            return VideoStallDecision.AlreadyStalled
         }
 
         val endNs = lastVisibleFrameEndNs
         if (endNs != null && nowNs < endNs) {
             hasPendingStallMarker = true
-            return VideoStallDecision.Wait(endNs - nowNs)
+            val nextDeadlineNs = progressDeadlineNs?.coerceAtMost(endNs) ?: endNs
+            return VideoStallDecision.Wait((nextDeadlineNs - nowNs).coerceAtLeast(0L))
+        }
+
+        if (endNs == null && progressDeadlineNs != null) {
+            hasPendingStallMarker = false
+            return if (nowNs >= progressDeadlineNs) {
+                VideoStallDecision.RecoverDecoder
+            } else {
+                VideoStallDecision.Wait(progressDeadlineNs - nowNs)
+            }
         }
 
         hasPendingStallMarker = false
@@ -100,8 +151,16 @@ internal class VideoStallHorizon {
         hasPendingStallMarker = false
     }
 
+    fun beginStallNow(): Boolean {
+        hasPendingStallMarker = false
+        if (isStalled) return false
+        isStalled = true
+        return true
+    }
+
     fun reset() {
-        playableInputFramesInFlight = 0
+        codecInputSubmissionTimesNs.clear()
+        playableSurfaceRenderTimesNs.clear()
         lastVisibleFramePTSUs = null
         lastVisibleFrameEndNs = null
         hasPendingStallMarker = false

@@ -5,7 +5,7 @@ import android.util.Log
 private const val TAG = "JitterBuffer"
 
 /**
- * Sorted jitter buffer for media frames.
+ * Decode-order jitter buffer for media frames.
  *
  * Manages buffering->playing state transitions and playability decisions
  * based on wall-clock-to-PTS offset tracking.
@@ -23,7 +23,7 @@ internal class JitterBuffer<T>(
     )
 
     private val lock = Object()
-    private val entries = mutableListOf<Entry<T>>()
+    private val entries = ArrayDeque<Entry<T>>()
     private var mode = State.BUFFERING
     private var maxOffset = Long.MIN_VALUE
     private var onDataAvailable: (() -> Unit)? = null
@@ -63,13 +63,13 @@ internal class JitterBuffer<T>(
     fun discardFront(): Boolean {
         synchronized(lock) {
             if (entries.isEmpty()) return false
-            entries.removeAt(0)
+            entries.removeFirst()
             return true
         }
     }
 
     /**
-     * Insert an item, sorted by timestamp.
+     * Insert an item in decode order.
      * Tracks wall-clock-to-PTS offset and transitions buffering->playing.
      */
     fun insert(item: T, timestampUs: Long) {
@@ -80,8 +80,8 @@ internal class JitterBuffer<T>(
 
             if (offset > maxOffset) {
                 val diff = offset - maxOffset
-                for (i in entries.indices) {
-                    entries[i].offsetUs += diff
+                for (entry in entries) {
+                    entry.offsetUs += diff
                 }
                 maxOffset = offset
             }
@@ -89,18 +89,14 @@ internal class JitterBuffer<T>(
             val wasEmpty = entries.isEmpty()
             val entry = Entry(item, timestampUs, offset)
 
-            // Sorted insert by timestampUs (ascending)
-            val index = entries.indexOfFirst { it.timestampUs > timestampUs }
-            if (index >= 0) {
-                entries.add(index, entry)
-            } else {
-                entries.add(entry)
-            }
+            // moq-mux emits frames in decode order. Presentation timestamps may move
+            // backwards for B-frames, so sorting by PTS would corrupt decoder input order.
+            entries.addLast(entry)
 
             // Transition buffering -> playing when we have enough depth
             if (mode == State.BUFFERING && entries.size >= 2) {
-                val oldest = entries.first().timestampUs
-                val newest = entries.last().timestampUs
+                val oldest = entries.minOf { it.timestampUs }
+                val newest = entries.maxOf { it.timestampUs }
                 if (newest - oldest >= targetBufferingUs) {
                     mode = State.PLAYING
                     Log.d(TAG, "Transitioned to PLAYING (${entries.size} frames buffered)")
@@ -139,7 +135,7 @@ internal class JitterBuffer<T>(
 
             exhausted = false
 
-            val entry = entries.removeAt(0)
+            val entry = entries.removeFirst()
             val estimatedLivePts = wallClockTimeUs() + maxOffset
             val targetPlaybackPts = estimatedLivePts - targetBufferingUs
             val playable = entry.timestampUs >= targetPlaybackPts
@@ -223,20 +219,21 @@ internal class JitterBuffer<T>(
     val count: Int get() = synchronized(lock) { entries.size }
     val depthMs: Double get() = synchronized(lock) {
         if (entries.size < 2) 0.0
-        else (entries.last().timestampUs - entries.first().timestampUs).toDouble() / 1000.0
+        else (entries.maxOf { it.timestampUs } - entries.minOf { it.timestampUs }).toDouble() / 1000.0
     }
 
     val frontFrameIntervalUs: Long? get() = synchronized(lock) {
         if (entries.size < 2) return@synchronized null
-        val first = entries[0].timestampUs
-        val second = entries[1].timestampUs
+        val iterator = entries.iterator()
+        val first = iterator.next().timestampUs
+        val second = iterator.next().timestampUs
         if (second > first) second - first else null
     }
 
     private fun updateBufferingStateIfReady(): Boolean {
         if (mode != State.BUFFERING || entries.size < 2) return false
-        val oldest = entries.first().timestampUs
-        val newest = entries.last().timestampUs
+        val oldest = entries.minOf { it.timestampUs }
+        val newest = entries.maxOf { it.timestampUs }
         if (newest < oldest || newest - oldest < targetBufferingUs) return false
         mode = State.PLAYING
         Log.d(TAG, "Transitioned to PLAYING (${entries.size} frames buffered)")
