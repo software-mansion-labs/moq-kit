@@ -158,6 +158,7 @@ class Publisher {
         Log.d(TAG, "Starting publisher: ${videoDescriptors.size} video, ${audioDescriptors.size} audio, ${dataDescriptors.size} data tracks")
 
         validateCodecSupport()
+        clock.start(System.nanoTime() / 1_000L)
 
         for (desc in videoDescriptors) startVideoTrack(desc)
         for (desc in audioDescriptors) startAudioTrack(desc)

@@ -3,13 +3,35 @@ package com.swmansion.moqkit.publish.source
 import android.Manifest
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.MediaRecorder
-import android.os.SystemClock
 import android.util.Log
 import androidx.annotation.RequiresPermission
 import com.swmansion.moqkit.publish.encoder.AudioEncoderConfig
 
 private const val TAG = "MicrophoneCapture"
+
+internal class AudioCaptureTimestampTracker(
+    private val sampleRate: Int,
+    private val monotonicTimeNs: () -> Long = System::nanoTime,
+) {
+    private var deliveredFrames = 0L
+
+    fun timestampUs(
+        framesRead: Int,
+        anchorFramePosition: Long?,
+        anchorTimeNs: Long?,
+    ): Long {
+        val firstFrameNs = if (anchorFramePosition != null && anchorTimeNs != null) {
+            val frameDelta = deliveredFrames - anchorFramePosition
+            anchorTimeNs + frameDelta * 1_000_000_000L / sampleRate
+        } else {
+            monotonicTimeNs() - framesRead.toLong() * 1_000_000_000L / sampleRate
+        }
+        deliveredFrames += framesRead
+        return firstFrameNs / 1_000L
+    }
+}
 
 /**
  * Pulls PCM frames from the device microphone.
@@ -70,10 +92,21 @@ class MicrophoneCapture(
 
         val buf = ByteArray(bufSize)
         recordThread = Thread {
+            val timestamp = AudioTimestamp()
+            val timestampTracker = AudioCaptureTimestampTracker(sampleRate)
+            val bytesPerFrame = channels * 2
             while (running) {
                 val read = newRecord.read(buf, 0, buf.size)
                 if (read > 0) {
-                    val timestampUs = SystemClock.elapsedRealtimeNanos() / 1_000L
+                    val framesRead = read / bytesPerFrame
+                    val hasHardwareTimestamp =
+                        newRecord.getTimestamp(timestamp, AudioTimestamp.TIMEBASE_MONOTONIC) ==
+                            AudioRecord.SUCCESS
+                    val timestampUs = timestampTracker.timestampUs(
+                        framesRead = framesRead,
+                        anchorFramePosition = timestamp.framePosition.takeIf { hasHardwareTimestamp },
+                        anchorTimeNs = timestamp.nanoTime.takeIf { hasHardwareTimestamp },
+                    )
                     onPcmData?.invoke(buf, read, timestampUs)
                 }
             }

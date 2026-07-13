@@ -133,6 +133,9 @@ internal class GlFanOutRenderer {
         val st = surfaceTexture ?: return
         st.updateTexImage()
         st.getTransformMatrix(transformMatrix)
+        // Do not forward SurfaceTexture.getTimestamp() to the encoder surface. Its zero point
+        // depends on the capture source and is not necessarily comparable with microphone time.
+        // Leaving the encoder surface timestamp automatic uses Android's monotonic queue time.
         renderToSurface(previewEglSurface)
         renderToSurface(encoderEglSurface)
     }
