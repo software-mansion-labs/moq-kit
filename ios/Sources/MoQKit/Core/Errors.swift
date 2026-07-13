@@ -49,6 +49,7 @@ extension MoqError {
              .Media(message: let value),
              .Mux(message: let value),
              .Json(message: let value),
+             .JsonTrack(message: let value),
              .Audio(message: let value),
              .Url(message: let value),
              .TimeOverflow(message: let value),
