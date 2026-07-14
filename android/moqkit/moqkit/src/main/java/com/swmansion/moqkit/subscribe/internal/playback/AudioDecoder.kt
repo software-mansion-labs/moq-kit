@@ -37,7 +37,8 @@ internal class AudioDecoder(
     private val codec: MediaCodec
     private val handlerThread = HandlerThread("AudioDecoder").apply { start() }
     private val handler = Handler(handlerThread.looper)
-    private val decoderEvents = Channel<DecoderEvent>(Channel.UNLIMITED)
+    @Volatile
+    private var decoderEvents = Channel<DecoderEvent>(Channel.UNLIMITED)
     private val inputLock = Any()
     private val legacyPendingInput = ArrayDeque<TimedFrame>()
     private val availableInputBuffers = ArrayDeque<Int>()
@@ -142,6 +143,7 @@ internal class AudioDecoder(
         synchronized(inputLock) {
             legacyPendingInput.clear()
             availableInputBuffers.clear()
+            if (eventMode) rotateEventStream()
             codec.flush()
             codec.start()
         }
@@ -173,6 +175,9 @@ internal class AudioDecoder(
         if (handle.session !== this || released) return null
         return try {
             readOutput(handle.index, handle.offset, handle.size)
+        } catch (error: Throwable) {
+            reportError("Error processing output buffer", error)
+            null
         } finally {
             releaseOutputBuffer(codec, handle.index)
         }
@@ -217,5 +222,11 @@ internal class AudioDecoder(
         if (released) return
         Log.e(TAG, message, error)
         if (eventMode) decoderEvents.trySend(DecoderEvent.Error(error)) else onError?.invoke(error)
+    }
+
+    private fun rotateEventStream() {
+        val previous = decoderEvents
+        decoderEvents = Channel(Channel.UNLIMITED)
+        previous.close()
     }
 }

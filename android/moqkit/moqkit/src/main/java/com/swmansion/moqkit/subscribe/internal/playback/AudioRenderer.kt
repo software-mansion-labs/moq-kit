@@ -300,9 +300,7 @@ internal class AudioRenderer(
 
     private fun createStartedDecoder(): AudioDecoder {
         val session = AudioDecoder(decoderFormat)
-        decoderEventsJob = decoderScope.launch {
-            session.events().collect(::onDecoderEvent)
-        }
+        observeDecoderEvents(session)
         try {
             session.start()
         } catch (error: Throwable) {
@@ -314,7 +312,15 @@ internal class AudioRenderer(
         return session
     }
 
-    private fun onDecoderEvent(event: DecoderEvent) {
+    private fun observeDecoderEvents(session: AudioDecoder) {
+        decoderEventsJob?.cancel()
+        decoderEventsJob = decoderScope.launch {
+            session.events().collect { event -> onDecoderEvent(session, event) }
+        }
+    }
+
+    private fun onDecoderEvent(session: AudioDecoder, event: DecoderEvent) {
+        if (decoder != null && decoder !== session) return
         when (event) {
             DecoderEvent.InputAvailable -> drainDecoderInput()
             DecoderEvent.Reconfigured -> Unit
@@ -418,7 +424,17 @@ internal class AudioRenderer(
             ),
         )
         val result = recovery.recover(error)
-        if (result is DecoderRecoveryResult.Failed) onError(result.error)
+        when (result) {
+            is DecoderRecoveryResult.Recovered -> {
+                observeDecoderEvents(result.session)
+                drainDecoderInput()
+            }
+            is DecoderRecoveryResult.Failed -> {
+                decoderEventsJob?.cancel()
+                decoderEventsJob = null
+                onError(result.error)
+            }
+        }
     }
 
     private fun emitDecoderRecovery(attempt: RecoveryAttempt) {

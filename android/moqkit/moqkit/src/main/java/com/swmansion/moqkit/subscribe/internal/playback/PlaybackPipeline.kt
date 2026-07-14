@@ -21,6 +21,7 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.IngestEvent
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
+import com.swmansion.moqkit.subscribe.internal.pipeline.RenditionSwitchResources
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineDecision
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineDropReason
@@ -63,8 +64,6 @@ internal class PlaybackPipeline(
     private val pipelineBus: PipelineBus,
 ) {
     private val clock: MediaClock = if (audioTrack != null) AudioDrivenClock() else VideoDrivenClock()
-    private val stateLock = Any()
-
     @Volatile
     private var audioTimeline: TrackTimeline? = null
 
@@ -84,9 +83,8 @@ internal class PlaybackPipeline(
     private var audioRenderer: AudioRenderer? = null
     private var videoRenderer: VideoRenderer? = null
     private var audioIngestJob: Job? = null
-    private var videoIngestJob: Job? = null
+    private val videoIngestJobs = RenditionSwitchResources<Job>(close = Job::cancel)
     private var coordinatorJob: Job? = null
-    private var pendingVideoCleanup: TrackIngestHandle? = null
 
     val currentTimeUs: Long
         get() = clock.currentTimeUs
@@ -151,7 +149,11 @@ internal class PlaybackPipeline(
         audioRenderer?.setVolume(clamped)
     }
 
-    fun switchVideo(track: VideoTrackInfo): PlaybackPipelineSwitchOutcome {
+    @Synchronized
+    fun switchVideo(
+        track: VideoTrackInfo,
+        onAborted: () -> Unit = {},
+    ): PlaybackPipelineSwitchOutcome {
         val renderer = videoRenderer ?: return PlaybackPipelineSwitchOutcome.RESTART_REQUIRED
         if (renderer.hasPendingTrack) return PlaybackPipelineSwitchOutcome.RESTART_REQUIRED
 
@@ -167,26 +169,22 @@ internal class PlaybackPipeline(
             targetBuffering = targetBuffering,
             timeline = timeline,
         )
-        val oldHandle = TrackIngestHandle(videoIngestJob)
-        synchronized(stateLock) {
-            pendingVideoCleanup?.close()
-            pendingVideoCleanup = oldHandle
-        }
-
-        renderer.setPendingTrack(newTrack) {
-            oldHandle.close()
-            synchronized(stateLock) {
-                if (pendingVideoCleanup === oldHandle) {
-                    pendingVideoCleanup = null
+        val pendingJob = launchVideoIngestJob(track, newTrack, nextEpoch, timeline)
+        videoIngestJobs.begin(pendingJob)
+        renderer.setPendingTrack(
+            track = newTrack,
+            onActivated = {
+                if (videoIngestJobs.activate(pendingJob)) {
+                    selectedVideoTrack = track
+                    videoEpoch = nextEpoch
+                    statsTracker.emitTrackSwitch(MediaFrameKind.VIDEO, track.name, nextEpoch)
+                    restartCoordinator()
                 }
-            }
-            statsTracker.emitTrackSwitch(MediaFrameKind.VIDEO, track.name, nextEpoch)
-        }
-
-        selectedVideoTrack = track
-        videoEpoch = nextEpoch
-        videoIngestJob = launchVideoIngestJob(track, newTrack, nextEpoch, timeline)
-        restartCoordinator()
+            },
+            onAborted = {
+                if (videoIngestJobs.abort(pendingJob)) onAborted()
+            },
+        )
         return PlaybackPipelineSwitchOutcome.HANDLED
     }
 
@@ -216,14 +214,8 @@ internal class PlaybackPipeline(
         coordinatorJob = null
 
         audioIngestJob?.cancel()
-        videoIngestJob?.cancel()
+        videoIngestJobs.close()
         audioIngestJob = null
-        videoIngestJob = null
-
-        synchronized(stateLock) {
-            pendingVideoCleanup?.close()
-            pendingVideoCleanup = null
-        }
 
         audioRenderer?.stop()
         videoRenderer?.stop()
@@ -303,7 +295,7 @@ internal class PlaybackPipeline(
         try {
             renderer.start()
             statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, videoInfo.name, videoEpoch)
-            videoIngestJob = launchVideoIngestJob(videoInfo, track, videoEpoch, timeline)
+            videoIngestJobs.replaceActive(launchVideoIngestJob(videoInfo, track, videoEpoch, timeline))
         } catch (t: Throwable) {
             renderer.stop()
             videoRenderer = null
@@ -519,7 +511,7 @@ internal class PlaybackPipeline(
 
     private fun restartCoordinator() {
         coordinatorJob?.cancel()
-        val jobs = listOfNotNull(audioIngestJob, videoIngestJob)
+        val jobs = listOfNotNull(audioIngestJob, videoIngestJobs.active)
         if (jobs.isEmpty()) {
             coordinatorJob = null
             return
@@ -576,7 +568,7 @@ internal class PlaybackPipeline(
     private fun handleAudioRendererError(error: Throwable) {
         if (audioRenderer == null) return
         Log.e(TAG, "Audio renderer error", error)
-        val hadVideo = videoIngestJob?.isActive == true
+        val hadVideo = videoIngestJobs.active?.isActive == true
         audioIngestJob?.cancel()
         audioIngestJob = null
         audioRenderer?.stop()
@@ -592,13 +584,7 @@ internal class PlaybackPipeline(
         coordinatorJob?.cancel()
         coordinatorJob = null
 
-        videoIngestJob?.cancel()
-        videoIngestJob = null
-
-        synchronized(stateLock) {
-            pendingVideoCleanup?.close()
-            pendingVideoCleanup = null
-        }
+        videoIngestJobs.close()
 
         videoRenderer?.stop()
         videoRenderer = null
@@ -764,21 +750,6 @@ internal class PlaybackPipeline(
                 },
             ),
         )
-    }
-}
-
-private class TrackIngestHandle(
-    private var job: Job?,
-) {
-    private val lock = Any()
-
-    fun close() {
-        val jobToCancel = synchronized(lock) {
-            val value = job
-            job = null
-            value
-        }
-        jobToCancel?.cancel()
     }
 }
 

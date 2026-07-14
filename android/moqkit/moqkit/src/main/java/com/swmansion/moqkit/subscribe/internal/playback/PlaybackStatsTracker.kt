@@ -15,6 +15,7 @@ import com.swmansion.moqkit.subscribe.PlayerTrackPlayingEvent
 import com.swmansion.moqkit.subscribe.PlayerTrackReadyEvent
 import com.swmansion.moqkit.subscribe.PlayerVideoPlaybackOutput
 import com.swmansion.moqkit.subscribe.StallStats
+import com.swmansion.moqkit.subscribe.StallCause
 import com.swmansion.moqkit.subscribe.TimeToFirstPlaybackStats
 import com.swmansion.moqkit.subscribe.TrackSwitch
 import com.swmansion.moqkit.subscribe.TrackSwitchStats
@@ -389,8 +390,12 @@ internal class PlaybackStatsTracker(
 
     fun onPipelineEvent(event: PipelineEvent) {
         when (event) {
-            is PipelineEvent.StallStarted -> noteStall(event.context.mediaKind.toFrameKind(), true)
-            is PipelineEvent.StallEnded -> noteStall(event.context.mediaKind.toFrameKind(), false)
+            is PipelineEvent.StallStarted -> if (event.cause != StallCause.SWITCH_STALL) {
+                noteStall(event.context.mediaKind.toFrameKind(), true)
+            }
+            is PipelineEvent.StallEnded -> if (event.cause != StallCause.SWITCH_STALL) {
+                noteStall(event.context.mediaKind.toFrameKind(), false)
+            }
             else -> Unit
         }
     }

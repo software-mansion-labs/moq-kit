@@ -210,7 +210,13 @@ class Player(
         val wasVideoEnabled = selectedVideoTrack != null
         val pipeline = playbackPipeline
         if (pipeline != null && wasVideoEnabled && newTrack != null) {
-            when (pipeline.switchVideo(newTrack)) {
+            val previousTrack = selectedVideoTrack
+            when (pipeline.switchVideo(newTrack) {
+                if (playbackPipeline === pipeline && selectedVideoTrack?.name == newTrack.name) {
+                    selectedVideoTrack = previousTrack
+                    emitTrackSelect(PlayerTrackKind.VIDEO, previousTrack?.name)
+                }
+            }) {
                 PlaybackPipelineSwitchOutcome.HANDLED -> {
                     selectedVideoTrack = newTrack
                     emitTrackSelect(PlayerTrackKind.VIDEO, newTrack.name)

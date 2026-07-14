@@ -21,7 +21,8 @@ internal class VideoDecoder(
     private val handler: Handler,
 ) : DecoderSession, VideoOutputSession {
     private val codec: MediaCodec
-    private val decoderEvents = Channel<DecoderEvent>(Channel.UNLIMITED)
+    @Volatile
+    private var decoderEvents = Channel<DecoderEvent>(Channel.UNLIMITED)
     private val availableInputBuffers = ArrayDeque<Int>()
 
     @Volatile
@@ -43,12 +44,13 @@ internal class VideoDecoder(
                 info: MediaCodec.BufferInfo,
             ) {
                 if (released) return
-                decoderEvents.trySend(
+                val result = decoderEvents.trySend(
                     DecoderEvent.OutputReady(
                         timestampUs = info.presentationTimeUs,
                         handle = VideoOutputHandle(this@VideoDecoder, index),
                     ),
                 )
+                if (result.isFailure) releaseOutputBuffer(index, false)
             }
 
             override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {
@@ -128,6 +130,7 @@ internal class VideoDecoder(
     override fun flush() {
         check(!released) { "decoder is released" }
         availableInputBuffers.clear()
+        rotateEventStream()
         codec.flush()
         codec.start()
         Log.d(TAG, "VideoDecoder flushed")
@@ -175,5 +178,11 @@ internal class VideoDecoder(
         if (released) return
         Log.e(TAG, message, error)
         decoderEvents.trySend(DecoderEvent.Error(error))
+    }
+
+    private fun rotateEventStream() {
+        val previous = decoderEvents
+        decoderEvents = Channel(Channel.UNLIMITED)
+        previous.close()
     }
 }
