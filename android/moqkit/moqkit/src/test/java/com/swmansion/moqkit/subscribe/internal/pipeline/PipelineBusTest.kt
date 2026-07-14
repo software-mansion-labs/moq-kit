@@ -1,5 +1,6 @@
 package com.swmansion.moqkit.subscribe.internal.pipeline
 
+import com.swmansion.moqkit.subscribe.PipelineEvent
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
@@ -43,6 +44,25 @@ class PipelineBusTest {
         assertThrows(IllegalArgumentException::class.java) {
             PipelineBus(capacity = 0)
         }
+    }
+
+    @Test
+    fun synchronousObserverCanBeDetached() {
+        val bus = PipelineBus(capacity = 4)
+        val observed = mutableListOf<PipelineEvent>()
+        val registration = bus.observe { observed += it }
+        val first = PipelineEvent.FrameDropped(
+            context = context(),
+            stage = DropStage.BUFFER,
+            reason = DropReason.BACKLOG_OVERFLOW,
+        )
+        val second = first.copy(ptsUs = 2)
+
+        bus.emit(first)
+        registration.close()
+        bus.emit(second)
+
+        assertEquals(listOf(first), observed)
     }
 
     private fun context() = PipelineContext(

@@ -1,8 +1,10 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaFormat
+import com.swmansion.moqkit.subscribe.BufferDepth
 import uniffi.moq.MoqVideo
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Processed video frame ready for MediaCodec input.
@@ -34,6 +36,7 @@ internal class VideoRendererTrack(
 
     private val buffer = JitterBuffer<ProcessedFrame>(targetBuffering.toMicrosecondsLongClamped())
     private val lock = Object()
+    private val bufferedBytes = AtomicLong(0L)
     private var onDataAvailable: (() -> Unit)? = null
 
     init {
@@ -47,6 +50,7 @@ internal class VideoRendererTrack(
         val processed = processor.processPayload(payload, keyframe) ?: return false
         val frame = ProcessedFrame(processed, timestampUs, keyframe)
 
+        bufferedBytes.addAndGet(processed.size.toLong())
         buffer.insert(frame, timestampUs)
 
         // When in PENDING state, the jitter buffer won't notify on insert.
@@ -68,7 +72,9 @@ internal class VideoRendererTrack(
     fun peekNextTimestampUs(): Long? = buffer.peekNextTimestampUs()
 
     fun dequeue(): Pair<JitterBuffer.Entry<ProcessedFrame>?, Boolean> =
-        buffer.dequeue()
+        buffer.dequeue().also { (entry, _) ->
+            entry?.let { bufferedBytes.addAndGet(-it.item.payload.size.toLong()) }
+        }
     fun setBufferState(state: JitterBuffer.State) {
         buffer.setState(state)
     }
@@ -80,11 +86,18 @@ internal class VideoRendererTrack(
         while (true) {
             val front = buffer.peekFront() ?: break
             if (front.item.isKeyframe || front.timestampUs >= pts) break
-            buffer.discardFront()
+            if (buffer.discardFront()) {
+                bufferedBytes.addAndGet(-front.item.payload.size.toLong())
+            }
         }
     }
 
-    fun discardFront(): Boolean = buffer.discardFront()
+    fun discardFront(): Boolean {
+        val front = buffer.peekFront() ?: return false
+        val discarded = buffer.discardFront()
+        if (discarded) bufferedBytes.addAndGet(-front.item.payload.size.toLong())
+        return discarded
+    }
 
     fun setOnDataAvailable(callback: (() -> Unit)?) {
         synchronized(lock) { onDataAvailable = callback }
@@ -98,11 +111,17 @@ internal class VideoRendererTrack(
 
     fun flush() {
         buffer.flush()
+        bufferedBytes.set(0L)
     }
 
     val state: JitterBuffer.State get() = buffer.state
     val depthMs: Double get() = buffer.depthMs
     val depth: Duration get() = durationFromMilliseconds(buffer.depthMs) ?: Duration.ZERO
+    val bufferDepth: BufferDepth get() = BufferDepth(
+        frames = buffer.count,
+        bytes = bufferedBytes.get().coerceAtLeast(0L),
+        durationUs = depth.toMicrosecondsLongClamped(),
+    )
     fun estimatedPlaybackTimeUs(): Long = buffer.estimatedPlaybackTimeUs()
     fun targetPlaybackPTS(): Long? = buffer.targetPlaybackPTS()
     val frontFrameIntervalUs: Long? get() = buffer.frontFrameIntervalUs

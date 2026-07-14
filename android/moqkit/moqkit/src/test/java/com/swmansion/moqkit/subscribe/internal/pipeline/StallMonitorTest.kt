@@ -1,5 +1,6 @@
 package com.swmansion.moqkit.subscribe.internal.pipeline
 
+import com.swmansion.moqkit.subscribe.PipelineEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
