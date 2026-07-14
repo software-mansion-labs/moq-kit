@@ -246,14 +246,18 @@ internal class PlaybackPipeline(
                 "${audioInfo.config.channelCount}ch, targetBuffering=${targetBuffering.toMillisecondsLongClamped()}ms",
         )
 
+        val timeline = createTimeline()
         val renderer = AudioRenderer(
+            trackName = audioInfo.name,
             config = audioInfo.rawConfig,
             targetBuffering = targetBuffering,
+            timeline = timeline,
             metrics = statsTracker,
+            pipelineBus = pipelineBus,
+            onError = { error -> scope.launch { handleAudioRendererError(error) } },
             initialVolume = storedAudioVolume,
             clock = audioClock,
         )
-        val timeline = createTimeline()
         audioRenderer = renderer
         audioTimeline = timeline
         try {
@@ -566,6 +570,21 @@ internal class PlaybackPipeline(
         if (!hadAudio) {
             statsTracker.emitPlaybackEnd(error.message)
         }
+    }
+
+    private fun handleAudioRendererError(error: Throwable) {
+        if (audioRenderer == null) return
+        Log.e(TAG, "Audio renderer error", error)
+        val hadVideo = videoIngestJob?.isActive == true
+        audioIngestJob?.cancel()
+        audioIngestJob = null
+        audioRenderer?.stop()
+        audioRenderer = null
+        audioTimeline = null
+        val trackName = selectedAudioTrack?.name ?: "audio"
+        statsTracker.emitDecodeError(MediaFrameKind.AUDIO, trackName, error.message ?: "Unknown error")
+        if (!hadVideo) statsTracker.emitPlaybackEnd(error.message)
+        restartCoordinator()
     }
 
     private fun stopVideo() {
