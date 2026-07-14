@@ -6,6 +6,13 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import android.view.Surface
+import com.swmansion.moqkit.subscribe.DropReason
+import com.swmansion.moqkit.subscribe.DropStage
+import com.swmansion.moqkit.subscribe.PipelineContext
+import com.swmansion.moqkit.subscribe.PipelineEvent
+import com.swmansion.moqkit.subscribe.PipelineMediaKind
+import com.swmansion.moqkit.subscribe.SwitchPhase
+import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -38,6 +45,7 @@ internal class VideoRenderer(
     private val clock: MediaClock? = null,
     private val timestampAligner: MediaTimestampAligner? = null,
     private val metrics: PlaybackStatsTracker? = null,
+    private val pipelineBus: PipelineBus? = null,
     private val onError: (Throwable) -> Unit = {},
 ) {
     // Pending-track swap state machine
@@ -241,6 +249,7 @@ internal class VideoRenderer(
      */
     fun setPendingTrack(track: VideoRendererTrack, onActivated: (() -> Unit)?) {
         hasPendingTrack = true
+        emitSwitchProgress(track.trackName, SwitchPhase.PREPARING)
         handler.post {
             pendingTrack?.setOnDataAvailable(null)
             noDisplayBeforePts = 0L
@@ -265,6 +274,7 @@ internal class VideoRenderer(
                         "AwaitingKeyframe timed out after ${AWAITING_KEYFRAME_TIMEOUT_MS}ms, forcing FlushAndSwap"
                     )
                     trackSwapPhase = TrackSwapPhase.FlushAndSwap
+                    emitSwitchProgress(track.trackName, SwitchPhase.FLUSH_SWAP)
                     runDecoderWorkSafely { tryFeedDecoder() }
                 }
             }
@@ -312,6 +322,7 @@ internal class VideoRenderer(
                 requestVideoStallCheck()
                 return
             }
+            emitBufferDepth(activeTrack)
 
             val index = parkedInputBuffers.removeFirst()
             lastFedPtsUs = entry.item.timestampUs
@@ -325,11 +336,23 @@ internal class VideoRenderer(
                     frontFrameIntervalUs = frontFrameIntervalUs,
                 )
                 metrics?.recordVideoDecodeBufferSubmitted(activeTrack.trackName)
-            } else if (playable) {
-                requestVideoStallCheck()
+                pipelineBus?.emit(
+                    PipelineEvent.DecoderInputQueued(
+                        context = diagnosticsContext(activeTrack.trackName, queuedAtNs),
+                        ptsUs = entry.item.timestampUs,
+                    ),
+                )
+            } else {
+                emitFrameDropped(
+                    trackName = activeTrack.trackName,
+                    reason = DropReason.DECODER_INPUT_BACKPRESSURE,
+                    ptsUs = entry.item.timestampUs,
+                    bytes = entry.item.payload.size.toLong(),
+                    timestampNanos = queuedAtNs,
+                    stage = DropStage.DECODER,
+                )
+                if (playable) requestVideoStallCheck()
             }
-
-            if (!playable) metrics?.recordVideoFrameDropped()
         }
     }
 
@@ -413,9 +436,11 @@ internal class VideoRenderer(
                         trackSwapPhase = if (gap > FLUSH_THRESHOLD_US) {
                             Log.d(TAG, "Changing pending phase to flush-and-swap")
 
+                            emitSwitchProgress(pending.trackName, SwitchPhase.FLUSH_SWAP)
                             TrackSwapPhase.FlushAndSwap
                         } else {
                             Log.d(TAG, "Changing pending phase to cutting-in")
+                            emitSwitchProgress(pending.trackName, SwitchPhase.CUT_IN)
                             TrackSwapPhase.CuttingIn(kfPts)
                         }
                     }
@@ -519,6 +544,7 @@ internal class VideoRenderer(
 
         onTrackActivated?.invoke()
         onTrackActivated = null
+        emitSwitchProgress(newTrack.trackName, SwitchPhase.STEADY)
     }
 
     private fun ensureMatchingCodecs(oldTrack: VideoRendererTrack, newTrack: VideoRendererTrack) {
@@ -557,6 +583,13 @@ internal class VideoRenderer(
     private fun onDecodedFrame(bufferIndex: Int, timestampUs: Long) {
         val outputAtNs = System.nanoTime()
         val metadata = queuedFramesByPts.remove(timestampUs)
+        val diagnosticTrackName = metadata?.trackName ?: activeTrack.trackName
+        pipelineBus?.emit(
+            PipelineEvent.DecoderOutputReady(
+                context = diagnosticsContext(diagnosticTrackName, outputAtNs),
+                ptsUs = timestampUs,
+            ),
+        )
         if (metadata != null) {
             metrics?.recordVideoDecodeTime(
                 trackName = metadata.trackName,
@@ -577,6 +610,12 @@ internal class VideoRenderer(
         // not rendered, preventing duplicate-frame stutter.
         if (timestampUs <= noDisplayBeforePts) {
             dec.releaseOutputBuffer(bufferIndex, false)
+            emitFrameDropped(
+                trackName = diagnosticTrackName,
+                reason = DropReason.RENDITION_SWITCH,
+                ptsUs = timestampUs,
+                timestampNanos = outputAtNs,
+            )
             if (timestampUs == noDisplayBeforePts) noDisplayBeforePts = Long.MIN_VALUE
             requestVideoStallCheck()
             return
@@ -585,6 +624,12 @@ internal class VideoRenderer(
         if (!playable) {
             dec.releaseOutputBuffer(bufferIndex, false)
             metrics?.recordVideoFrameDropped()
+            emitFrameDropped(
+                trackName = diagnosticTrackName,
+                reason = DropReason.STALE_VS_PLAYBACK,
+                ptsUs = timestampUs,
+                timestampNanos = outputAtNs,
+            )
             requestVideoStallCheck()
             return
         }
@@ -595,6 +640,12 @@ internal class VideoRenderer(
         if (mediaTimeUs != null && displayTimestampUs < mediaTimeUs - LATE_DROP_THRESHOLD_US) {
             dec.releaseOutputBuffer(bufferIndex, false)
             metrics?.recordVideoFrameDropped()
+            emitFrameDropped(
+                trackName = diagnosticTrackName,
+                reason = DropReason.LATE_RENDER,
+                ptsUs = timestampUs,
+                timestampNanos = outputAtNs,
+            )
             requestVideoStallCheck()
             return
         }
@@ -623,6 +674,13 @@ internal class VideoRenderer(
                 frontFrameIntervalUs = metadata?.frontFrameIntervalUs,
             )
             metrics?.recordVideoFrameDisplayed()
+            pipelineBus?.emit(
+                PipelineEvent.FrameRendered(
+                    context = diagnosticsContext(diagnosticTrackName, outputAtNs),
+                    ptsUs = timestampUs,
+                    renderNanos = renderNs,
+                ),
+            )
             emitPlaybackStartIfArmed(
                 sourceTimestampUs = timestampUs,
                 presentationTimeUs = displayTimestampUs,
@@ -800,5 +858,49 @@ internal class VideoRenderer(
             videoTime = videoTime,
             threshold = PTS_CORRECTION_THRESHOLD_US,
         ) ?: videoTime
+
+    private fun diagnosticsContext(trackName: String, timestampNanos: Long = System.nanoTime()) =
+        PipelineContext(
+            trackId = trackName,
+            mediaKind = PipelineMediaKind.VIDEO,
+            timestampNanos = timestampNanos,
+        )
+
+    private fun emitBufferDepth(track: VideoRendererTrack) {
+        pipelineBus?.emit(
+            PipelineEvent.BufferDepthChanged(
+                context = diagnosticsContext(track.trackName),
+                depth = track.bufferDepth,
+            ),
+        )
+    }
+
+    private fun emitFrameDropped(
+        trackName: String,
+        reason: DropReason,
+        ptsUs: Long,
+        bytes: Long = 0L,
+        timestampNanos: Long = System.nanoTime(),
+        stage: DropStage = DropStage.RENDERER,
+    ) {
+        pipelineBus?.emit(
+            PipelineEvent.FrameDropped(
+                context = diagnosticsContext(trackName, timestampNanos),
+                stage = stage,
+                reason = reason,
+                ptsUs = ptsUs,
+                bytes = bytes,
+            ),
+        )
+    }
+
+    private fun emitSwitchProgress(trackName: String, phase: SwitchPhase) {
+        pipelineBus?.emit(
+            PipelineEvent.SwitchProgress(
+                context = diagnosticsContext(trackName),
+                phase = phase,
+            ),
+        )
+    }
 
 }

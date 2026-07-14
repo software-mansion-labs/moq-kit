@@ -2,7 +2,9 @@ package com.swmansion.moqkit.subscribe
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -109,6 +111,23 @@ class PlayerTest {
         player.close()
 
         assertTrue(fixture.owner.isClosed())
+    }
+
+    @Test
+    fun diagnosticsExposeOneStableTypedEventFlow() {
+        val fixture = createFixture()
+        val player = Player(
+            catalog = fixture.catalog,
+            videoTrackName = "video/main",
+            audioTrackName = null,
+            parentScope = CoroutineScope(SupervisorJob()),
+        )
+
+        val diagnostics: Flow<PipelineEvent> = player.diagnostics()
+
+        assertSame(diagnostics, player.diagnostics())
+        player.close()
+        fixture.broadcast.close()
     }
 
     private fun createFixture(): Fixture {

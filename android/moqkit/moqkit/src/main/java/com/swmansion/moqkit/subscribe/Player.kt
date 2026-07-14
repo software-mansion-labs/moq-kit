@@ -7,6 +7,8 @@ import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipeline
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipelineSwitchOutcome
 import com.swmansion.moqkit.subscribe.internal.playback.PlayerEventHub
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackStatsTracker
+import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
+import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineStallCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -14,6 +16,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import java.time.Duration
@@ -63,6 +66,8 @@ class Player(
 ) : AutoCloseable {
     private val scope = CoroutineScope(parentScope.coroutineContext + SupervisorJob())
     private val eventHub = PlayerEventHub()
+    private val pipelineBus = PipelineBus()
+    private val stallCoordinator = PipelineStallCoordinator(pipelineBus, scope)
     private val statsTracker = PlaybackStatsTracker(events = eventHub)
     private val mutableStatsUpdates = MutableSharedFlow<PlaybackStats>(extraBufferCapacity = 8)
 
@@ -77,6 +82,14 @@ class Player(
      * Pushed playback stats snapshots sampled while playback is active.
      */
     val statsUpdates: SharedFlow<PlaybackStats> = mutableStatsUpdates.asSharedFlow()
+
+    /**
+     * Detailed, non-replayed media-pipeline diagnostics.
+     *
+     * Lifecycle events remain available through [events]; this stream carries per-stage
+     * admission, drop, recovery, scheduling, and stall-attribution facts.
+     */
+    fun diagnostics(): Flow<PipelineEvent> = pipelineBus.events
 
     private val broadcastOwner: BroadcastOwner
     private var selectedVideoTrack: VideoTrackInfo?
@@ -308,6 +321,7 @@ class Player(
         playing = false
         teardownPlayback(permanent = true, reason = "close()")
         emitPlayerDestroy()
+        stallCoordinator.close()
         scope.cancel()
         broadcastOwner.release()
     }
@@ -326,6 +340,7 @@ class Player(
             initialSurface = surface,
             scope = scope,
             statsTracker = statsTracker,
+            pipelineBus = pipelineBus,
         )
     }
 

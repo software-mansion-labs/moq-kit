@@ -1,5 +1,7 @@
 package com.swmansion.moqkit.subscribe.internal.pipeline
 
+import com.swmansion.moqkit.subscribe.PipelineEvent
+
 /**
  * Pure per-track stall state machine. Attribution always selects the most-upstream
  * stage whose progress is missing while downstream work is starved.

@@ -3,11 +3,19 @@ package com.swmansion.moqkit.subscribe.internal.playback
 import android.util.Log
 import android.view.Surface
 import com.swmansion.moqkit.subscribe.AudioTrackInfo
+import com.swmansion.moqkit.subscribe.DiscontinuityReason
+import com.swmansion.moqkit.subscribe.DropReason
+import com.swmansion.moqkit.subscribe.DropStage
+import com.swmansion.moqkit.subscribe.PipelineContext
+import com.swmansion.moqkit.subscribe.PipelineError
+import com.swmansion.moqkit.subscribe.PipelineEvent
+import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.BroadcastOwner
 import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.MediaTrackRequest
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
+import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -41,6 +49,7 @@ internal class PlaybackPipeline(
     initialSurface: Surface?,
     private val scope: CoroutineScope,
     private val statsTracker: PlaybackStatsTracker,
+    private val pipelineBus: PipelineBus,
 ) {
     private val timestampAligner = MediaTimestampAligner()
     private val frameObserver = CompositeMediaFrameObserver(listOf(statsTracker, timestampAligner))
@@ -255,6 +264,7 @@ internal class PlaybackPipeline(
             clock = clock,
             timestampAligner = timestampAligner,
             metrics = statsTracker,
+            pipelineBus = pipelineBus,
             onError = ::handleVideoRendererError,
         )
         videoRenderer = renderer
@@ -284,6 +294,16 @@ internal class PlaybackPipeline(
             try {
                 frameObserver.onMediaTrackStarted(MediaFrameKind.AUDIO)
                 audioTrack.frames.collect { frame ->
+                    val eventContext = diagnosticsContext(MediaFrameKind.AUDIO, audioInfo.name)
+                    pipelineBus.emit(
+                        PipelineEvent.FrameArrived(
+                            context = eventContext,
+                            ptsUs = frame.timestampUs,
+                            groupSequence = null,
+                            frameIndex = null,
+                            bytes = frame.payload.size,
+                        ),
+                    )
                     val timestampUs = frame.timestampUs
                     val previousPtsUs = lastPtsUs
                     if (isDiscontinuity(timestampUs, previousPtsUs, keyframe = true)) {
@@ -291,6 +311,13 @@ internal class PlaybackPipeline(
                         Log.d(TAG, "Audio discontinuity detected (gap=${gapUs}us)")
                         renderer.flush()
                         frameObserver.onFrameDiscontinuity(MediaFrameKind.AUDIO, gapUs)
+                        pipelineBus.emit(
+                            PipelineEvent.Discontinuity(
+                                context = eventContext,
+                                epoch = trackEpoch,
+                                reason = DiscontinuityReason.LOCAL_RESET,
+                            ),
+                        )
                     }
                     lastPtsUs = timestampUs
 
@@ -314,8 +341,10 @@ internal class PlaybackPipeline(
                 }
 
                 statsTracker.emitSubscribeEnd(MediaFrameKind.AUDIO, audioInfo.name, trackEpoch)
+                emitTransportClosed(MediaFrameKind.AUDIO, audioInfo.name, error = null)
             } catch (_: CancellationException) {
                 Log.d(TAG, "Audio ingest cancelled")
+                emitTransportClosed(MediaFrameKind.AUDIO, audioInfo.name, error = null)
             } catch (e: Exception) {
                 Log.e(TAG, "Audio ingest error", e)
                 statsTracker.emitSubscribeError(
@@ -324,6 +353,7 @@ internal class PlaybackPipeline(
                     e.message ?: "Unknown error",
                     trackEpoch,
                 )
+                emitTransportClosed(MediaFrameKind.AUDIO, audioInfo.name, e)
             } finally {
                 audioTrack.close()
             }
@@ -346,17 +376,53 @@ internal class PlaybackPipeline(
             try {
                 frameObserver.onMediaTrackStarted(MediaFrameKind.VIDEO)
                 videoMediaTrack.frames.collect { frame ->
+                    val eventContext = diagnosticsContext(MediaFrameKind.VIDEO, videoInfo.name)
+                    pipelineBus.emit(
+                        PipelineEvent.FrameArrived(
+                            context = eventContext,
+                            ptsUs = frame.timestampUs,
+                            groupSequence = null,
+                            frameIndex = null,
+                            bytes = frame.payload.size,
+                        ),
+                    )
                     val timestampUs = frame.timestampUs
                     val previousPtsUs = lastPtsUs
                     if (isDiscontinuity(timestampUs, previousPtsUs, frame.keyframe)) {
                         val gapUs = timestampGapUs(timestampUs, requireNotNull(previousPtsUs))
                         Log.d(TAG, "Video discontinuity detected (gap=${gapUs}us)")
                         frameObserver.onFrameDiscontinuity(MediaFrameKind.VIDEO, gapUs)
+                        pipelineBus.emit(
+                            PipelineEvent.Discontinuity(
+                                context = eventContext,
+                                epoch = trackEpoch,
+                                reason = DiscontinuityReason.LOCAL_RESET,
+                            ),
+                        )
                     }
                     lastPtsUs = timestampUs
 
                     frameObserver.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.VIDEO)
                     val accepted = track.insert(frame.payload, timestampUs, frame.keyframe)
+                    if (accepted) {
+                        pipelineBus.emit(
+                            PipelineEvent.FrameAdmitted(
+                                context = eventContext,
+                                ptsUs = timestampUs,
+                                bufferDepth = track.bufferDepth,
+                            ),
+                        )
+                    } else {
+                        pipelineBus.emit(
+                            PipelineEvent.FrameDropped(
+                                context = eventContext,
+                                stage = DropStage.BUFFER,
+                                reason = DropReason.INVALID_PAYLOAD,
+                                ptsUs = timestampUs,
+                                bytes = frame.payload.size.toLong(),
+                            ),
+                        )
+                    }
 
                     if (accepted && firstFrame) {
                         firstFrame = false
@@ -376,8 +442,10 @@ internal class PlaybackPipeline(
                 }
 
                 statsTracker.emitSubscribeEnd(MediaFrameKind.VIDEO, videoInfo.name, trackEpoch)
+                emitTransportClosed(MediaFrameKind.VIDEO, videoInfo.name, error = null)
             } catch (_: CancellationException) {
                 Log.d(TAG, "Video ingest cancelled")
+                emitTransportClosed(MediaFrameKind.VIDEO, videoInfo.name, error = null)
             } catch (e: Exception) {
                 Log.e(TAG, "Video ingest error", e)
                 statsTracker.emitSubscribeError(
@@ -386,6 +454,7 @@ internal class PlaybackPipeline(
                     e.message ?: "Unknown error",
                     trackEpoch,
                 )
+                emitTransportClosed(MediaFrameKind.VIDEO, videoInfo.name, e)
             } finally {
                 videoMediaTrack.close()
             }
@@ -494,6 +563,30 @@ internal class PlaybackPipeline(
 
     private fun timestampGapUs(currentUs: Long, lastUs: Long): Long =
         if (currentUs >= lastUs) currentUs - lastUs else lastUs - currentUs
+
+    private fun diagnosticsContext(kind: MediaFrameKind, trackName: String): PipelineContext =
+        PipelineContext(
+            trackId = trackName,
+            mediaKind = when (kind) {
+                MediaFrameKind.AUDIO -> PipelineMediaKind.AUDIO
+                MediaFrameKind.VIDEO -> PipelineMediaKind.VIDEO
+            },
+            timestampNanos = System.nanoTime(),
+        )
+
+    private fun emitTransportClosed(kind: MediaFrameKind, trackName: String, error: Throwable?) {
+        pipelineBus.emit(
+            PipelineEvent.TransportClosed(
+                context = diagnosticsContext(kind, trackName),
+                error = error?.let {
+                    PipelineError(
+                        code = it::class.java.simpleName.ifEmpty { "UnknownError" },
+                        message = it.message ?: it.toString(),
+                    )
+                },
+            ),
+        )
+    }
 }
 
 private class TrackIngestHandle(
