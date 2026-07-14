@@ -19,7 +19,7 @@ internal class VideoDecoder(
     format: MediaFormat,
     surface: Surface,
     private val handler: Handler,
-) : DecoderSession {
+) : DecoderSession, VideoOutputSession {
     private val codec: MediaCodec
     private val decoderEvents = Channel<DecoderEvent>(Channel.UNLIMITED)
     private val availableInputBuffers = ArrayDeque<Int>()
@@ -114,6 +114,11 @@ internal class VideoDecoder(
     /** Release an output buffer without rendering. */
     fun releaseOutputBuffer(index: Int, render: Boolean): Boolean =
         releaseOutputBuffer(index) { codec.releaseOutputBuffer(index, render) }
+
+    override fun renderOutput(index: Int, atNanos: Long): Boolean =
+        releaseOutputBuffer(index, atNanos)
+
+    override fun dropOutput(index: Int): Boolean = releaseOutputBuffer(index, false)
 
     override fun flush() {
         check(!released) { "decoder is released" }

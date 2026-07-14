@@ -41,6 +41,45 @@ class RenderSchedulerTest {
         )
     }
 
+    @Test
+    fun controllerExecutesRenderVerdictThroughSink() {
+        val sink = RecordingRenderSink()
+        val controller = RenderController(scheduler(clockPositionUs = 1_000), sink)
+        val frame = DecodedFrame(ptsUs = 1_400, handle = 7)
+
+        val result = controller.process(frame, nowNanos = 10_000)
+
+        assertEquals(RenderExecution.Rendered(renderNanos = 410_000, confirmed = true), result)
+        assertEquals(listOf(frame to 410_000L), sink.rendered)
+        assertTrue(sink.dropped.isEmpty())
+    }
+
+    @Test
+    fun controllerDropsLateFrameThroughSink() {
+        val sink = RecordingRenderSink()
+        val controller = RenderController(scheduler(clockPositionUs = 1_000), sink)
+        val frame = DecodedFrame(ptsUs = 949, handle = 7)
+
+        val result = controller.process(frame, nowNanos = 10_000)
+
+        assertEquals(RenderExecution.DroppedLate(latenessUs = 51), result)
+        assertEquals(listOf(frame), sink.dropped)
+        assertTrue(sink.rendered.isEmpty())
+    }
+
+    @Test
+    fun controllerLeavesHeldFrameOwnedByCaller() {
+        val sink = RecordingRenderSink()
+        val controller = RenderController(scheduler(clockPositionUs = 1_000), sink)
+        val frame = DecodedFrame(ptsUs = 1_501, handle = 7)
+
+        val result = controller.process(frame, nowNanos = 10_000)
+
+        assertEquals(RenderExecution.Held(recheckAfterUs = 1), result)
+        assertTrue(sink.rendered.isEmpty())
+        assertTrue(sink.dropped.isEmpty())
+    }
+
     private fun scheduler(clockPositionUs: Long?): RenderScheduler {
         val clock = PlaybackClock(ClockPolicy(), FakeTimeSource(0))
         clock.attachDriver(object : ClockDriver {
@@ -55,5 +94,19 @@ class RenderSchedulerTest {
             ),
             clock,
         )
+    }
+
+    private class RecordingRenderSink : RenderSink {
+        val rendered = mutableListOf<Pair<DecodedFrame, Long>>()
+        val dropped = mutableListOf<DecodedFrame>()
+
+        override fun render(frame: DecodedFrame, atNanos: Long): Boolean {
+            rendered += frame to atNanos
+            return true
+        }
+
+        override fun drop(frame: DecodedFrame) {
+            dropped += frame
+        }
     }
 }

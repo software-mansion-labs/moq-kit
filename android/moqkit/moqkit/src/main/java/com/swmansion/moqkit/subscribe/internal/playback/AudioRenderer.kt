@@ -126,8 +126,6 @@ internal class AudioRenderer(
             // ~10ms worth of frames for read chunks
             val chunkFrames = sampleRate / 100
             val chunkBuf = ShortArray(chunkFrames * channels)
-            var wasStalled = true // start as stalled (no data yet)
-            var everPlayed = false
 
             while (running) {
                 val (framesRead, ts) = lock.withLock {
@@ -135,20 +133,10 @@ internal class AudioRenderer(
                 }
 
                 if (framesRead > 0) {
-                    if (wasStalled || !everPlayed) {
-                        wasStalled = false
-                        everPlayed = true
-                        metrics?.noteStall(MediaFrameKind.AUDIO, stalled = false)
-                    }
                     track.write(chunkBuf, 0, framesRead * channels)
                     clock.setCurrentTimeUs(ts)
                     metrics?.audioPlaybackStarted(ts, hostTime = null)
                 } else {
-                    if (!wasStalled && everPlayed) {
-                        wasStalled = true
-                        metrics?.noteStall(MediaFrameKind.AUDIO, stalled = true)
-                    }
-                    // Stalled — avoid busy-wait
                     Thread.sleep(5)
                 }
             }
