@@ -12,6 +12,18 @@ import java.time.Duration
 
 class PlaybackStatsTrackerTest {
     @Test
+    fun droppedFrameCountersAcceptBatchedPipelineDrops() {
+        val tracker = PlaybackStatsTracker()
+
+        tracker.recordAudioFramesDropped(2)
+        tracker.recordVideoFrameDropped(3)
+
+        val stats = tracker.snapshot(audioLatency = null, videoLatency = null)
+        assertEquals(2L, stats.audioFramesDropped)
+        assertEquals(3L, stats.videoFramesDropped)
+    }
+
+    @Test
     fun videoDecodeStatsAreNullBeforeSamples() {
         val tracker = PlaybackStatsTracker()
         tracker.resetVideoDecodeStats("video/main")

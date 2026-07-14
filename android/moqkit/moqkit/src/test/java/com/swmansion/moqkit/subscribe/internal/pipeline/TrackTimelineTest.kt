@@ -25,6 +25,29 @@ class TrackTimelineTest {
     }
 
     @Test
+    fun liveEdgeAdvancesWithMonotonicTimeAfterArrival() {
+        val timeline = TrackTimeline(
+            policy = TimelinePolicy(maxGapUs = 500, freshnessBudgetUs = 1_000),
+            timeSource = time,
+        )
+        timeline.onIngest(frame(5_000, epoch = 1))
+
+        time.advance(250_000)
+
+        assertEquals(5_250L, timeline.liveEdgeUs())
+    }
+
+    @Test
+    fun downstreamResetClearsLiveEdgeUntilAnotherFrameArrives() {
+        val timeline = TrackTimeline(TimelinePolicy(), time)
+        timeline.onIngest(frame(5_000, epoch = 1))
+
+        timeline.requestReset()
+
+        assertNull(timeline.liveEdgeUs())
+    }
+
+    @Test
     fun timestampGapHasOneResetAuthorityAndCarriesResumeFrame() {
         val timeline = TrackTimeline(
             TimelinePolicy(maxGapUs = 500, freshnessBudgetUs = 10_000),
@@ -38,6 +61,34 @@ class TrackTimelineTest {
         assertEquals(TimelineResetReason.TIMESTAMP_GAP, reset.reason)
         assertEquals(1_501L, reset.resumeFrom?.timestampUs)
         assertEquals(3L, reset.epoch)
+        assertEquals(501L, reset.gapUs)
+    }
+
+    @Test
+    fun resetClearsTheOldPlaybackDomainBeforeFollowingFramesArrive() {
+        val timeline = TrackTimeline(
+            TimelinePolicy(maxGapUs = 500, freshnessBudgetUs = 100),
+            time,
+        )
+        timeline.onIngest(frame(10_000, epoch = 3))
+        timeline.onPlaybackPosition(9_900)
+
+        assertTrue(timeline.onIngest(frame(1_000, epoch = 3)) is TimelineDecision.Reset)
+
+        assertTrue(timeline.onIngest(frame(1_010, epoch = 3)) is TimelineDecision.Admit)
+    }
+
+    @Test
+    fun timestampGapComparisonDoesNotOverflow() {
+        val timeline = TrackTimeline(
+            TimelinePolicy(maxGapUs = Long.MAX_VALUE - 1, freshnessBudgetUs = Long.MAX_VALUE),
+            time,
+        )
+        timeline.onIngest(frame(Long.MIN_VALUE, epoch = 3))
+
+        val decision = timeline.onIngest(frame(Long.MAX_VALUE, epoch = 3))
+
+        assertTrue(decision is TimelineDecision.Reset)
     }
 
     @Test
@@ -72,6 +123,19 @@ class TrackTimelineTest {
             (decision as TimelineDecision.Drop).reason,
         )
         assertNull(timeline.liveEdgeUs())
+    }
+
+    @Test
+    fun staleComparisonDoesNotOverflowForWrappedTransportTimestamps() {
+        val timeline = TrackTimeline(
+            TimelinePolicy(maxGapUs = Long.MAX_VALUE, freshnessBudgetUs = 100),
+            time,
+        )
+        timeline.onPlaybackPosition(1_000L)
+
+        val decision = timeline.onIngest(frame(Long.MIN_VALUE, epoch = 1))
+
+        assertEquals(TimelineDropReason.STALE_VS_PLAYBACK, (decision as TimelineDecision.Drop).reason)
     }
 
     @Test

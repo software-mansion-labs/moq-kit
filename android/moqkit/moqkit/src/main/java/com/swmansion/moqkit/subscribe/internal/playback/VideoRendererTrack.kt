@@ -2,127 +2,203 @@ package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaFormat
 import com.swmansion.moqkit.subscribe.BufferDepth
+import com.swmansion.moqkit.subscribe.MediaFrame
+import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionEffect
+import com.swmansion.moqkit.subscribe.internal.pipeline.FrameBuffer
+import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
+import com.swmansion.moqkit.subscribe.internal.pipeline.TrackTimeline
 import uniffi.moq.MoqVideo
 import java.time.Duration
-import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Processed video frame ready for MediaCodec input.
- * Annex B encoded bytes with prepended CSD if needed.
- */
+/** Processed Annex B video frame ready for MediaCodec input. */
 internal data class ProcessedFrame(
     val payload: ByteArray,
     val timestampUs: Long,
     val isKeyframe: Boolean,
 )
 
+internal data class VideoBufferEntry(
+    val item: ProcessedFrame,
+    val timestampUs: Long,
+)
+
+internal enum class VideoBufferState { BUFFERING, PLAYING, PENDING }
+
+internal sealed interface VideoTrackInsertResult {
+    data object InvalidPayload : VideoTrackInsertResult
+    data class Buffered(val effects: List<AdmissionEffect>) : VideoTrackInsertResult
+}
+
 /**
- * Owns a [JitterBuffer] and [VideoFrameProcessor] for one video rendition.
- *
- * Thread-safe: all mutable state is guarded by [lock].
- * [insert] is called from the ingest coroutine (IO thread).
- * [dequeue], [peekFront], and state-control methods are called from the
- * VideoRenderer's HandlerThread.
- *
- * [onDataAvailable] is fired **outside** the lock to avoid deadlocks.
+ * Platform shell joining payload processing to the shared compressed-frame buffer.
+ * Timeline decisions happen before [insert]; this class only executes buffer admission.
  */
 internal class VideoRendererTrack(
     val trackName: String,
     val trackEpoch: Long,
-    config: MoqVideo,
-    val targetBuffering: Duration,
+    targetBuffering: Duration,
+    val timeline: TrackTimeline,
+    private val processor: VideoPayloadProcessor,
 ) {
-    val processor = VideoFrameProcessor(config)
+    constructor(
+        trackName: String,
+        trackEpoch: Long,
+        config: MoqVideo,
+        targetBuffering: Duration,
+        timeline: TrackTimeline,
+    ) : this(
+        trackName = trackName,
+        trackEpoch = trackEpoch,
+        targetBuffering = targetBuffering,
+        timeline = timeline,
+        processor = VideoFrameProcessor(config),
+    )
 
-    private val buffer = JitterBuffer<ProcessedFrame>(targetBuffering.toMicrosecondsLongClamped())
     private val lock = Object()
-    private val bufferedBytes = AtomicLong(0L)
+    private val buffer = FrameBuffer(PipelinePolicies.admission)
+    private var mode = VideoBufferState.BUFFERING
+    private var targetBufferingUs = targetBuffering.toMicrosecondsLongClamped()
     private var onDataAvailable: (() -> Unit)? = null
+    private var currentGroupSequence = 0L
+    private var currentFrameIndex = 0
+
+    var targetBuffering: Duration = targetBuffering
+        private set
 
     init {
-        buffer.setOnDataAvailable {
-            val cb = synchronized(lock) { onDataAvailable }
-            cb?.invoke()
-        }
+        buffer.reset(trackEpoch)
     }
 
-    fun insert(payload: ByteArray, timestampUs: Long, keyframe: Boolean): Boolean {
-        val processed = processor.processPayload(payload, keyframe) ?: return false
-        val frame = ProcessedFrame(processed, timestampUs, keyframe)
-
-        bufferedBytes.addAndGet(processed.size.toLong())
-        buffer.insert(frame, timestampUs)
-
-        // When in PENDING state, the jitter buffer won't notify on insert.
-        // Fire ourselves when a keyframe arrives so the swap state machine
-        // can re-evaluate.
-        if (buffer.state == JitterBuffer.State.PENDING && keyframe) {
-            val cb = synchronized(lock) { onDataAvailable }
-            cb?.invoke()
+    fun insert(payload: ByteArray, timestampUs: Long, keyframe: Boolean): VideoTrackInsertResult {
+        val candidate = synchronized(lock) {
+            val groupSequence = if (keyframe) currentGroupSequence + 1L else currentGroupSequence
+            val frameIndex = if (keyframe) 0 else currentFrameIndex + 1
+            val frame = TimedFrame(
+                mediaFrame = MediaFrame(payload, timestampUs, keyframe),
+                groupSequence = groupSequence,
+                frameIndex = frameIndex,
+                epoch = trackEpoch,
+            )
+            buffer.rejectionReason(frame)?.let { reason ->
+                return VideoTrackInsertResult.Buffered(listOf(AdmissionEffect.Rejected(frame, reason)))
+            }
+            frame
         }
-        return true
+
+        val processed = processor.processPayload(payload, keyframe)
+            ?: return VideoTrackInsertResult.InvalidPayload
+        val callback: (() -> Unit)?
+        val effects: List<AdmissionEffect>
+        synchronized(lock) {
+            val frame = candidate.copy(
+                mediaFrame = MediaFrame(processed, timestampUs, keyframe),
+            )
+            effects = buffer.offer(frame)
+            val admitted = effects.any { it is AdmissionEffect.Admitted }
+            if (admitted) {
+                currentGroupSequence = requireNotNull(candidate.groupSequence)
+                currentFrameIndex = requireNotNull(candidate.frameIndex)
+            }
+            if (admitted && mode == VideoBufferState.BUFFERING && isBufferedToTarget()) {
+                mode = VideoBufferState.PLAYING
+            }
+            callback = when {
+                !admitted -> null
+                mode == VideoBufferState.PENDING && !keyframe -> null
+                else -> onDataAvailable
+            }
+        }
+        callback?.invoke()
+        return VideoTrackInsertResult.Buffered(effects)
     }
 
-    fun peekFront(): Pair<Long, Boolean>? {
-        val entry = buffer.peekFront() ?: return null
-        return entry.timestampUs to entry.item.isKeyframe
+    fun peekFront(): Pair<Long, Boolean>? = synchronized(lock) {
+        buffer.peekFront()?.let { it.timestampUs to it.keyframe }
     }
 
     /** Returns the PTS of the oldest entry only when in PLAYING state. */
-    fun peekNextTimestampUs(): Long? = buffer.peekNextTimestampUs()
+    fun peekNextTimestampUs(): Long? = synchronized(lock) {
+        if (mode != VideoBufferState.PLAYING) null else buffer.peekFront()?.timestampUs
+    }
 
-    fun dequeue(): Pair<JitterBuffer.Entry<ProcessedFrame>?, Boolean> =
-        buffer.dequeue().also { (entry, _) ->
-            entry?.let { bufferedBytes.addAndGet(-it.item.payload.size.toLong()) }
-        }
-    fun setBufferState(state: JitterBuffer.State) {
-        buffer.setState(state)
+    fun dequeue(): Pair<VideoBufferEntry?, Boolean> = synchronized(lock) {
+        if (mode != VideoBufferState.PLAYING) return@synchronized null to false
+        val frame = buffer.pollPlayable(System.nanoTime() / 1_000L) ?: return@synchronized null to false
+        VideoBufferEntry(
+            item = ProcessedFrame(frame.mediaFrame.payload, frame.timestampUs, frame.keyframe),
+            timestampUs = frame.timestampUs,
+        ) to true
+    }
+
+    fun setBufferState(state: VideoBufferState) {
+        synchronized(lock) { mode = state }
     }
 
     val firstKeyframePts: Long?
-        get() = buffer.peekWhere { it.item.isKeyframe }?.timestampUs
+        get() = synchronized(lock) { buffer.firstWhere { it.keyframe }?.timestampUs }
 
     fun discardNonKeyframesBeforePts(pts: Long) {
-        while (true) {
-            val front = buffer.peekFront() ?: break
-            if (front.item.isKeyframe || front.timestampUs >= pts) break
-            val discarded = buffer.removeFront() ?: break
-            bufferedBytes.addAndGet(-discarded.item.payload.size.toLong())
+        synchronized(lock) {
+            while (true) {
+                val front = buffer.peekFront() ?: break
+                if (front.keyframe || front.timestampUs >= pts) break
+                buffer.removeFront() ?: break
+            }
         }
     }
 
-    fun discardFront(): Boolean {
-        val discarded = buffer.removeFront() ?: return false
-        bufferedBytes.addAndGet(-discarded.item.payload.size.toLong())
-        return true
-    }
+    fun discardFront(): Boolean = synchronized(lock) { buffer.removeFront() != null }
 
     fun setOnDataAvailable(callback: (() -> Unit)?) {
         synchronized(lock) { onDataAvailable = callback }
-        buffer.setOnDataAvailable(if (callback != null) {
-            { val cb = synchronized(lock) { onDataAvailable }; cb?.invoke() }
-        } else null)
     }
 
-    fun updateTargetBuffering(targetBuffering: Duration): Boolean =
-        buffer.updateTargetBuffering(targetBuffering.toMicrosecondsLongClamped())
-
-    fun flush() {
-        buffer.flush()
-        bufferedBytes.set(0L)
+    fun updateTargetBuffering(targetBuffering: Duration): Boolean = synchronized(lock) {
+        this.targetBuffering = targetBuffering
+        targetBufferingUs = targetBuffering.toMicrosecondsLongClamped()
+        timeline.setTargetLatency(targetBufferingUs)
+        if (mode != VideoBufferState.BUFFERING || !isBufferedToTarget()) return@synchronized false
+        mode = VideoBufferState.PLAYING
+        true
     }
 
-    val state: JitterBuffer.State get() = buffer.state
-    val depthMs: Double get() = buffer.depthMs
-    val depth: Duration get() = durationFromMilliseconds(buffer.depthMs) ?: Duration.ZERO
-    val bufferDepth: BufferDepth get() = BufferDepth(
-        frames = buffer.count,
-        bytes = bufferedBytes.get().coerceAtLeast(0L),
-        durationUs = depth.toMicrosecondsLongClamped(),
-    )
-    fun estimatedPlaybackTimeUs(): Long = buffer.estimatedPlaybackTimeUs()
-    fun targetPlaybackPTS(): Long? = buffer.targetPlaybackPTS()
-    val frontFrameIntervalUs: Long? get() = buffer.frontFrameIntervalUs
+    fun flush(): Int = synchronized(lock) {
+        mode = VideoBufferState.BUFFERING
+        buffer.reset(trackEpoch)
+    }
+
+    val state: VideoBufferState get() = synchronized(lock) { mode }
+    val depthMs: Double get() = synchronized(lock) { buffer.depth().durationUs.toDouble() / 1_000.0 }
+    val depth: Duration get() = durationFromMicroseconds(bufferDepth.durationUs)
+    val bufferDepth: BufferDepth get() = synchronized(lock) { buffer.depth() }
+
+    fun estimatedPlaybackTimeUs(): Long = targetPlaybackPTS()
+        ?: peekFront()?.first
+        ?: 0L
+
+    fun targetPlaybackPTS(): Long? {
+        val liveEdgeUs = timeline.liveEdgeUs() ?: return null
+        return try {
+            Math.subtractExact(liveEdgeUs, targetBufferingUs).takeIf { it >= 0L }
+        } catch (_: ArithmeticException) {
+            null
+        }
+    }
+
+    val frontFrameIntervalUs: Long? get() = synchronized(lock) {
+        val first = buffer.peekAt(0) ?: return@synchronized null
+        val second = buffer.peekAt(1)
+        if (second != null && second.timestampUs > first.timestampUs) {
+            second.timestampUs - first.timestampUs
+        } else {
+            null
+        }
+    }
+
     val isProcessorReady: Boolean get() = processor.isReady
     fun getFormat(): MediaFormat? = processor.getFormat()
+
+    private fun isBufferedToTarget(): Boolean =
+        buffer.depth().let { it.durationUs >= targetBufferingUs && it.frames >= 2 }
 }

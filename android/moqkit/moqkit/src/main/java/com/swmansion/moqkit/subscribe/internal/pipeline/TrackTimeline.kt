@@ -28,6 +28,7 @@ internal sealed interface TimelineDecision {
         val reason: TimelineResetReason,
         val epoch: Long,
         val resumeFrom: TimedFrame?,
+        val gapUs: Long? = null,
     ) : TimelineDecision
 
     data class End(val error: PipelineError?) : TimelineDecision
@@ -39,9 +40,9 @@ internal sealed interface TimelineDecision {
  */
 internal class TrackTimeline(
     private val policy: TimelinePolicy,
-    @Suppress("unused") private val timeSource: TimeSource,
+    private val timeSource: TimeSource,
 ) {
-    private var liveEdge: Long? = null
+    private var liveEdgeOffsetUs: Long? = null
     private var playbackPosition: Long? = null
     private var lastTimestamp: Long? = null
 
@@ -51,6 +52,7 @@ internal class TrackTimeline(
     var targetLatencyUs: Long = policy.targetLatencyUs
         private set
 
+    @Synchronized
     fun onIngest(event: IngestEvent): TimelineDecision = when (event) {
         is IngestEvent.Frame -> onFrame(event)
         is IngestEvent.GroupsSkipped -> TimelineDecision.Drop(
@@ -61,13 +63,17 @@ internal class TrackTimeline(
         is IngestEvent.Closed -> TimelineDecision.End(event.error)
     }
 
+    @Synchronized
     fun onPlaybackPosition(positionUs: Long) {
         require(positionUs >= 0L) { "positionUs must be non-negative" }
         playbackPosition = positionUs
     }
 
+    @Synchronized
     fun requestReset(reason: TimelineResetReason = TimelineResetReason.DOWNSTREAM_RECOVERY): TimelineDecision.Reset {
         lastTimestamp = null
+        liveEdgeOffsetUs = null
+        playbackPosition = null
         return TimelineDecision.Reset(
             reason = reason,
             epoch = currentEpoch ?: 0L,
@@ -75,14 +81,20 @@ internal class TrackTimeline(
         )
     }
 
-    fun liveEdgeUs(): Long? = liveEdge
+    @Synchronized
+    fun liveEdgeUs(): Long? {
+        val offsetUs = liveEdgeOffsetUs ?: return null
+        return addOrNull(timeSource.nanoTime() / NANOS_PER_MICROSECOND, offsetUs)
+    }
 
+    @Synchronized
     fun currentLatencyUs(): Long? {
-        val edge = liveEdge ?: return null
+        val edge = liveEdgeUs() ?: return null
         val playback = playbackPosition ?: return null
         return subtractClampedToZero(edge, playback)
     }
 
+    @Synchronized
     fun setTargetLatency(us: Long) {
         require(us >= 0L) { "target latency must be non-negative" }
         targetLatencyUs = us
@@ -92,20 +104,23 @@ internal class TrackTimeline(
         val frame = event.frame
         val epoch = currentEpoch
         if (epoch != null && frame.epoch != epoch) {
-            return resetForEpoch(frame.epoch, resumeFrom = frame)
+            return resetForEpoch(frame.epoch, resumeFrom = frame, arrivalNanos = event.arrivalNanos)
         }
         if (epoch == null) {
             currentEpoch = frame.epoch
         }
 
         val previousTimestamp = lastTimestamp
-        if (previousTimestamp != null && absoluteDifference(frame.timestampUs, previousTimestamp) > policy.maxGapUs) {
+        val gapUs = previousTimestamp?.let { absoluteDifferenceSaturated(frame.timestampUs, it) }
+        if (gapUs != null && gapUs > policy.maxGapUs) {
             lastTimestamp = frame.timestampUs
-            liveEdge = frame.timestampUs
+            resetLiveEdge(frame.timestampUs, event.arrivalNanos)
+            playbackPosition = null
             return TimelineDecision.Reset(
                 reason = TimelineResetReason.TIMESTAMP_GAP,
                 epoch = frame.epoch,
                 resumeFrom = frame,
+                gapUs = gapUs,
             )
         }
 
@@ -118,15 +133,23 @@ internal class TrackTimeline(
         }
 
         lastTimestamp = frame.timestampUs
-        liveEdge = maxOf(liveEdge ?: frame.timestampUs, frame.timestampUs)
+        recordLiveEdge(frame.timestampUs, event.arrivalNanos)
         return TimelineDecision.Admit(frame)
     }
 
-    private fun resetForEpoch(epoch: Long, resumeFrom: TimedFrame?): TimelineDecision.Reset {
+    private fun resetForEpoch(
+        epoch: Long,
+        resumeFrom: TimedFrame?,
+        arrivalNanos: Long? = null,
+    ): TimelineDecision.Reset {
         require(epoch >= 0L) { "epoch must be non-negative" }
         currentEpoch = epoch
         lastTimestamp = resumeFrom?.timestampUs
-        liveEdge = resumeFrom?.timestampUs
+        liveEdgeOffsetUs = null
+        playbackPosition = null
+        if (resumeFrom != null && arrivalNanos != null) {
+            recordLiveEdge(resumeFrom.timestampUs, arrivalNanos)
+        }
         return TimelineDecision.Reset(
             reason = TimelineResetReason.PUBLISHER_REWIND,
             epoch = epoch,
@@ -136,14 +159,38 @@ internal class TrackTimeline(
 
     private fun isOlderThanFreshnessBudget(timestampUs: Long, playbackUs: Long): Boolean {
         if (timestampUs >= playbackUs) return false
-        return playbackUs - timestampUs > policy.freshnessBudgetUs
+        val ageUs = subtractOrNull(playbackUs, timestampUs) ?: Long.MAX_VALUE
+        return ageUs > policy.freshnessBudgetUs
     }
 
     private fun subtractClampedToZero(left: Long, right: Long): Long =
-        if (left <= right) 0L else left - right
+        if (left <= right) 0L else subtractOrNull(left, right) ?: Long.MAX_VALUE
 
-    private fun absoluteDifference(left: Long, right: Long): Long =
-        if (left >= right) left - right else right - left
+    private fun recordLiveEdge(timestampUs: Long, arrivalNanos: Long) {
+        val offsetUs = subtractOrNull(timestampUs, arrivalNanos / NANOS_PER_MICROSECOND) ?: return
+        liveEdgeOffsetUs = maxOf(liveEdgeOffsetUs ?: Long.MIN_VALUE, offsetUs)
+    }
+
+    private fun resetLiveEdge(timestampUs: Long, arrivalNanos: Long) {
+        liveEdgeOffsetUs = null
+        recordLiveEdge(timestampUs, arrivalNanos)
+    }
+
+    private fun absoluteDifferenceSaturated(left: Long, right: Long): Long =
+        if (left >= right) subtractOrNull(left, right) ?: Long.MAX_VALUE
+        else subtractOrNull(right, left) ?: Long.MAX_VALUE
+
+    private fun subtractOrNull(left: Long, right: Long): Long? = try {
+        Math.subtractExact(left, right)
+    } catch (_: ArithmeticException) {
+        null
+    }
+
+    private fun addOrNull(left: Long, right: Long): Long? = try {
+        Math.addExact(left, right)
+    } catch (_: ArithmeticException) {
+        null
+    }
 
     private fun TransportSkipReason.toTimelineDropReason(): TimelineDropReason = when (this) {
         TransportSkipReason.LATENCY_BUDGET -> TimelineDropReason.LATENCY_BUDGET_SKIP
@@ -151,5 +198,9 @@ internal class TrackTimeline(
         TransportSkipReason.COVERED -> TimelineDropReason.COVERED
         TransportSkipReason.REWIND -> TimelineDropReason.REWIND
         TransportSkipReason.MISSING_SEQUENCE -> TimelineDropReason.MISSING_SEQUENCE
+    }
+
+    private companion object {
+        const val NANOS_PER_MICROSECOND = 1_000L
     }
 }

@@ -15,7 +15,18 @@ import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.MediaTrackRequest
 import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
+import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionEffect
+import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionRejectReason
+import com.swmansion.moqkit.subscribe.internal.pipeline.IngestEvent
+import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
+import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineDecision
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineDropReason
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineResetReason
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimestampDomainMapper
+import com.swmansion.moqkit.subscribe.internal.pipeline.TrackTimeline
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -25,7 +36,7 @@ import uniffi.moq.MoqFrame
 import java.time.Duration
 
 private const val TAG = "PlaybackPipeline"
-private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
+private const val TIMELINE_DOMAIN_TOLERANCE_US = 0L
 
 internal enum class PlaybackPipelineSwitchOutcome {
     HANDLED,
@@ -51,10 +62,16 @@ internal class PlaybackPipeline(
     private val statsTracker: PlaybackStatsTracker,
     private val pipelineBus: PipelineBus,
 ) {
-    private val timestampAligner = MediaTimestampAligner()
-    private val frameObserver = CompositeMediaFrameObserver(listOf(statsTracker, timestampAligner))
     private val clock: MediaClock = if (audioTrack != null) AudioDrivenClock() else VideoDrivenClock()
     private val stateLock = Any()
+
+    @Volatile
+    private var audioTimeline: TrackTimeline? = null
+
+    private val timestampMapper = TimestampDomainMapper(
+        audioTimeline = { audioTimeline },
+        videoTimeline = { videoRenderer?.activeTimeline },
+    )
 
     private var selectedVideoTrack: VideoTrackInfo? = videoTrack
     private var selectedAudioTrack: AudioTrackInfo? = audioTrack
@@ -87,13 +104,11 @@ internal class PlaybackPipeline(
     fun snapshotStats(): PlaybackStats {
         val hasAudio = audioRenderer != null
         val hasVideo = videoRenderer != null
-        val currentTimeUs = clock.currentTimeUs
-        val audioLiveTime = if (hasAudio) timestampAligner.audioLiveEdge.estimatedLivePTS() else null
-        val videoLiveTime = if (hasVideo) videoLiveTimeForStats(hasAudio) else null
+        updateTimelinePlaybackPositions(hasAudio)
 
         return statsTracker.snapshot(
-            audioLatency = playbackLatency(audioLiveTime, currentTimeUs),
-            videoLatency = playbackLatency(videoLiveTime, currentTimeUs),
+            audioLatency = audioTimeline?.currentLatencyUs()?.let(::durationFromMicroseconds),
+            videoLatency = videoRenderer?.activeTimeline?.currentLatencyUs()?.let(::durationFromMicroseconds),
             audioRingBuffer = audioRenderer?.bufferFill,
             videoJitterBuffer = videoRenderer?.bufferFill,
             videoDecodeStatsEnabled = hasVideo,
@@ -124,6 +139,8 @@ internal class PlaybackPipeline(
 
     fun updateTargetLatency(latency: Duration) {
         targetBuffering = latency
+        val latencyUs = latency.toMicrosecondsLongClamped()
+        audioTimeline?.setTargetLatency(latencyUs)
         audioRenderer?.updateTargetLatency(latency)
         videoRenderer?.updateTargetBuffering(latency)
     }
@@ -141,12 +158,14 @@ internal class PlaybackPipeline(
         Log.d(TAG, "Switching video track to '${track.name}' codec=${track.config.codec}")
 
         val nextEpoch = videoEpoch + 1L
+        val timeline = createTimeline()
         statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, track.name, nextEpoch)
         val newTrack = VideoRendererTrack(
             trackName = track.name,
             trackEpoch = nextEpoch,
             config = track.rawConfig,
             targetBuffering = targetBuffering,
+            timeline = timeline,
         )
         val oldHandle = TrackIngestHandle(videoIngestJob)
         synchronized(stateLock) {
@@ -166,7 +185,7 @@ internal class PlaybackPipeline(
 
         selectedVideoTrack = track
         videoEpoch = nextEpoch
-        videoIngestJob = launchVideoIngestJob(track, newTrack, nextEpoch)
+        videoIngestJob = launchVideoIngestJob(track, newTrack, nextEpoch, timeline)
         restartCoordinator()
         return PlaybackPipelineSwitchOutcome.HANDLED
     }
@@ -180,11 +199,13 @@ internal class PlaybackPipeline(
         Log.d(TAG, "Switching audio track to '${track.name}' codec=${track.config.codec}")
 
         val nextEpoch = audioEpoch + 1L
+        val timeline = createTimeline()
         statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, track.name, nextEpoch)
         val oldJob = audioIngestJob
         selectedAudioTrack = track
         audioEpoch = nextEpoch
-        audioIngestJob = launchAudioIngestJob(track, renderer, nextEpoch)
+        audioTimeline = timeline
+        audioIngestJob = launchAudioIngestJob(track, renderer, nextEpoch, timeline)
         oldJob?.cancel()
         restartCoordinator()
         return PlaybackPipelineSwitchOutcome.HANDLED
@@ -208,6 +229,7 @@ internal class PlaybackPipeline(
         videoRenderer?.stop()
         audioRenderer = null
         videoRenderer = null
+        audioTimeline = null
     }
 
     private fun startAudio() {
@@ -231,14 +253,17 @@ internal class PlaybackPipeline(
             initialVolume = storedAudioVolume,
             clock = audioClock,
         )
+        val timeline = createTimeline()
         audioRenderer = renderer
+        audioTimeline = timeline
         try {
             renderer.start()
             statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, audioInfo.name, audioEpoch)
-            audioIngestJob = launchAudioIngestJob(audioInfo, renderer, audioEpoch)
+            audioIngestJob = launchAudioIngestJob(audioInfo, renderer, audioEpoch, timeline)
         } catch (t: Throwable) {
             renderer.stop()
             audioRenderer = null
+            audioTimeline = null
             throw t
         }
     }
@@ -252,17 +277,19 @@ internal class PlaybackPipeline(
         Log.d(TAG, "Starting video: '${videoInfo.name}' codec=${videoInfo.config.codec}")
 
         statsTracker.resetVideoDecodeStats(videoInfo.name)
+        val timeline = createTimeline()
         val track = VideoRendererTrack(
             trackName = videoInfo.name,
             trackEpoch = videoEpoch,
             config = videoInfo.rawConfig,
             targetBuffering = targetBuffering,
+            timeline = timeline,
         )
         val renderer = VideoRenderer(
             activeTrack = track,
             outputSurface = surface,
             clock = clock,
-            timestampAligner = timestampAligner,
+            timestampMapper = timestampMapper,
             metrics = statsTracker,
             pipelineBus = pipelineBus,
             onError = ::handleVideoRendererError,
@@ -271,7 +298,7 @@ internal class PlaybackPipeline(
         try {
             renderer.start()
             statsTracker.emitSubscribeStart(MediaFrameKind.VIDEO, videoInfo.name, videoEpoch)
-            videoIngestJob = launchVideoIngestJob(videoInfo, track, videoEpoch)
+            videoIngestJob = launchVideoIngestJob(videoInfo, track, videoEpoch, timeline)
         } catch (t: Throwable) {
             renderer.stop()
             videoRenderer = null
@@ -283,6 +310,7 @@ internal class PlaybackPipeline(
         audioInfo: AudioTrackInfo,
         renderer: AudioRenderer,
         trackEpoch: Long,
+        timeline: TrackTimeline,
     ): Job {
         val audioTrack = broadcastOwner.subscribeMedia(
             MediaTrackRequest(track = audioInfo, targetBuffering = targetBuffering),
@@ -290,9 +318,27 @@ internal class PlaybackPipeline(
 
         return scope.launch {
             var firstFrame = true
-            var lastPtsUs: Long? = null
+            fun submit(frame: MediaFrame) {
+                if (firstFrame) {
+                    firstFrame = false
+                    Log.d(TAG, "First audio frame received track='${audioInfo.name}' epoch=$trackEpoch")
+                    renderer.expectPlaybackStart(
+                        TrackReadyContext(
+                            kind = MediaFrameKind.AUDIO,
+                            trackName = audioInfo.name,
+                            sourceTimestampUs = frame.timestampUs,
+                            targetBuffering = targetBuffering,
+                            trackEpoch = trackEpoch,
+                            keyframe = frame.keyframe,
+                            payloadBytes = frame.payload.size,
+                        ),
+                    )
+                }
+                renderer.submitFrame(frame.payload, frame.timestampUs)
+            }
+
             try {
-                frameObserver.onMediaTrackStarted(MediaFrameKind.AUDIO)
+                statsTracker.onMediaTrackStarted(MediaFrameKind.AUDIO)
                 audioTrack.frames.collect { frame ->
                     val eventContext = diagnosticsContext(MediaFrameKind.AUDIO, audioInfo.name)
                     pipelineBus.emit(
@@ -304,40 +350,23 @@ internal class PlaybackPipeline(
                             bytes = frame.payload.size,
                         ),
                     )
-                    val timestampUs = frame.timestampUs
-                    val previousPtsUs = lastPtsUs
-                    if (isDiscontinuity(timestampUs, previousPtsUs, keyframe = true)) {
-                        val gapUs = timestampGapUs(timestampUs, requireNotNull(previousPtsUs))
-                        Log.d(TAG, "Audio discontinuity detected (gap=${gapUs}us)")
-                        renderer.flush()
-                        frameObserver.onFrameDiscontinuity(MediaFrameKind.AUDIO, gapUs)
-                        pipelineBus.emit(
-                            PipelineEvent.Discontinuity(
-                                context = eventContext,
-                                epoch = trackEpoch,
-                                reason = DiscontinuityReason.LOCAL_RESET,
-                            ),
-                        )
-                    }
-                    lastPtsUs = timestampUs
-
-                    frameObserver.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.AUDIO)
-                    if (firstFrame) {
-                        firstFrame = false
-                        Log.d(TAG, "First audio frame received track='${audioInfo.name}' epoch=$trackEpoch")
-                        renderer.expectPlaybackStart(
-                            TrackReadyContext(
+                    statsTracker.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.AUDIO)
+                    clock.currentTimeUs.takeIf { it > 0L }?.let(timeline::onPlaybackPosition)
+                    when (val decision = timeline.onIngest(frame.toIngestEvent(trackEpoch, eventContext.timestampNanos))) {
+                        is TimelineDecision.Admit -> submit(decision.frame.mediaFrame)
+                        is TimelineDecision.Drop -> emitTimelineDrop(eventContext, decision)
+                        is TimelineDecision.Reset -> {
+                            executeTimelineReset(
                                 kind = MediaFrameKind.AUDIO,
-                                trackName = audioInfo.name,
-                                sourceTimestampUs = timestampUs,
-                                targetBuffering = targetBuffering,
-                                trackEpoch = trackEpoch,
-                                keyframe = frame.keyframe,
-                                payloadBytes = frame.payload.size,
-                            ),
-                        )
+                                context = eventContext,
+                                reset = decision,
+                                flushedFrames = 0,
+                                resetExecutor = renderer::flush,
+                            )
+                            decision.resumeFrom?.mediaFrame?.let(::submit)
+                        }
+                        is TimelineDecision.End -> Unit
                     }
-                    renderer.submitFrame(frame.payload, timestampUs)
                 }
 
                 statsTracker.emitSubscribeEnd(MediaFrameKind.AUDIO, audioInfo.name, trackEpoch)
@@ -364,6 +393,7 @@ internal class PlaybackPipeline(
         videoInfo: VideoTrackInfo,
         track: VideoRendererTrack,
         trackEpoch: Long,
+        timeline: TrackTimeline,
     ): Job {
         Log.d(TAG, "Subscribing to video track '${videoInfo.name}'")
         val videoMediaTrack = broadcastOwner.subscribeMedia(
@@ -372,9 +402,65 @@ internal class PlaybackPipeline(
 
         return scope.launch {
             var firstFrame = true
-            var lastPtsUs: Long? = null
+            fun submit(frame: MediaFrame, eventContext: PipelineContext) {
+                val accepted = when (val result = track.insert(frame.payload, frame.timestampUs, frame.keyframe)) {
+                    VideoTrackInsertResult.InvalidPayload -> {
+                        emitBufferDrop(eventContext, frame, DropReason.INVALID_PAYLOAD)
+                        false
+                    }
+                    is VideoTrackInsertResult.Buffered -> {
+                        result.effects.forEach { effect ->
+                            when (effect) {
+                                is AdmissionEffect.Admitted -> pipelineBus.emit(
+                                    PipelineEvent.FrameAdmitted(
+                                        context = eventContext,
+                                        ptsUs = effect.frame.timestampUs,
+                                        bufferDepth = track.bufferDepth,
+                                    ),
+                                )
+                                is AdmissionEffect.Rejected -> emitBufferDrop(
+                                    context = eventContext,
+                                    frame = effect.frame.mediaFrame,
+                                    reason = effect.reason.toDropReason(),
+                                )
+                                is AdmissionEffect.EvictedGop -> {
+                                    recordDroppedFrames(PipelineMediaKind.VIDEO, effect.count)
+                                    pipelineBus.emit(
+                                        PipelineEvent.FrameDropped(
+                                            context = eventContext,
+                                            stage = DropStage.BUFFER,
+                                            reason = DropReason.BACKLOG_OVERFLOW,
+                                            groupSequence = effect.groupSequence,
+                                            count = effect.count,
+                                            bytes = effect.bytes,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                        result.effects.any { it is AdmissionEffect.Admitted }
+                    }
+                }
+
+                if (accepted && firstFrame) {
+                    firstFrame = false
+                    Log.d(TAG, "First video frame accepted track='${videoInfo.name}' epoch=$trackEpoch")
+                    statsTracker.emitTrackReady(
+                        TrackReadyContext(
+                            kind = MediaFrameKind.VIDEO,
+                            trackName = videoInfo.name,
+                            sourceTimestampUs = frame.timestampUs,
+                            targetBuffering = targetBuffering,
+                            trackEpoch = trackEpoch,
+                            keyframe = frame.keyframe,
+                            payloadBytes = frame.payload.size,
+                        ),
+                    )
+                }
+            }
+
             try {
-                frameObserver.onMediaTrackStarted(MediaFrameKind.VIDEO)
+                statsTracker.onMediaTrackStarted(MediaFrameKind.VIDEO)
                 videoMediaTrack.frames.collect { frame ->
                     val eventContext = diagnosticsContext(MediaFrameKind.VIDEO, videoInfo.name)
                     pipelineBus.emit(
@@ -386,58 +472,23 @@ internal class PlaybackPipeline(
                             bytes = frame.payload.size,
                         ),
                     )
-                    val timestampUs = frame.timestampUs
-                    val previousPtsUs = lastPtsUs
-                    if (isDiscontinuity(timestampUs, previousPtsUs, frame.keyframe)) {
-                        val gapUs = timestampGapUs(timestampUs, requireNotNull(previousPtsUs))
-                        Log.d(TAG, "Video discontinuity detected (gap=${gapUs}us)")
-                        frameObserver.onFrameDiscontinuity(MediaFrameKind.VIDEO, gapUs)
-                        pipelineBus.emit(
-                            PipelineEvent.Discontinuity(
-                                context = eventContext,
-                                epoch = trackEpoch,
-                                reason = DiscontinuityReason.LOCAL_RESET,
-                            ),
-                        )
-                    }
-                    lastPtsUs = timestampUs
-
-                    frameObserver.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.VIDEO)
-                    val accepted = track.insert(frame.payload, timestampUs, frame.keyframe)
-                    if (accepted) {
-                        pipelineBus.emit(
-                            PipelineEvent.FrameAdmitted(
-                                context = eventContext,
-                                ptsUs = timestampUs,
-                                bufferDepth = track.bufferDepth,
-                            ),
-                        )
-                    } else {
-                        pipelineBus.emit(
-                            PipelineEvent.FrameDropped(
-                                context = eventContext,
-                                stage = DropStage.BUFFER,
-                                reason = DropReason.INVALID_PAYLOAD,
-                                ptsUs = timestampUs,
-                                bytes = frame.payload.size.toLong(),
-                            ),
-                        )
-                    }
-
-                    if (accepted && firstFrame) {
-                        firstFrame = false
-                        Log.d(TAG, "First video frame accepted track='${videoInfo.name}' epoch=$trackEpoch")
-                        statsTracker.emitTrackReady(
-                            TrackReadyContext(
+                    statsTracker.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.VIDEO)
+                    videoPlaybackPositionUs()?.let(timeline::onPlaybackPosition)
+                    when (val decision = timeline.onIngest(frame.toIngestEvent(trackEpoch, eventContext.timestampNanos))) {
+                        is TimelineDecision.Admit -> submit(decision.frame.mediaFrame, eventContext)
+                        is TimelineDecision.Drop -> emitTimelineDrop(eventContext, decision)
+                        is TimelineDecision.Reset -> {
+                            val flushedFrames = track.bufferDepth.frames
+                            executeTimelineReset(
                                 kind = MediaFrameKind.VIDEO,
-                                trackName = videoInfo.name,
-                                sourceTimestampUs = timestampUs,
-                                targetBuffering = targetBuffering,
-                                trackEpoch = trackEpoch,
-                                keyframe = frame.keyframe,
-                                payloadBytes = frame.payload.size,
-                            ),
-                        )
+                                context = eventContext,
+                                reset = decision,
+                                flushedFrames = flushedFrames,
+                                resetExecutor = { videoRenderer?.resetForTimeline(track) },
+                            )
+                            decision.resumeFrom?.mediaFrame?.let { submit(it, eventContext) }
+                        }
+                        is TimelineDecision.End -> Unit
                     }
                 }
 
@@ -534,35 +585,142 @@ internal class PlaybackPipeline(
         restartCoordinator()
     }
 
-    private fun videoLiveTimeForStats(hasAudio: Boolean): Long? {
-        val videoTime = timestampAligner.videoLiveEdge.estimatedLivePTS()
-            ?.takeIf { it >= 0L }
-            ?: return null
-        if (!hasAudio) return videoTime
-        return timestampAligner.audioTime(
-            videoTime = videoTime,
-            threshold = PTS_CORRECTION_THRESHOLD_US,
+    private fun createTimeline(): TrackTimeline = TrackTimeline(
+        policy = PipelinePolicies.timeline.copy(
+            targetLatencyUs = targetBuffering.toMicrosecondsLongClamped(),
+        ),
+        timeSource = MonotonicTimeSource,
+    )
+
+    private fun updateTimelinePlaybackPositions(hasAudio: Boolean) {
+        val playbackUs = clock.currentTimeUs.takeIf { it > 0L } ?: return
+        audioTimeline?.onPlaybackPosition(playbackUs)
+        val videoPlaybackUs = if (hasAudio) {
+            timestampMapper.videoTimeUsOrNull(
+                audioTimeUs = playbackUs,
+                thresholdUs = TIMELINE_DOMAIN_TOLERANCE_US,
+            )
+        } else {
+            playbackUs
+        }
+        videoPlaybackUs?.let { videoRenderer?.activeTimeline?.onPlaybackPosition(it) }
+    }
+
+    private fun videoPlaybackPositionUs(): Long? {
+        val playbackUs = clock.currentTimeUs.takeIf { it > 0L } ?: return null
+        return if (audioRenderer != null) {
+            timestampMapper.videoTimeUsOrNull(
+                audioTimeUs = playbackUs,
+                thresholdUs = TIMELINE_DOMAIN_TOLERANCE_US,
+            )
+        } else {
+            playbackUs
+        }
+    }
+
+    private fun executeTimelineReset(
+        kind: MediaFrameKind,
+        context: PipelineContext,
+        reset: TimelineDecision.Reset,
+        flushedFrames: Int,
+        resetExecutor: () -> Unit,
+    ) {
+        Log.d(TAG, "${kind.name.lowercase()} timeline reset reason=${reset.reason} gap=${reset.gapUs}us")
+        resetExecutor()
+        reset.gapUs?.let { statsTracker.onFrameDiscontinuity(kind, it) }
+        pipelineBus.emit(
+            PipelineEvent.Discontinuity(
+                context = context,
+                epoch = reset.epoch,
+                reason = reset.reason.toDiscontinuityReason(),
+            ),
+        )
+        if (flushedFrames > 0) {
+            recordDroppedFrames(context.mediaKind, flushedFrames)
+            pipelineBus.emit(
+                PipelineEvent.FrameDropped(
+                    context = context,
+                    stage = DropStage.TIMELINE,
+                    reason = reset.reason.toDropReason(),
+                    count = flushedFrames,
+                ),
+            )
+        }
+    }
+
+    private fun emitTimelineDrop(context: PipelineContext, decision: TimelineDecision.Drop) {
+        if (decision.frame != null) recordDroppedFrames(context.mediaKind, 1)
+        pipelineBus.emit(
+            PipelineEvent.FrameDropped(
+                context = context,
+                stage = DropStage.TIMELINE,
+                reason = decision.reason.toDropReason(),
+                ptsUs = decision.frame?.timestampUs,
+                groupSequence = decision.frame?.groupSequence,
+                count = decision.groupRange?.countClampedToInt() ?: 1,
+                bytes = decision.frame?.sizeBytes?.toLong() ?: 0L,
+            ),
         )
     }
 
-    private fun playbackLatency(liveTime: Long?, currentTimeUs: Long): Duration? {
-        val live = liveTime ?: return null
-        val latencyUs = try {
-            Math.subtractExact(live, currentTimeUs)
-        } catch (_: ArithmeticException) {
-            return null
+    private fun emitBufferDrop(context: PipelineContext, frame: MediaFrame, reason: DropReason) {
+        recordDroppedFrames(context.mediaKind, 1)
+        pipelineBus.emit(
+            PipelineEvent.FrameDropped(
+                context = context,
+                stage = DropStage.BUFFER,
+                reason = reason,
+                ptsUs = frame.timestampUs,
+                bytes = frame.payload.size.toLong(),
+            ),
+        )
+    }
+
+    private fun AdmissionRejectReason.toDropReason(): DropReason = when (this) {
+        AdmissionRejectReason.WAITING_FOR_KEYFRAME -> DropReason.WAITING_FOR_KEYFRAME
+        AdmissionRejectReason.FRAME_TOO_LARGE -> DropReason.BACKLOG_OVERFLOW
+        AdmissionRejectReason.OLD_EPOCH,
+        AdmissionRejectReason.UNEXPECTED_EPOCH -> DropReason.PUBLISHER_REWIND
+        AdmissionRejectReason.DUPLICATE -> DropReason.COVERED
+    }
+
+    private fun recordDroppedFrames(kind: PipelineMediaKind, count: Int) {
+        when (kind) {
+            PipelineMediaKind.AUDIO -> statsTracker.recordAudioFramesDropped(count)
+            PipelineMediaKind.VIDEO -> statsTracker.recordVideoFrameDropped(count)
         }
-        return durationFromMicroseconds(maxOf(0L, latencyUs))
     }
 
-    private fun isDiscontinuity(currentUs: Long, lastUs: Long?, keyframe: Boolean): Boolean {
-        val previous = lastUs ?: return false
-        if (!keyframe) return false
-        return timestampGapUs(currentUs, previous) > 500_000L
+    private fun TimelineDropReason.toDropReason(): DropReason = when (this) {
+        TimelineDropReason.STALE_VS_PLAYBACK -> DropReason.STALE_VS_PLAYBACK
+        TimelineDropReason.LATENCY_BUDGET_SKIP -> DropReason.LATENCY_BUDGET_SKIP
+        TimelineDropReason.NETWORK_EVICTED -> DropReason.NETWORK_EVICTED
+        TimelineDropReason.COVERED -> DropReason.COVERED
+        TimelineDropReason.REWIND -> DropReason.PUBLISHER_REWIND
+        TimelineDropReason.MISSING_SEQUENCE -> DropReason.MISSING_SEQUENCE
     }
 
-    private fun timestampGapUs(currentUs: Long, lastUs: Long): Long =
-        if (currentUs >= lastUs) currentUs - lastUs else lastUs - currentUs
+    private fun TimelineResetReason.toDropReason(): DropReason = when (this) {
+        TimelineResetReason.PUBLISHER_REWIND -> DropReason.PUBLISHER_REWIND
+        TimelineResetReason.TIMESTAMP_GAP -> DropReason.TIMESTAMP_GAP_RESET
+        TimelineResetReason.DOWNSTREAM_RECOVERY -> DropReason.RESET_FLUSH
+    }
+
+    private fun TimelineResetReason.toDiscontinuityReason(): DiscontinuityReason = when (this) {
+        TimelineResetReason.PUBLISHER_REWIND -> DiscontinuityReason.PUBLISHER_REWIND
+        TimelineResetReason.TIMESTAMP_GAP,
+        TimelineResetReason.DOWNSTREAM_RECOVERY -> DiscontinuityReason.LOCAL_RESET
+    }
+
+    private fun LongRange.countClampedToInt(): Int {
+        if (isEmpty()) return 0
+        val distance = try {
+            Math.subtractExact(last, first)
+        } catch (_: ArithmeticException) {
+            return Int.MAX_VALUE
+        }
+        return if (distance >= Int.MAX_VALUE.toLong()) Int.MAX_VALUE else distance.toInt() + 1
+    }
 
     private fun diagnosticsContext(kind: MediaFrameKind, trackName: String): PipelineContext =
         PipelineContext(
@@ -609,4 +767,13 @@ private fun MediaFrame.toMoqFrame(): MoqFrame =
         payload = payload,
         timestampUs = timestampUs.coerceAtLeast(0L).toULong(),
         keyframe = keyframe,
+    )
+
+private fun MediaFrame.toIngestEvent(epoch: Long, arrivalNanos: Long): IngestEvent.Frame =
+    IngestEvent.Frame(
+        frame = TimedFrame(
+            mediaFrame = this,
+            epoch = epoch,
+        ),
+        arrivalNanos = arrivalNanos,
     )

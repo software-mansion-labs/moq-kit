@@ -44,7 +44,7 @@ internal data class TrackReadyContext(
 internal class PlaybackStatsTracker(
     private val events: PlayerEventHub = PlayerEventHub(),
     private val clock: () -> Long = System::nanoTime,
-) : MediaFrameObserver {
+) {
     private data class ArrivalInterval(val ns: Long, val ms: Double)
 
     private data class FrameArrivalState(
@@ -441,9 +441,10 @@ internal class PlaybackStatsTracker(
         }
     }
 
-    fun recordVideoFrameDropped() {
+    fun recordVideoFrameDropped(count: Int = 1) {
+        if (count <= 0) return
         synchronized(lock) {
-            videoFramesDroppedCount++
+            videoFramesDroppedCount += count
         }
     }
 
@@ -559,7 +560,7 @@ internal class PlaybackStatsTracker(
         }
     }
 
-    override fun onMediaTrackStarted(kind: MediaFrameKind) {
+    fun onMediaTrackStarted(kind: MediaFrameKind) {
         synchronized(lock) {
             when (kind) {
                 MediaFrameKind.AUDIO -> audioArrival.resetTimingBaseline()
@@ -568,7 +569,7 @@ internal class PlaybackStatsTracker(
         }
     }
 
-    override fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
+    fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
         val now = clock()
         val timestampUs = frame.timestampUs.toLong()
         val payloadSize = frame.payload.size
@@ -590,7 +591,7 @@ internal class PlaybackStatsTracker(
         }
     }
 
-    override fun onFrameDiscontinuity(kind: MediaFrameKind, gapUs: Long) {
+    fun onFrameDiscontinuity(kind: MediaFrameKind, gapUs: Long) {
         synchronized(lock) {
             val gapMs = gapUs.toDouble() / 1_000.0
             when (kind) {

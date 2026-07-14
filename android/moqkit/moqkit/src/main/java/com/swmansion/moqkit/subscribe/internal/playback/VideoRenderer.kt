@@ -13,6 +13,7 @@ import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.SwitchPhase
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimestampDomainMapper
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -21,7 +22,7 @@ import java.util.concurrent.atomic.AtomicReference
 private const val TAG = "VideoRenderer"
 
 /**
- * Orchestrates JitterBuffer + VideoDecoder for real-time video rendering.
+ * Orchestrates FrameBuffer-backed tracks + VideoDecoder for real-time video rendering.
  *
  * Supports seamless rendition switching via an active + pending track model:
  * - The active track feeds the decoder continuously.
@@ -43,7 +44,7 @@ internal class VideoRenderer(
     @Volatile private var activeTrack: VideoRendererTrack,
     @Volatile private var outputSurface: Surface,
     private val clock: MediaClock? = null,
-    private val timestampAligner: MediaTimestampAligner? = null,
+    private val timestampMapper: TimestampDomainMapper? = null,
     private val metrics: PlaybackStatsTracker? = null,
     private val pipelineBus: PipelineBus? = null,
     private val onError: (Throwable) -> Unit = {},
@@ -116,6 +117,7 @@ internal class VideoRenderer(
     }
 
     val bufferFill: Duration get() = activeTrack.depth
+    val activeTimeline get() = activeTrack.timeline
 
     // MARK: - Lifecycle
 
@@ -227,6 +229,30 @@ internal class VideoRenderer(
         }
     }
 
+    /** Executes a reset selected by the track timeline; this method owns decoder-side effects. */
+    fun resetForTimeline(track: VideoRendererTrack) {
+        track.flush()
+        if (track === activeTrack && clock?.isVideoDriven == true) {
+            clock.reset()
+        }
+        postDecoderWork {
+            when (track) {
+                activeTrack -> {
+                    decoder?.flush()
+                    parkedInputBuffers.clear()
+                    queuedFramesByPts.clear()
+                    stallHorizon.reset()
+                    noDisplayBeforePts = Long.MIN_VALUE
+                    lastFedPtsUs = 0L
+                    timelineStarted = clock?.isVideoDriven != true
+                    lastKnownClockTimeUs = 0L
+                }
+
+                pendingTrack -> track.setBufferState(VideoBufferState.PENDING)
+            }
+        }
+    }
+
     /**
      * Retarget decoder output to [surface]. If the decoder is not initialized yet, only updates
      * the stored surface so the next decoder creation binds to the new target.
@@ -253,7 +279,7 @@ internal class VideoRenderer(
         handler.post {
             pendingTrack?.setOnDataAvailable(null)
             noDisplayBeforePts = 0L
-            track.setBufferState(JitterBuffer.State.PENDING)
+            track.setBufferState(VideoBufferState.PENDING)
             pendingTrack = track
             trackSwapPhase = TrackSwapPhase.AwaitingKeyframe
             onTrackActivated = onActivated
@@ -453,7 +479,7 @@ internal class VideoRenderer(
                     pending.discardNonKeyframesBeforePts(kfPts)
                     if (lastFedPtsUs >= kfPts) {
                         noDisplayBeforePts = lastFedPtsUs
-                        pending.setBufferState(JitterBuffer.State.PLAYING)
+                        pending.setBufferState(VideoBufferState.PLAYING)
                         Log.d(TAG, "Performing swap via cutting-in phase")
                         performSwap(pending)
                         trackSwapPhase = null
@@ -461,7 +487,7 @@ internal class VideoRenderer(
                 }
 
                 is TrackSwapPhase.FlushAndSwap -> {
-                    pending.setBufferState(JitterBuffer.State.PLAYING)
+                    pending.setBufferState(VideoBufferState.PLAYING)
                     Log.d(TAG, "Performing swap via flush-and-swap")
                     performSwap(pending, hardFlush = true)
                     trackSwapPhase = null
@@ -498,8 +524,8 @@ internal class VideoRenderer(
 
         ensureMatchingCodecs(activeTrack, newTrack)
         // Rendition switching assumes all video tracks use the same source timestamp domain.
-        // If future tracks can use different domains, MediaTimestampAligner needs per-track
-        // live edges or switch-time offsets before comparing keyframe and fed PTS values.
+        // TimestampDomainMapper compares the active audio/video timeline domains before
+        // scheduling; rendition tracks are still expected to share one video source domain.
 
         val currentDecoder = decoder
         if (currentDecoder != null) {
@@ -787,7 +813,7 @@ internal class VideoRenderer(
     }
 
     private fun startVideoClockIfReady(mediaClock: MediaClock): Boolean {
-        if (activeTrack.state != JitterBuffer.State.PLAYING) return false
+        if (activeTrack.state != VideoBufferState.PLAYING) return false
         val sourceStartUs = activeTrack.targetPlaybackPTS()
             ?: activeTrack.peekFront()?.first
             ?: return false
@@ -855,9 +881,9 @@ internal class VideoRenderer(
     }
 
     private fun audioTime(videoTime: Long): Long =
-        timestampAligner?.audioTime(
-            videoTime = videoTime,
-            threshold = PTS_CORRECTION_THRESHOLD_US,
+        timestampMapper?.audioTimeUs(
+            videoTimeUs = videoTime,
+            thresholdUs = PTS_CORRECTION_THRESHOLD_US,
         ) ?: videoTime
 
     private fun diagnosticsContext(trackName: String, timestampNanos: Long = System.nanoTime()) =
