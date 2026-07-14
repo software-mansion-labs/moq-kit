@@ -86,17 +86,15 @@ internal class VideoRendererTrack(
         while (true) {
             val front = buffer.peekFront() ?: break
             if (front.item.isKeyframe || front.timestampUs >= pts) break
-            if (buffer.discardFront()) {
-                bufferedBytes.addAndGet(-front.item.payload.size.toLong())
-            }
+            val discarded = buffer.removeFront() ?: break
+            bufferedBytes.addAndGet(-discarded.item.payload.size.toLong())
         }
     }
 
     fun discardFront(): Boolean {
-        val front = buffer.peekFront() ?: return false
-        val discarded = buffer.discardFront()
-        if (discarded) bufferedBytes.addAndGet(-front.item.payload.size.toLong())
-        return discarded
+        val discarded = buffer.removeFront() ?: return false
+        bufferedBytes.addAndGet(-discarded.item.payload.size.toLong())
+        return true
     }
 
     fun setOnDataAvailable(callback: (() -> Unit)?) {

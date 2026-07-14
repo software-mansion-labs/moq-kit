@@ -170,9 +170,11 @@ class Player(
         playing = true
         hasStartedPlaybackSession = true
         val shouldEmitResume = isPaused
+        stallCoordinator.start()
         playbackPipeline = try {
             makePlaybackPipeline()
         } catch (t: Throwable) {
+            stallCoordinator.stop()
             playing = false
             hasStartedPlaybackSession = false
             throw t
@@ -357,6 +359,7 @@ class Player(
                     com.swmansion.moqkit.subscribe.internal.playback.MediaFrameKind.VIDEO
                 },
             )
+            stallCoordinator.start()
             playbackPipeline = makePlaybackPipeline()
             startStatsSampling()
             publishStatsSample()
@@ -369,6 +372,7 @@ class Player(
             pipeline.stop()
         }
         playbackPipeline = null
+        stallCoordinator.stop()
         stopStatsSampling()
         statsTracker.closeOutInFlightStalls()
         if (permanent) {
