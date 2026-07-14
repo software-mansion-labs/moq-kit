@@ -61,10 +61,14 @@ internal class JitterBuffer<T>(
      * Returns true if an entry was removed.
      */
     fun discardFront(): Boolean {
+        return removeFront() != null
+    }
+
+    /** Atomically remove and return the front entry regardless of mode. */
+    fun removeFront(): Entry<T>? {
         synchronized(lock) {
-            if (entries.isEmpty()) return false
-            entries.removeAt(0)
-            return true
+            if (entries.isEmpty()) return null
+            return entries.removeAt(0)
         }
     }
 

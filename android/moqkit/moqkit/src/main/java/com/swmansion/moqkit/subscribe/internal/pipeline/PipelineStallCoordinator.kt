@@ -18,17 +18,28 @@ internal class PipelineStallCoordinator(
     private val lock = Any()
     private val monitors = mutableMapOf<TrackKey, StallMonitor>()
     private val observation = bus.observe(::onEvent)
-    private val evaluationJob: Job = scope.launch {
-        while (isActive) {
-            delay(EVALUATION_INTERVAL_MILLIS)
-            evaluate()
+    private val scope = scope
+    private var evaluationJob: Job? = null
+
+    fun start() {
+        if (evaluationJob?.isActive == true) return
+        evaluationJob = scope.launch {
+            while (isActive) {
+                delay(EVALUATION_INTERVAL_MILLIS)
+                evaluate()
+            }
         }
+    }
+
+    fun stop() {
+        evaluationJob?.cancel()
+        evaluationJob = null
+        synchronized(lock) { monitors.clear() }
     }
 
     override fun close() {
         observation.close()
-        evaluationJob.cancel()
-        synchronized(lock) { monitors.clear() }
+        stop()
     }
 
     internal fun evaluate() {

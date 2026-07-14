@@ -39,12 +39,11 @@ internal sealed interface TimelineDecision {
  */
 internal class TrackTimeline(
     private val policy: TimelinePolicy,
-    private val timeSource: TimeSource,
+    @Suppress("unused") private val timeSource: TimeSource,
 ) {
     private var liveEdge: Long? = null
     private var playbackPosition: Long? = null
     private var lastTimestamp: Long? = null
-    private var lastArrivalNanos: Long? = null
 
     var currentEpoch: Long? = null
         private set
@@ -91,8 +90,6 @@ internal class TrackTimeline(
 
     private fun onFrame(event: IngestEvent.Frame): TimelineDecision {
         val frame = event.frame
-        lastArrivalNanos = maxOf(event.arrivalNanos, timeSource.nanoTime())
-
         val epoch = currentEpoch
         if (epoch != null && frame.epoch != epoch) {
             return resetForEpoch(frame.epoch, resumeFrom = frame)
