@@ -17,6 +17,12 @@ internal interface RenderSink {
     fun drop(frame: DecodedFrame)
 }
 
+internal sealed interface RenderExecution {
+    data class Rendered(val renderNanos: Long, val confirmed: Boolean) : RenderExecution
+    data class DroppedLate(val latenessUs: Long) : RenderExecution
+    data class Held(val recheckAfterUs: Long) : RenderExecution
+}
+
 /** Per-frame render timing policy, independent of MediaCodec output-buffer mechanics. */
 internal class RenderScheduler(
     private val policy: RenderPolicy,
@@ -61,4 +67,23 @@ internal class RenderScheduler(
     private companion object {
         const val NANOS_PER_MICROSECOND = 1_000L
     }
+}
+
+/** Executes pure scheduling verdicts while keeping platform output ownership in [RenderSink]. */
+internal class RenderController(
+    private val scheduler: RenderScheduler,
+    private val sink: RenderSink,
+) {
+    fun process(frame: DecodedFrame, nowNanos: Long): RenderExecution =
+        when (val verdict = scheduler.verdict(frame, nowNanos)) {
+            is RenderVerdict.RenderAt -> RenderExecution.Rendered(
+                renderNanos = verdict.renderNanos,
+                confirmed = sink.render(frame, verdict.renderNanos),
+            )
+            is RenderVerdict.DropLate -> {
+                sink.drop(frame)
+                RenderExecution.DroppedLate(verdict.latenessUs)
+            }
+            is RenderVerdict.Hold -> RenderExecution.Held(verdict.recheckAfterUs)
+        }
 }

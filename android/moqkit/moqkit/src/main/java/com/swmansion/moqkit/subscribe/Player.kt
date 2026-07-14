@@ -69,6 +69,7 @@ class Player(
     private val pipelineBus = PipelineBus()
     private val stallCoordinator = PipelineStallCoordinator(pipelineBus, scope)
     private val statsTracker = PlaybackStatsTracker(events = eventHub)
+    private val pipelineStatsObservation = pipelineBus.observe(statsTracker::onPipelineEvent)
     private val mutableStatsUpdates = MutableSharedFlow<PlaybackStats>(extraBufferCapacity = 8)
 
     /**
@@ -323,6 +324,7 @@ class Player(
         playing = false
         teardownPlayback(permanent = true, reason = "close()")
         emitPlayerDestroy()
+        pipelineStatsObservation.close()
         stallCoordinator.close()
         scope.cancel()
         broadcastOwner.release()

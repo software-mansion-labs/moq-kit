@@ -2,6 +2,8 @@ package com.swmansion.moqkit.subscribe.internal.playback
 
 import com.swmansion.moqkit.subscribe.FrameArrivalStats
 import com.swmansion.moqkit.subscribe.PlaybackStats
+import com.swmansion.moqkit.subscribe.PipelineEvent
+import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.PlayerAudioPlaybackOutput
 import com.swmansion.moqkit.subscribe.PlayerEventType
 import com.swmansion.moqkit.subscribe.PlayerPlaybackEndEvent
@@ -383,6 +385,19 @@ internal class PlaybackStatsTracker(
                 },
             )
         }
+    }
+
+    fun onPipelineEvent(event: PipelineEvent) {
+        when (event) {
+            is PipelineEvent.StallStarted -> noteStall(event.context.mediaKind.toFrameKind(), true)
+            is PipelineEvent.StallEnded -> noteStall(event.context.mediaKind.toFrameKind(), false)
+            else -> Unit
+        }
+    }
+
+    private fun PipelineMediaKind.toFrameKind(): MediaFrameKind = when (this) {
+        PipelineMediaKind.AUDIO -> MediaFrameKind.AUDIO
+        PipelineMediaKind.VIDEO -> MediaFrameKind.VIDEO
     }
 
     fun armAudioPlaybackStart(context: PlaybackStartContext) {

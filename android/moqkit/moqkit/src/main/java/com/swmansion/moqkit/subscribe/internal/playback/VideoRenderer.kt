@@ -11,18 +11,27 @@ import com.swmansion.moqkit.subscribe.DropStage
 import com.swmansion.moqkit.subscribe.PipelineContext
 import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
-import com.swmansion.moqkit.subscribe.RecoveryStep
 import com.swmansion.moqkit.subscribe.SwitchPhase
 import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.DiscontinuityReason
+import com.swmansion.moqkit.subscribe.internal.pipeline.ClockDriver
+import com.swmansion.moqkit.subscribe.internal.pipeline.DecodedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEvent
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryExecutor
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryResult
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderSupervisor
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
+import com.swmansion.moqkit.subscribe.internal.pipeline.DriverKind
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
+import com.swmansion.moqkit.subscribe.internal.pipeline.PlaybackClock
+import com.swmansion.moqkit.subscribe.internal.pipeline.RenderController
+import com.swmansion.moqkit.subscribe.internal.pipeline.RenderExecution
+import com.swmansion.moqkit.subscribe.internal.pipeline.RenderScheduler
+import com.swmansion.moqkit.subscribe.internal.pipeline.RenditionSwitchController
 import com.swmansion.moqkit.subscribe.internal.pipeline.RecoveryAttempt
+import com.swmansion.moqkit.subscribe.internal.pipeline.SwitchDecision
+import com.swmansion.moqkit.subscribe.internal.pipeline.SwitchState
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimestampDomainMapper
 import kotlinx.coroutines.CoroutineScope
@@ -67,14 +76,6 @@ internal class VideoRenderer(
     private val pipelineBus: PipelineBus? = null,
     private val onError: (Throwable) -> Unit = {},
 ) {
-    // Pending-track swap state machine
-
-    private sealed class TrackSwapPhase {
-        object AwaitingKeyframe : TrackSwapPhase()
-        data class CuttingIn(val keyframePts: Long) : TrackSwapPhase()
-        object FlushAndSwap : TrackSwapPhase()
-    }
-
     private data class QueuedFrameMetadata(
         val trackName: String,
         val queuedAtNs: Long,
@@ -83,7 +84,8 @@ internal class VideoRenderer(
     )
 
     private var pendingTrack: VideoRendererTrack? = null
-    private var trackSwapPhase: TrackSwapPhase? = null
+    private val switchPolicy = PipelinePolicies.switch
+    private val switchController = RenditionSwitchController(switchPolicy)
     private var onTrackActivated: (() -> Unit)? = null
 
     @Volatile
@@ -97,8 +99,17 @@ internal class VideoRenderer(
 
     private val handlerThread = HandlerThread("VideoRenderer").apply { start() }
     private val handler = Handler(handlerThread.looper)
+    private val stallObservation = pipelineBus?.observe(::onPipelineEvent)
+    private var clockStallTrackId: String? = null
     private val decoderScope = CoroutineScope(
         SupervisorJob() + handler.asCoroutineDispatcher("VideoRendererDecoder"),
+    )
+    private val schedulerClock = PlaybackClock(PipelinePolicies.clock, MonotonicTimeSource).apply {
+        attachDriver(ClockDriver(::renderClockPositionUs), DriverKind.VIDEO)
+    }
+    private val renderController = RenderController(
+        scheduler = RenderScheduler(PipelinePolicies.render, schedulerClock),
+        sink = AndroidVideoRenderSink { decoder },
     )
 
     // Decoder state (only accessed on HandlerThread)
@@ -112,9 +123,8 @@ internal class VideoRenderer(
     private val decoder: VideoDecoder?
         get() = decoderRecovery.currentSession
     private val queuedFramesByPts = HashMap<Long, QueuedFrameMetadata>()
+    private val heldRenderCallbacks = mutableSetOf<Runnable>()
     private var delayedDrainToken: Any? = null
-    private var pendingStallCheck: Runnable? = null
-    private val stallHorizon = VideoStallHorizon()
 
     /** PTS of the most recently fed frame to MediaCodec (used by swap state machine). */
     private var lastFedPtsUs: Long = 0L
@@ -132,13 +142,7 @@ internal class VideoRenderer(
     private var isPlaybackStartEventArmed = true
 
     companion object {
-        private const val MAX_AHEAD_US = 500_000L
-        private const val MAX_RENDER_SCHEDULE_NS = 500_000_000L
-        private const val LATE_DROP_THRESHOLD_US = 50_000L
         private const val PTS_CORRECTION_THRESHOLD_US = 2_000_000L
-        private const val CUT_IN_WINDOW_US = 500_000L
-        private const val FLUSH_THRESHOLD_US = 2_000_000L
-        private const val AWAITING_KEYFRAME_TIMEOUT_MS = 5_000L
         private const val HANDLER_SYNC_TIMEOUT_MS = 2_000L
         private const val CLOCK_RETARGET_TOLERANCE_US = 20_000L
     }
@@ -153,12 +157,10 @@ internal class VideoRenderer(
 
         activeTrack.setOnDataAvailable {
             postDecoderWork {
-                cancelPendingVideoStallCheck()
                 if (activeTrack.isProcessorReady) {
                     maybeInitDecoder()
                 }
                 tryFeedDecoder()
-                requestVideoStallCheck()
             }
         }
         if (activeTrack.isProcessorReady) {
@@ -224,7 +226,7 @@ internal class VideoRenderer(
 
     private fun resetForDecoderRecovery() {
         val reset = activeTrack.timeline.requestReset()
-        val flushedFrames = activeTrack.flush() + queuedFramesByPts.size
+        val flushedFrames = activeTrack.flush() + queuedFramesByPts.size + heldRenderCallbacks.size
         resetDecoderPipelineState()
         isPlaybackStartEventArmed = true
         pipelineBus?.emit(
@@ -248,13 +250,18 @@ internal class VideoRenderer(
     }
 
     private fun resetDecoderPipelineState() {
+        cancelHeldRenders()
         queuedFramesByPts.clear()
-        stallHorizon.reset()
         noDisplayBeforePts = Long.MIN_VALUE
         lastFedPtsUs = 0L
         timelineStarted = clock?.isVideoDriven != true
         lastKnownClockTimeUs = 0L
         if (clock?.isVideoDriven == true) clock.reset()
+    }
+
+    private fun cancelHeldRenders() {
+        heldRenderCallbacks.forEach(handler::removeCallbacks)
+        heldRenderCallbacks.clear()
     }
 
     private fun emitDecoderRecovery(attempt: RecoveryAttempt) {
@@ -268,6 +275,19 @@ internal class VideoRenderer(
         )
     }
 
+    private fun onPipelineEvent(event: PipelineEvent) {
+        if (event.context.mediaKind != PipelineMediaKind.VIDEO) return
+        when (event) {
+            is PipelineEvent.StallStarted -> handler.post {
+                runDecoderWorkSafely { beginVideoStall(event.context.trackId) }
+            }
+            is PipelineEvent.StallEnded -> handler.post {
+                runDecoderWorkSafely { endVideoStall(event.context.trackId) }
+            }
+            else -> Unit
+        }
+    }
+
     fun stop() {
         Log.d(TAG, "Stopping VideoRenderer")
 
@@ -278,25 +298,24 @@ internal class VideoRenderer(
         handler.post {
             delayedDrainToken?.let { handler.removeCallbacksAndMessages(it) }
             delayedDrainToken = null
-            pendingStallCheck?.let { handler.removeCallbacks(it) }
-            pendingStallCheck = null
-            stallHorizon.reset()
             awaitingKeyframeTimeout?.let { handler.removeCallbacks(it) }
             awaitingKeyframeTimeout = null
             noDisplayBeforePts = 0L
             pendingCsd = null
             pendingTrack = null
-            trackSwapPhase = null
+            switchController.complete()
             timelineStarted = clock?.isVideoDriven != true
             lastKnownClockTimeUs = 0L
             if (clock?.isVideoDriven == true) {
                 clock.reset()
             }
+            cancelHeldRenders()
             queuedFramesByPts.clear()
             decoderEventsJob?.cancel()
             decoderEventsJob = null
             decoderRecovery.release()
             decoderScope.cancel()
+            stallObservation?.close()
             handlerThread.quitSafely()
 
             Log.d(TAG, "VideoRenderer stopped")
@@ -352,7 +371,7 @@ internal class VideoRenderer(
     }
 
     /**
-     * Install a pending track. The [SwapPhase] state machine in [tryFeedDecoder] will
+     * Install a pending track. The switch state machine in [tryFeedDecoder] will
      * decide between cut-in and flush-and-swap, then call [performSwap].
      * [onActivated] is called on the HandlerThread at the moment of the swap.
      */
@@ -364,31 +383,28 @@ internal class VideoRenderer(
             noDisplayBeforePts = 0L
             track.setBufferState(VideoBufferState.PENDING)
             pendingTrack = track
-            trackSwapPhase = TrackSwapPhase.AwaitingKeyframe
+            switchController.begin(track.trackName)
             onTrackActivated = onActivated
             track.setOnDataAvailable {
                 postDecoderWork {
-                    cancelPendingVideoStallCheck()
                     tryFeedDecoder()
-                    requestVideoStallCheck()
                 }
             }
 
             awaitingKeyframeTimeout?.let { handler.removeCallbacks(it) }
             val timeout = Runnable {
                 awaitingKeyframeTimeout = null
-                if (trackSwapPhase is TrackSwapPhase.AwaitingKeyframe) {
-                    Log.w(
-                        TAG,
-                        "AwaitingKeyframe timed out after ${AWAITING_KEYFRAME_TIMEOUT_MS}ms, forcing FlushAndSwap"
-                    )
-                    trackSwapPhase = TrackSwapPhase.FlushAndSwap
-                    emitSwitchProgress(track.trackName, SwitchPhase.FLUSH_SWAP)
-                    runDecoderWorkSafely { tryFeedDecoder() }
+                if (switchController.onTimeout() is SwitchDecision.Abort) {
+                    Log.w(TAG, "Rendition switch timed out; keeping active track")
+                    track.setOnDataAvailable(null)
+                    pendingTrack = null
+                    hasPendingTrack = false
+                    onTrackActivated = null
+                    emitSwitchProgress(track.trackName, SwitchPhase.ABORTED)
                 }
             }
             awaitingKeyframeTimeout = timeout
-            handler.postDelayed(timeout, AWAITING_KEYFRAME_TIMEOUT_MS)
+            handler.postDelayed(timeout, switchPolicy.keyframeTimeoutUs / 1_000L)
         }
     }
 
@@ -405,31 +421,13 @@ internal class VideoRenderer(
         // --- Drain active track ---
         val activeDecoder = decoder ?: return
         while (activeDecoder.canQueueInput) {
-            val mediaTimeUs = playbackTimeUsForScheduling()
-
-            val nextPts = activeTrack.peekNextTimestampUs() ?: run {
-                requestVideoStallCheck()
+            if (activeTrack.peekNextTimestampUs() == null) {
                 return
-            }
-
-            if (mediaTimeUs != null) {
-                val aheadUs = audioTime(nextPts) - mediaTimeUs
-                if (aheadUs > MAX_AHEAD_US) {
-                    val delayMs = ((aheadUs - MAX_AHEAD_US) / 1000L).coerceIn(1L, 100L)
-                    delayedDrainToken = Any()
-                    handler.postDelayed(
-                        { runDecoderWorkSafely { tryFeedDecoder() } },
-                        delayedDrainToken,
-                        delayMs,
-                    )
-                    return
-                }
             }
 
             val frontFrameIntervalUs = activeTrack.frontFrameIntervalUs
             val (entry, playable) = activeTrack.dequeue()
             if (entry == null) {
-                requestVideoStallCheck()
                 return
             }
             emitBufferDepth(activeTrack)
@@ -445,7 +443,6 @@ internal class VideoRenderer(
                 epoch = activeTrack.trackEpoch,
             )
             if (activeDecoder.queueInput(frame)) {
-                stallHorizon.recordCodecInputSubmitted(playable)
                 queuedFramesByPts[entry.item.timestampUs] = QueuedFrameMetadata(
                     trackName = activeTrack.trackName,
                     queuedAtNs = queuedAtNs,
@@ -469,7 +466,6 @@ internal class VideoRenderer(
                     timestampNanos = queuedAtNs,
                     stage = DropStage.DECODER,
                 )
-                if (playable) requestVideoStallCheck()
             }
         }
     }
@@ -479,113 +475,67 @@ internal class VideoRenderer(
         delayedDrainToken = null
     }
 
-    private fun cancelPendingVideoStallCheck() {
-        pendingStallCheck?.let { handler.removeCallbacks(it) }
-        pendingStallCheck = null
-        stallHorizon.clearPendingStallMarker()
-    }
-
-    private fun requestVideoStallCheck() {
-        cancelPendingVideoStallCheck()
-
-        if (activeTrack.peekNextTimestampUs() != null) {
-            return
-        }
-
-        maybePromotePendingTrack()
-        if (activeTrack.peekNextTimestampUs() != null) {
-            handler.post { runDecoderWorkSafely { tryFeedDecoder() } }
-            return
-        }
-
-        when (val decision = stallHorizon.evaluateStallStart(System.nanoTime())) {
-            is VideoStallDecision.Wait -> scheduleVideoStallCheck(decision.delayNs)
-            VideoStallDecision.BeginStall -> beginVideoStall()
-            VideoStallDecision.AlreadyStalled,
-            VideoStallDecision.WaitingForFrame -> Unit
-        }
-    }
-
-    private fun scheduleVideoStallCheck(afterNs: Long) {
-        val delayMs = TimeUnit.NANOSECONDS.toMillis(afterNs).coerceAtLeast(1L)
-        val check = Runnable {
-            pendingStallCheck = null
-            runDecoderWorkSafely { requestVideoStallCheck() }
-        }
-        pendingStallCheck = check
-        handler.postDelayed(check, delayMs)
-    }
-
-    private fun beginVideoStall() {
+    private fun beginVideoStall(trackId: String) {
+        if (trackId != activeTrack.trackName || clockStallTrackId != null) return
+        clockStallTrackId = trackId
         lastKnownClockTimeUs = currentPlaybackTimeUs()
         if (clock?.isVideoDriven == true && timelineStarted) {
             clock.setRate(0.0)
         }
-        metrics?.noteStall(MediaFrameKind.VIDEO, stalled = true)
     }
 
-    private fun endVideoStall() {
+    private fun endVideoStall(trackId: String) {
+        if (clockStallTrackId != trackId) return
+        clockStallTrackId = null
         if (clock?.isVideoDriven == true && timelineStarted) {
             clock.setRate(1.0)
         }
-        metrics?.noteStall(MediaFrameKind.VIDEO, stalled = false)
     }
 
     private fun maybePromotePendingTrack() {
-        val pending = pendingTrack
-        val phase = trackSwapPhase
-        if (pending != null && phase != null) {
-            when (phase) {
-                is TrackSwapPhase.AwaitingKeyframe -> {
-                    // Discard stale non-keyframes that can never serve as a cut-in point.
-                    while (true) {
-                        val front = pending.peekFront() ?: break
-                        if (front.second) break  // is keyframe
-                        if (lastFedPtsUs - front.first <= CUT_IN_WINDOW_US) break
-                        pending.discardFront()
-                    }
-                    // Decide strategy once a keyframe is available.
-                    val kfPts = pending.firstKeyframePts
-                    if (kfPts != null) {
-                        awaitingKeyframeTimeout?.let { handler.removeCallbacks(it) }
-                        awaitingKeyframeTimeout = null
-                        val gap = lastFedPtsUs - kfPts
-
-                        trackSwapPhase = if (gap > FLUSH_THRESHOLD_US) {
-                            Log.d(TAG, "Changing pending phase to flush-and-swap")
-
-                            emitSwitchProgress(pending.trackName, SwitchPhase.FLUSH_SWAP)
-                            TrackSwapPhase.FlushAndSwap
-                        } else {
-                            Log.d(TAG, "Changing pending phase to cutting-in")
-                            emitSwitchProgress(pending.trackName, SwitchPhase.CUT_IN)
-                            TrackSwapPhase.CuttingIn(kfPts)
-                        }
-                    }
-                    // else: no keyframe yet — onDataAvailable will re-trigger when one arrives
-                }
-
-                is TrackSwapPhase.CuttingIn -> {
-                    val kfPts = phase.keyframePts
-                    pending.discardNonKeyframesBeforePts(kfPts)
-                    if (lastFedPtsUs >= kfPts) {
-                        noDisplayBeforePts = lastFedPtsUs
-                        pending.setBufferState(VideoBufferState.PLAYING)
-                        Log.d(TAG, "Performing swap via cutting-in phase")
-                        performSwap(pending)
-                        trackSwapPhase = null
-                    }
-                }
-
-                is TrackSwapPhase.FlushAndSwap -> {
-                    pending.setBufferState(VideoBufferState.PLAYING)
-                    Log.d(TAG, "Performing swap via flush-and-swap")
-                    performSwap(pending, hardFlush = true)
-                    trackSwapPhase = null
+        val pending = pendingTrack ?: return
+        if (switchController.state is SwitchState.Preparing) {
+            while (true) {
+                val front = pending.peekFront() ?: break
+                if (front.second) break
+                if (!switchController.shouldDiscardPendingDelta(lastFedPtsUs, front.first)) break
+                pending.discardFront()
+            }
+            pending.firstKeyframePts?.let { keyframePtsUs ->
+                awaitingKeyframeTimeout?.let(handler::removeCallbacks)
+                awaitingKeyframeTimeout = null
+                when (switchController.onKeyframeAvailable(lastFedPtsUs, keyframePtsUs)) {
+                    SwitchDecision.FlushSwap -> emitSwitchProgress(
+                        pending.trackName,
+                        SwitchPhase.FLUSH_SWAP,
+                    )
+                    SwitchDecision.Wait -> emitSwitchProgress(pending.trackName, SwitchPhase.CUT_IN)
+                    is SwitchDecision.Abort,
+                    is SwitchDecision.CutIn -> Unit
                 }
             }
         }
 
+        val cuttingIn = switchController.state as? SwitchState.CuttingIn
+        if (cuttingIn != null) {
+            pending.discardNonKeyframesBeforePts(cuttingIn.keyframePtsUs)
+        }
+
+        when (switchController.onActiveProgress(lastFedPtsUs)) {
+            is SwitchDecision.CutIn -> {
+                noDisplayBeforePts = lastFedPtsUs
+                pending.setBufferState(VideoBufferState.PLAYING)
+                performSwap(pending)
+                switchController.complete()
+            }
+            SwitchDecision.FlushSwap -> {
+                pending.setBufferState(VideoBufferState.PLAYING)
+                performSwap(pending, hardFlush = true)
+                switchController.complete()
+            }
+            is SwitchDecision.Abort,
+            SwitchDecision.Wait -> Unit
+        }
     }
 
     private fun maybeApplyPendingCodecData() {
@@ -619,9 +569,9 @@ internal class VideoRenderer(
         val currentDecoder = decoder
         if (currentDecoder != null) {
             if (hardFlush) {
+                cancelHeldRenders()
                 currentDecoder.flush()
                 queuedFramesByPts.clear()
-                stallHorizon.reset()
             }
             // else: decoder keeps running and its input capacity remains valid
         } else {
@@ -647,12 +597,10 @@ internal class VideoRenderer(
 
         newTrack.setOnDataAvailable {
             postDecoderWork {
-                cancelPendingVideoStallCheck()
                 if (activeTrack.isProcessorReady) {
                     maybeInitDecoder()
                 }
                 tryFeedDecoder()
-                requestVideoStallCheck()
             }
         }
 
@@ -712,10 +660,6 @@ internal class VideoRenderer(
             )
         }
         val playable = metadata?.playable ?: true
-        val wasTrackedPlayableInput = metadata?.playable == true
-        if (wasTrackedPlayableInput) {
-            stallHorizon.recordCodecInputResolved(playable = true)
-        }
         val displayTimestampUs = audioTime(timestampUs)
         val dec = decoder ?: return
 
@@ -731,7 +675,6 @@ internal class VideoRenderer(
                 timestampNanos = outputAtNs,
             )
             if (timestampUs == noDisplayBeforePts) noDisplayBeforePts = Long.MIN_VALUE
-            requestVideoStallCheck()
             return
         }
 
@@ -744,68 +687,90 @@ internal class VideoRenderer(
                 ptsUs = timestampUs,
                 timestampNanos = outputAtNs,
             )
-            requestVideoStallCheck()
             return
         }
 
-        val mediaTimeUs = playbackTimeUsForScheduling()
+        processDecodedFrame(
+            sourceTimestampUs = timestampUs,
+            displayTimestampUs = displayTimestampUs,
+            bufferIndex = bufferIndex,
+            metadata = metadata,
+            trackName = diagnosticTrackName,
+        )
+    }
 
-        // If frame is too far behind the playback clock it means that we can't play it smoothly.
-        if (mediaTimeUs != null && displayTimestampUs < mediaTimeUs - LATE_DROP_THRESHOLD_US) {
-            dec.releaseOutputBuffer(bufferIndex, false)
-            metrics?.recordVideoFrameDropped()
-            emitFrameDropped(
-                trackName = diagnosticTrackName,
-                reason = DropReason.LATE_RENDER,
-                ptsUs = timestampUs,
-                timestampNanos = outputAtNs,
-            )
-            requestVideoStallCheck()
-            return
-        }
+    private fun processDecodedFrame(
+        sourceTimestampUs: Long,
+        displayTimestampUs: Long,
+        bufferIndex: Int,
+        metadata: QueuedFrameMetadata?,
+        trackName: String,
+    ) {
+        val nowNanos = System.nanoTime()
+        val frame = DecodedFrame(
+            ptsUs = displayTimestampUs,
+            durationUs = metadata?.frontFrameIntervalUs,
+            handle = bufferIndex,
+        )
+        when (val execution = renderController.process(frame, nowNanos)) {
+            is RenderExecution.DroppedLate -> {
+                metrics?.recordVideoFrameDropped()
+                emitFrameDropped(
+                    trackName = trackName,
+                    reason = DropReason.LATE_RENDER,
+                    ptsUs = sourceTimestampUs,
+                    timestampNanos = nowNanos,
+                )
+            }
 
-        val delayUs = if (mediaTimeUs != null) {
-            displayTimestampUs - mediaTimeUs
-        } else {
-            timestampUs - activeTrack.estimatedPlaybackTimeUs()
-        }
+            is RenderExecution.Held -> {
+                lateinit var retry: Runnable
+                retry = Runnable {
+                    heldRenderCallbacks.remove(retry)
+                    runDecoderWorkSafely {
+                        processDecodedFrame(
+                            sourceTimestampUs,
+                            displayTimestampUs,
+                            bufferIndex,
+                            metadata,
+                            trackName,
+                        )
+                    }
+                }
+                heldRenderCallbacks += retry
+                val delayMillis = (execution.recheckAfterUs / 1_000L).coerceIn(1L, 100L)
+                handler.postDelayed(retry, delayMillis)
+            }
 
-        val nowNs = outputAtNs
-        val baseRenderNs = (nowNs + delayUs * 1000L)
-        if (baseRenderNs > nowNs + MAX_RENDER_SCHEDULE_NS) {
-            Log.w(TAG, "render timestamp is too far in the future")
-        } else if (baseRenderNs < nowNs) {
-            Log.w(TAG, "render timestamp is in the past by ${nowNs - baseRenderNs}Ns")
-        }
+            is RenderExecution.Rendered -> {
+                if (!execution.confirmed) {
+                    metrics?.recordVideoFrameDropped()
+                    emitFrameDropped(
+                        trackName = trackName,
+                        reason = DropReason.DECODER_RECOVERY_FLUSH,
+                        ptsUs = sourceTimestampUs,
+                        timestampNanos = nowNanos,
+                        stage = DropStage.DECODER,
+                    )
+                    return
+                }
 
-        val renderNs = baseRenderNs.coerceIn(nowNs, nowNs + MAX_RENDER_SCHEDULE_NS)
-        if (dec.releaseOutputBuffer(bufferIndex, renderNs)) {
-            cancelPendingVideoStallCheck()
-            val shouldEndStall = stallHorizon.recordSurfaceFrameScheduled(
-                playable = true,
-                presentationTimeUs = displayTimestampUs,
-                renderTimeNs = renderNs,
-                frontFrameIntervalUs = metadata?.frontFrameIntervalUs,
-            )
-            metrics?.recordVideoFrameDisplayed()
-            pipelineBus?.emit(
-                PipelineEvent.FrameRendered(
-                    context = diagnosticsContext(diagnosticTrackName, outputAtNs),
-                    ptsUs = timestampUs,
-                    renderNanos = renderNs,
-                ),
-            )
-            emitPlaybackStartIfArmed(
-                sourceTimestampUs = timestampUs,
-                presentationTimeUs = displayTimestampUs,
-                clockTimeUs = mediaTimeUs ?: displayTimestampUs,
-                buffer = activeTrack.depth,
-            )
-            if (shouldEndStall) {
-                endVideoStall()
+                metrics?.recordVideoFrameDisplayed()
+                pipelineBus?.emit(
+                    PipelineEvent.FrameRendered(
+                        context = diagnosticsContext(trackName, nowNanos),
+                        ptsUs = sourceTimestampUs,
+                        renderNanos = execution.renderNanos,
+                    ),
+                )
+                emitPlaybackStartIfArmed(
+                    sourceTimestampUs = sourceTimestampUs,
+                    presentationTimeUs = displayTimestampUs,
+                    clockTimeUs = playbackTimeUsForScheduling() ?: displayTimestampUs,
+                    buffer = activeTrack.depth,
+                )
             }
         }
-        requestVideoStallCheck()
     }
 
     private fun emitPlaybackStartIfArmed(
@@ -881,8 +846,7 @@ internal class VideoRenderer(
 
         failed = true
         Log.e(TAG, "VideoRenderer fatal error", error)
-        cancelPendingVideoStallCheck()
-        stallHorizon.reset()
+        cancelHeldRenders()
         queuedFramesByPts.clear()
         activeTrack.setOnDataAvailable(null)
         pendingTrack?.setOnDataAvailable(null)
@@ -951,6 +915,10 @@ internal class VideoRenderer(
         }
         return mediaClock.currentTimeUs.takeIf { it > 0L }
     }
+
+    private fun renderClockPositionUs(): Long? =
+        playbackTimeUsForScheduling()
+            ?: activeTrack.estimatedPlaybackTimeUs().takeIf { it > 0L }?.let(::audioTime)
 
     private fun currentPlaybackTimeUs(): Long {
         val clockTimeUs = clock?.currentTimeUs ?: return lastKnownClockTimeUs

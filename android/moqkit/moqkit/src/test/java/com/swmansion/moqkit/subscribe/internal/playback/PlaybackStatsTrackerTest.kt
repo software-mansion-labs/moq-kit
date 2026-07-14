@@ -1,6 +1,10 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
 import com.swmansion.moqkit.subscribe.PlayerEventName
+import com.swmansion.moqkit.subscribe.PipelineContext
+import com.swmansion.moqkit.subscribe.PipelineEvent
+import com.swmansion.moqkit.subscribe.PipelineMediaKind
+import com.swmansion.moqkit.subscribe.StallCause
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -250,6 +254,24 @@ class PlaybackStatsTrackerTest {
         assertEquals(1L, stalls.count)
         assertEquals(250L, stalls.totalDuration.toMillis())
         assertTrue(stalls.rebufferingRatio > 0.0)
+    }
+
+    @Test
+    fun attributedPipelineStallsDriveLegacyStats() {
+        var now = 1_000_000_000L
+        val tracker = PlaybackStatsTracker(clock = { now })
+        val context = PipelineContext("video/main", PipelineMediaKind.VIDEO, now)
+        tracker.beginSession(MediaFrameKind.VIDEO)
+
+        tracker.onPipelineEvent(PipelineEvent.StallStarted(context, StallCause.DECODE_STALL))
+        now += 125_000_000L
+        tracker.onPipelineEvent(
+            PipelineEvent.StallEnded(context.copy(timestampNanos = now), StallCause.DECODE_STALL, 125),
+        )
+
+        val stalls = tracker.snapshot(audioLatency = null, videoLatency = null).videoStalls!!
+        assertEquals(1L, stalls.count)
+        assertEquals(125L, stalls.totalDuration.toMillis())
     }
 
     @Test
