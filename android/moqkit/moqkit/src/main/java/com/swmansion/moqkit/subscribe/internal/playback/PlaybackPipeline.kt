@@ -21,6 +21,7 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.IngestEvent
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
+import com.swmansion.moqkit.subscribe.internal.pipeline.PlaybackClock
 import com.swmansion.moqkit.subscribe.internal.pipeline.RenditionSwitchResources
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineDecision
@@ -63,7 +64,7 @@ internal class PlaybackPipeline(
     private val statsTracker: PlaybackStatsTracker,
     private val pipelineBus: PipelineBus,
 ) {
-    private val clock: MediaClock = if (audioTrack != null) AudioDrivenClock() else VideoDrivenClock()
+    private val clock = PlaybackClock(PipelinePolicies.clock, MonotonicTimeSource)
     @Volatile
     private var audioTimeline: TrackTimeline? = null
 
@@ -87,7 +88,7 @@ internal class PlaybackPipeline(
     private var coordinatorJob: Job? = null
 
     val currentTimeUs: Long
-        get() = clock.currentTimeUs
+        get() = clock.nowMediaUs() ?: 0L
 
     init {
         require(videoTrack != null || audioTrack != null) {
@@ -229,9 +230,6 @@ internal class PlaybackPipeline(
             Log.d(TAG, "No audio track selected, skipping audio pipeline")
             return
         }
-        val audioClock = clock as? AudioDrivenClock
-            ?: error("AudioRenderer requires an AudioDrivenClock")
-
         Log.d(
             TAG,
             "Starting audio: '${audioInfo.name}' ${audioInfo.config.sampleRate}Hz " +
@@ -249,12 +247,13 @@ internal class PlaybackPipeline(
             pipelineBus = pipelineBus,
             onError = { error -> scope.launch { handleAudioRendererError(error) } },
             initialVolume = storedAudioVolume,
-            clock = audioClock,
+            clock = clock,
         )
         audioRenderer = renderer
         audioTimeline = timeline
         try {
             renderer.start()
+            videoRenderer?.onMasterClockChanged()
             statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, audioInfo.name, audioEpoch)
             audioIngestJob = launchAudioIngestJob(audioInfo, renderer, audioEpoch, timeline)
         } catch (t: Throwable) {
@@ -348,7 +347,7 @@ internal class PlaybackPipeline(
                         ),
                     )
                     statsTracker.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.AUDIO)
-                    clock.currentTimeUs.takeIf { it > 0L }?.let(timeline::onPlaybackPosition)
+                    clock.nowMediaUs()?.takeIf { it > 0L }?.let(timeline::onPlaybackPosition)
                     when (val decision = timeline.onIngest(frame.toIngestEvent(trackEpoch, eventContext.timestampNanos))) {
                         is TimelineDecision.Admit -> submit(decision.frame.mediaFrame)
                         is TimelineDecision.Drop -> emitTimelineDrop(eventContext, decision)
@@ -577,6 +576,7 @@ internal class PlaybackPipeline(
         val trackName = selectedAudioTrack?.name ?: "audio"
         statsTracker.emitDecodeError(MediaFrameKind.AUDIO, trackName, error.message ?: "Unknown error")
         if (!hadVideo) statsTracker.emitPlaybackEnd(error.message)
+        videoRenderer?.onMasterClockChanged()
         restartCoordinator()
     }
 
@@ -599,7 +599,7 @@ internal class PlaybackPipeline(
     )
 
     private fun updateTimelinePlaybackPositions(hasAudio: Boolean) {
-        val playbackUs = clock.currentTimeUs.takeIf { it > 0L } ?: return
+        val playbackUs = clock.nowMediaUs()?.takeIf { it > 0L } ?: return
         audioTimeline?.onPlaybackPosition(playbackUs)
         val videoPlaybackUs = if (hasAudio) {
             timestampMapper.videoTimeUsOrNull(
@@ -613,7 +613,7 @@ internal class PlaybackPipeline(
     }
 
     private fun videoPlaybackPositionUs(): Long? {
-        val playbackUs = clock.currentTimeUs.takeIf { it > 0L } ?: return null
+        val playbackUs = clock.nowMediaUs()?.takeIf { it > 0L } ?: return null
         return if (audioRenderer != null) {
             timestampMapper.videoTimeUsOrNull(
                 audioTimeUs = playbackUs,

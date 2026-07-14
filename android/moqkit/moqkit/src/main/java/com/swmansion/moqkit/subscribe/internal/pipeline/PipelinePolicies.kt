@@ -66,7 +66,10 @@ internal data class ClockPolicy(
     init {
         require(retargetToleranceUs >= 0L) { "retargetToleranceUs must be non-negative" }
         require(jumpThresholdUs >= retargetToleranceUs) { "jumpThresholdUs must cover the tolerance" }
-        require(minRate > 0.0 && maxRate >= minRate) { "clock rate bounds are invalid" }
+        require(
+            minRate.isFinite() && maxRate.isFinite() &&
+                minRate > 0.0 && minRate <= 1.0 && maxRate >= 1.0,
+        ) { "clock rate bounds must be finite and contain normal playback speed" }
     }
 }
 

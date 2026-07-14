@@ -28,5 +28,11 @@ class PipelinePoliciesTest {
         assertThrows(IllegalArgumentException::class.java) {
             RenderPolicy(lateDropThresholdUs = -1)
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            ClockPolicy(minRate = 1.01, maxRate = 1.05)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ClockPolicy(minRate = 0.95, maxRate = Double.POSITIVE_INFINITY)
+        }
     }
 }

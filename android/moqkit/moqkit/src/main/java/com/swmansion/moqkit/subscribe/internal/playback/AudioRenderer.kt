@@ -15,15 +15,18 @@ import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionPolicy
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionEffect
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionRejectReason
+import com.swmansion.moqkit.subscribe.internal.pipeline.AudioDeviceClockDriver
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEvent
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryExecutor
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryResult
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderSupervisor
 import com.swmansion.moqkit.subscribe.internal.pipeline.FrameBuffer
+import com.swmansion.moqkit.subscribe.internal.pipeline.DriverKind
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PcmRing
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
+import com.swmansion.moqkit.subscribe.internal.pipeline.PlaybackClock
 import com.swmansion.moqkit.subscribe.internal.pipeline.RecoveryAttempt
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TrackTimeline
@@ -57,7 +60,7 @@ internal class AudioRenderer(
     private val pipelineBus: PipelineBus? = null,
     private val onError: (Throwable) -> Unit = {},
     initialVolume: Float = 1f,
-    clock: AudioDrivenClock = AudioDrivenClock(),
+    private val clock: PlaybackClock,
 ) {
     private val sampleRate = config.sampleRate.toInt()
     private val channels = config.channelCount.toInt()
@@ -66,7 +69,9 @@ internal class AudioRenderer(
     private val decoderScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val decoderFormat = AudioMediaFormatFactory.from(config)
         ?: throw IllegalStateException("Unsupported audio codec: ${config.codec}")
-    internal val clock = clock
+    private val audioClockDriver = AudioDeviceClockDriver(sampleRate) {
+        audioTrack?.playbackHeadPosition?.toLong()
+    }
 
     private var ringBuffer = PcmRing(
         sampleRate = sampleRate,
@@ -134,6 +139,7 @@ internal class AudioRenderer(
 
         audioTrack = track
         track.setVolume(volume)
+        clock.attachDriver(audioClockDriver, DriverKind.AUDIO)
 
         decoderRecovery = DecoderRecoveryExecutor(
             supervisor = DecoderSupervisor(PipelinePolicies.recovery, MonotonicTimeSource),
@@ -146,36 +152,65 @@ internal class AudioRenderer(
         running = true
         playbackThread = Thread({
             Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
-            track.play()
-            Log.d(TAG, "Playback thread started")
+            try {
+                track.play()
+                Log.d(TAG, "Playback thread started")
 
-            // ~10ms worth of frames for read chunks
-            val chunkFrames = sampleRate / 100
-            val chunkBuf = ShortArray(chunkFrames * channels)
+                // ~10ms worth of frames for read chunks
+                val chunkFrames = sampleRate / 100
+                val chunkBuf = ShortArray(chunkFrames * channels)
 
-            while (running) {
-                val (framesRead, ts) = lock.withLock {
-                    Pair(ringBuffer.read(chunkBuf, chunkFrames), ringBuffer.timestampUs)
+                while (running) {
+                    val (framesRead, mediaEndUs) = lock.withLock {
+                        Pair(ringBuffer.read(chunkBuf, chunkFrames), ringBuffer.timestampUs)
+                    }
+
+                    if (framesRead > 0) {
+                        val mediaStartUs = subtractClamped(mediaEndUs, framesToUs(framesRead))
+                        val totalSamples = framesRead * channels
+                        var writtenSamples = 0
+                        while (running && writtenSamples < totalSamples) {
+                            val count = track.write(
+                                chunkBuf,
+                                writtenSamples,
+                                totalSamples - writtenSamples,
+                            )
+                            check(count >= 0) { "AudioTrack write failed: $count" }
+                            if (count == 0) {
+                                Thread.sleep(1)
+                                continue
+                            }
+                            val frameOffset = writtenSamples / channels
+                            val writtenFrames = count / channels
+                            audioClockDriver.onFramesWritten(
+                                mediaStartUs = addClamped(mediaStartUs, framesToUs(frameOffset)),
+                                frameCount = writtenFrames,
+                            )
+                            writtenSamples += count
+                        }
+                        val renderedFrames = writtenSamples / channels
+                        val renderedEndUs = addClamped(mediaStartUs, framesToUs(renderedFrames))
+                        metrics?.audioPlaybackStarted(renderedEndUs, hostTime = null)
+                        pipelineBus?.emit(
+                            PipelineEvent.FrameRendered(
+                                context = diagnosticsContext(),
+                                ptsUs = renderedEndUs,
+                                renderNanos = System.nanoTime(),
+                            ),
+                        )
+                    } else {
+                        Thread.sleep(5)
+                    }
                 }
-
-                if (framesRead > 0) {
-                    track.write(chunkBuf, 0, framesRead * channels)
-                    clock.setCurrentTimeUs(ts)
-                    metrics?.audioPlaybackStarted(ts, hostTime = null)
-                    pipelineBus?.emit(
-                        PipelineEvent.FrameRendered(
-                            context = diagnosticsContext(),
-                            ptsUs = ts,
-                            renderNanos = System.nanoTime(),
-                        ),
-                    )
-                } else {
-                    Thread.sleep(5)
+            } catch (error: Throwable) {
+                if (running) onError(error)
+            } finally {
+                try {
+                    track.stop()
+                } catch (_: Throwable) {
                 }
+                Log.d(TAG, "Playback thread stopped")
             }
-
-            track.stop()
-            Log.d(TAG, "Playback thread stopped")
         }, "AudioPlayback")
         playbackThread!!.start()
 
@@ -263,13 +298,12 @@ internal class AudioRenderer(
         if (compressedFrames > 0) {
             recordCompressedDrop(DropReason.RESET_FLUSH, compressedFrames)
         }
-        clock.reset()
     }
 
     fun stop() {
         Log.d(TAG, "Stopping AudioRenderer")
         running = false
-        playbackThread?.join(1000)
+        playbackThread?.takeIf { it !== Thread.currentThread() }?.join(1000)
         playbackThread = null
 
         decoderEventsJob?.cancel()
@@ -283,7 +317,7 @@ internal class AudioRenderer(
         } catch (_: Exception) {}
         audioTrack = null
 
-        clock.reset()
+        clock.detachDriver(DriverKind.AUDIO)
         Log.d(TAG, "AudioRenderer stopped")
     }
 
@@ -342,7 +376,6 @@ internal class AudioRenderer(
         )
         var readyContext: TrackReadyContext? = null
         lock.withLock {
-            if (clock.currentTimeUs == 0L) clock.setCurrentTimeUs(timestampUs)
             val result = ringBuffer.write(timestampUs, pcmData, frameCount)
             metrics?.recordAudioFramesDropped(result.rejectedOldFrames + result.evictedFrames)
             readyContext = pendingReadyContext
@@ -472,5 +505,23 @@ internal class AudioRenderer(
             evictWholeGops = false,
             requireKeyframeAfterReset = false,
         )
+    }
+
+    private fun framesToUs(frames: Int): Long = try {
+        Math.multiplyExact(frames.toLong(), 1_000_000L) / sampleRate
+    } catch (_: ArithmeticException) {
+        Long.MAX_VALUE
+    }
+
+    private fun addClamped(left: Long, right: Long): Long = try {
+        Math.addExact(left, right)
+    } catch (_: ArithmeticException) {
+        Long.MAX_VALUE
+    }
+
+    private fun subtractClamped(left: Long, right: Long): Long = try {
+        Math.subtractExact(left, right).coerceAtLeast(0L)
+    } catch (_: ArithmeticException) {
+        0L
     }
 }
