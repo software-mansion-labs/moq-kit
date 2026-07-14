@@ -15,6 +15,8 @@ internal class StallMonitor(
     private var lastPolicyDropNanos: Long? = null
     private var lastDecodeOutputNanos: Long? = null
     private var lastRenderNanos: Long? = null
+    private var pendingDecoderInputs = 0
+    private var pendingRendererOutputs = 0
     private var bufferDepth = BufferDepth.Empty
     private var receiveBitsPerSecond: Long? = null
     private var switchPhase = SwitchPhase.STEADY
@@ -35,16 +37,31 @@ internal class StallMonitor(
                 lastAdmitNanos = event.context.timestampNanos
                 bufferDepth = event.bufferDepth
             }
-            is PipelineEvent.FrameDropped -> if (event.stage == DropStage.TIMELINE) {
-                lastPolicyDropNanos = event.context.timestampNanos
+            is PipelineEvent.FrameDropped -> when (event.stage) {
+                DropStage.TIMELINE -> lastPolicyDropNanos = event.context.timestampNanos
+                DropStage.RENDERER -> pendingRendererOutputs = (pendingRendererOutputs - event.count).coerceAtLeast(0)
+                DropStage.TRANSPORT,
+                DropStage.BUFFER,
+                DropStage.DECODER,
+                DropStage.WRITER -> Unit
             }
             is PipelineEvent.BufferDepthChanged -> bufferDepth = event.depth
-            is PipelineEvent.DecoderOutputReady -> lastDecodeOutputNanos = event.context.timestampNanos
-            is PipelineEvent.FrameRendered -> lastRenderNanos = event.context.timestampNanos
+            is PipelineEvent.DecoderInputQueued -> pendingDecoderInputs += 1
+            is PipelineEvent.DecoderOutputReady -> {
+                pendingDecoderInputs = (pendingDecoderInputs - 1).coerceAtLeast(0)
+                pendingRendererOutputs += 1
+                lastDecodeOutputNanos = event.context.timestampNanos
+            }
+            is PipelineEvent.FrameRendered -> {
+                pendingRendererOutputs = (pendingRendererOutputs - 1).coerceAtLeast(0)
+                lastRenderNanos = event.context.timestampNanos
+            }
             is PipelineEvent.BandwidthSample -> receiveBitsPerSecond = event.receiveBitsPerSecond
             is PipelineEvent.SwitchProgress -> switchPhase = event.phase
-            is PipelineEvent.DecoderInputQueued,
-            is PipelineEvent.Discontinuity,
+            is PipelineEvent.Discontinuity -> {
+                pendingDecoderInputs = 0
+                pendingRendererOutputs = 0
+            }
             is PipelineEvent.StallStarted,
             is PipelineEvent.StallEnded,
             is PipelineEvent.LatencySample,
@@ -102,11 +119,12 @@ internal class StallMonitor(
             return StallCause.POLICY_STARVATION
         }
 
-        if (bufferDepth.frames > 0 && !isFresh(lastDecodeOutputNanos, policy.decodeProgressUs, nowNanos)) {
+        if (pendingDecoderInputs > 0 && !isFresh(lastDecodeOutputNanos, policy.decodeProgressUs, nowNanos)) {
             return StallCause.DECODE_STALL
         }
 
-        if (isFresh(lastDecodeOutputNanos, policy.decodeProgressUs, nowNanos) &&
+        if (pendingRendererOutputs > 0 &&
+            isFresh(lastDecodeOutputNanos, policy.decodeProgressUs, nowNanos) &&
             !isFresh(lastRenderNanos, policy.renderProgressUs, nowNanos)
         ) {
             return StallCause.RENDER_STALL

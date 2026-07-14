@@ -45,12 +45,38 @@ class StallMonitorTest {
         val decodeMonitor = StallMonitor(baseContext, policy)
         decodeMonitor.onEvent(PipelineEvent.FrameArrived(baseContext, 0, null, null, 1))
         decodeMonitor.onEvent(PipelineEvent.BufferDepthChanged(baseContext, BufferDepth(2, 20, 33)))
+        decodeMonitor.onEvent(PipelineEvent.DecoderInputQueued(baseContext, 0))
         assertEquals(StallCause.DECODE_STALL, startCause(decodeMonitor, 150_000))
 
         val renderMonitor = StallMonitor(baseContext, policy)
         renderMonitor.onEvent(PipelineEvent.FrameArrived(baseContext, 0, null, null, 1))
         renderMonitor.onEvent(PipelineEvent.DecoderOutputReady(baseContext, 0))
         assertEquals(StallCause.RENDER_STALL, startCause(renderMonitor, 150_000))
+    }
+
+    @Test
+    fun intentionalHoldAndRendererDropDoNotCreateFalseStalls() {
+        val held = StallMonitor(baseContext, policy)
+        held.onEvent(PipelineEvent.FrameArrived(baseContext, 0, null, null, 1))
+        held.onEvent(PipelineEvent.BufferDepthChanged(baseContext, BufferDepth(2, 20, 33)))
+
+        held.evaluate(nowNanos = 0)
+        assertTrue(held.evaluate(nowNanos = 150_000).isEmpty())
+
+        val dropped = StallMonitor(baseContext, policy)
+        dropped.onEvent(PipelineEvent.FrameArrived(baseContext, 0, null, null, 1))
+        dropped.onEvent(PipelineEvent.DecoderInputQueued(baseContext, 0))
+        dropped.onEvent(PipelineEvent.DecoderOutputReady(baseContext, 0))
+        dropped.onEvent(
+            PipelineEvent.FrameDropped(
+                context = baseContext,
+                stage = DropStage.RENDERER,
+                reason = DropReason.LATE_RENDER,
+            ),
+        )
+
+        dropped.evaluate(nowNanos = 0)
+        assertTrue(dropped.evaluate(nowNanos = 150_000).isEmpty())
     }
 
     @Test
