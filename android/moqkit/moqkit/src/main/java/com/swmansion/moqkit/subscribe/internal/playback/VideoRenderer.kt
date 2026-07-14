@@ -11,9 +11,27 @@ import com.swmansion.moqkit.subscribe.DropStage
 import com.swmansion.moqkit.subscribe.PipelineContext
 import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
+import com.swmansion.moqkit.subscribe.RecoveryStep
 import com.swmansion.moqkit.subscribe.SwitchPhase
+import com.swmansion.moqkit.subscribe.MediaFrame
+import com.swmansion.moqkit.subscribe.DiscontinuityReason
+import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEvent
+import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryExecutor
+import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryResult
+import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderSupervisor
+import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
+import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
+import com.swmansion.moqkit.subscribe.internal.pipeline.RecoveryAttempt
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimestampDomainMapper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.android.asCoroutineDispatcher
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -36,7 +54,7 @@ private const val TAG = "VideoRenderer"
  * A single [HandlerThread] is owned by this class and shared across decoder swaps.
  * - **IO thread**: [VideoRendererTrack.insert] — thread-safe inside the track.
  * - **HandlerThread**: all decoder interaction — [tryFeedDecoder], [onDecodedFrame],
- *   [parkedInputBuffers], [queuedFramesByPts], swap state machine. No locks needed for these.
+ *   [queuedFramesByPts], swap state machine. No locks needed for these.
  * - **Any thread**: [setPendingTrack] — posts to HandlerThread.
  * - **Caller thread**: lifecycle only — [start], [stop].
  */
@@ -79,11 +97,20 @@ internal class VideoRenderer(
 
     private val handlerThread = HandlerThread("VideoRenderer").apply { start() }
     private val handler = Handler(handlerThread.looper)
+    private val decoderScope = CoroutineScope(
+        SupervisorJob() + handler.asCoroutineDispatcher("VideoRendererDecoder"),
+    )
 
     // Decoder state (only accessed on HandlerThread)
 
-    private var decoder: VideoDecoder? = null
-    private val parkedInputBuffers = ArrayDeque<Int>()
+    private var decoderEventsJob: Job? = null
+    private val decoderRecovery = DecoderRecoveryExecutor(
+        supervisor = DecoderSupervisor(PipelinePolicies.recovery, MonotonicTimeSource),
+        createSession = ::createStartedDecoder,
+        onRecovery = ::emitDecoderRecovery,
+    )
+    private val decoder: VideoDecoder?
+        get() = decoderRecovery.currentSession
     private val queuedFramesByPts = HashMap<Long, QueuedFrameMetadata>()
     private var delayedDrainToken: Any? = null
     private var pendingStallCheck: Runnable? = null
@@ -145,40 +172,101 @@ internal class VideoRenderer(
 
     private fun maybeInitDecoder() {
         if (decoder != null) return
-
-        val format = activeTrack.getFormat()
-            ?: throw IllegalStateException("Cannot init decoder: format not ready")
-
-        var newDecoder: VideoDecoder? = null
-        try {
-            val decoder = buildDecoder(format)
-            newDecoder = decoder
-            decoder.start()
-        } catch (t: Throwable) {
-            try {
-                newDecoder?.release()
-            } catch (_: Throwable) {
-            }
-            throw t
-        }
-        decoder = requireNotNull(newDecoder)
-
-        Log.d(TAG, "Decoder initialized: $format")
+        decoderRecovery.start()
     }
 
-    private fun buildDecoder(format: android.media.MediaFormat): VideoDecoder =
-        VideoDecoder(
+    private fun createStartedDecoder(): VideoDecoder {
+        val format = activeTrack.getFormat()
+            ?: throw IllegalStateException("Cannot init decoder: format not ready")
+        val session = VideoDecoder(
             format = format,
             surface = outputSurface,
             handler = handler,
-            onInputBufferAvailable = { index ->
-                parkedInputBuffers.addLast(index)
-                tryFeedDecoder()
-            },
-            onOutputBufferAvailable = { bufferIndex, timestampUs ->
-                onDecodedFrame(bufferIndex, timestampUs)
-            },
         )
+        decoderEventsJob = decoderScope.launch {
+            session.events().collect(::onDecoderEvent)
+        }
+        try {
+            session.start()
+        } catch (error: Throwable) {
+            decoderEventsJob?.cancel()
+            decoderEventsJob = null
+            session.release()
+            throw error
+        }
+        Log.d(TAG, "Decoder initialized: $format")
+        return session
+    }
+
+    private fun onDecoderEvent(event: DecoderEvent) {
+        when (event) {
+            DecoderEvent.InputAvailable -> tryFeedDecoder()
+            is DecoderEvent.OutputReady -> onDecodedFrame(
+                bufferIndex = event.handle as Int,
+                timestampUs = event.timestampUs,
+            )
+            is DecoderEvent.Error -> recoverDecoder(event.throwable)
+            DecoderEvent.Reconfigured -> Unit
+        }
+    }
+
+    private fun recoverDecoder(error: Throwable) {
+        if (failed) return
+        resetForDecoderRecovery()
+        when (val result = decoderRecovery.recover(error)) {
+            is DecoderRecoveryResult.Recovered -> {
+                Log.w(TAG, "Decoder recovered via ${result.attempt.step}", error)
+                tryFeedDecoder()
+            }
+            is DecoderRecoveryResult.Failed -> handleFatalError(result.error)
+        }
+    }
+
+    private fun resetForDecoderRecovery() {
+        val reset = activeTrack.timeline.requestReset()
+        val flushedFrames = activeTrack.flush() + queuedFramesByPts.size
+        resetDecoderPipelineState()
+        isPlaybackStartEventArmed = true
+        pipelineBus?.emit(
+            PipelineEvent.Discontinuity(
+                context = diagnosticsContext(activeTrack.trackName),
+                epoch = reset.epoch,
+                reason = DiscontinuityReason.LOCAL_RESET,
+            ),
+        )
+        if (flushedFrames > 0) {
+            metrics?.recordVideoFrameDropped(flushedFrames)
+            pipelineBus?.emit(
+                PipelineEvent.FrameDropped(
+                    context = diagnosticsContext(activeTrack.trackName),
+                    stage = DropStage.DECODER,
+                    reason = DropReason.DECODER_RECOVERY_FLUSH,
+                    count = flushedFrames,
+                ),
+            )
+        }
+    }
+
+    private fun resetDecoderPipelineState() {
+        queuedFramesByPts.clear()
+        stallHorizon.reset()
+        noDisplayBeforePts = Long.MIN_VALUE
+        lastFedPtsUs = 0L
+        timelineStarted = clock?.isVideoDriven != true
+        lastKnownClockTimeUs = 0L
+        if (clock?.isVideoDriven == true) clock.reset()
+    }
+
+    private fun emitDecoderRecovery(attempt: RecoveryAttempt) {
+        pipelineBus?.emit(
+            PipelineEvent.DecoderRecovery(
+                context = diagnosticsContext(activeTrack.trackName),
+                attempt = attempt.attempt,
+                step = attempt.step,
+                trigger = attempt.trigger,
+            ),
+        )
+    }
 
     fun stop() {
         Log.d(TAG, "Stopping VideoRenderer")
@@ -204,10 +292,11 @@ internal class VideoRenderer(
             if (clock?.isVideoDriven == true) {
                 clock.reset()
             }
-            parkedInputBuffers.clear()
             queuedFramesByPts.clear()
-            decoder?.release()
-            decoder = null
+            decoderEventsJob?.cancel()
+            decoderEventsJob = null
+            decoderRecovery.release()
+            decoderScope.cancel()
             handlerThread.quitSafely()
 
             Log.d(TAG, "VideoRenderer stopped")
@@ -239,13 +328,7 @@ internal class VideoRenderer(
             when (track) {
                 activeTrack -> {
                     decoder?.flush()
-                    parkedInputBuffers.clear()
-                    queuedFramesByPts.clear()
-                    stallHorizon.reset()
-                    noDisplayBeforePts = Long.MIN_VALUE
-                    lastFedPtsUs = 0L
-                    timelineStarted = clock?.isVideoDriven != true
-                    lastKnownClockTimeUs = 0L
+                    resetDecoderPipelineState()
                 }
 
                 pendingTrack -> track.setBufferState(VideoBufferState.PENDING)
@@ -320,7 +403,8 @@ internal class VideoRenderer(
         maybeApplyPendingCodecData()
 
         // --- Drain active track ---
-        while (parkedInputBuffers.isNotEmpty()) {
+        val activeDecoder = decoder ?: return
+        while (activeDecoder.canQueueInput) {
             val mediaTimeUs = playbackTimeUsForScheduling()
 
             val nextPts = activeTrack.peekNextTimestampUs() ?: run {
@@ -350,10 +434,17 @@ internal class VideoRenderer(
             }
             emitBufferDepth(activeTrack)
 
-            val index = parkedInputBuffers.removeFirst()
             lastFedPtsUs = entry.item.timestampUs
             val queuedAtNs = System.nanoTime()
-            if (decoder?.fillInputBuffer(index, entry.item.payload, entry.item.timestampUs) == true) {
+            val frame = TimedFrame(
+                mediaFrame = MediaFrame(
+                    payload = entry.item.payload,
+                    timestampUs = entry.item.timestampUs,
+                    keyframe = entry.item.isKeyframe,
+                ),
+                epoch = activeTrack.trackEpoch,
+            )
+            if (activeDecoder.queueInput(frame)) {
                 stallHorizon.recordCodecInputSubmitted(playable)
                 queuedFramesByPts[entry.item.timestampUs] = QueuedFrameMetadata(
                     trackName = activeTrack.trackName,
@@ -499,10 +590,8 @@ internal class VideoRenderer(
 
     private fun maybeApplyPendingCodecData() {
         val csd = pendingCsd ?: return
-        if (parkedInputBuffers.isEmpty()) return
         val dec = decoder ?: return
-        val idx = parkedInputBuffers.removeFirst()
-        dec.queueCodecConfig(idx, csd)
+        if (!dec.queueCodecConfig(csd)) return
         Log.d(TAG, "Queued CSD config buffer (${csd.size}B) for adaptive switch")
         pendingCsd = null
     }
@@ -531,19 +620,13 @@ internal class VideoRenderer(
         if (currentDecoder != null) {
             if (hardFlush) {
                 currentDecoder.flush()
-                parkedInputBuffers.clear()
                 queuedFramesByPts.clear()
                 stallHorizon.reset()
             }
-            // else: decoder keeps running, parkedInputBuffers remain valid
+            // else: decoder keeps running and its input capacity remains valid
         } else {
             // Decoder not yet initialized (swap before first keyframe on active track).
-            val format = newTrack.getFormat()
-            if (format != null) {
-                val newDecoder = buildDecoder(format)
-                decoder = newDecoder
-                newDecoder.start()
-            } else {
+            if (newTrack.getFormat() == null) {
                 Log.d(TAG, "performSwap: format not ready, deferring decoder init")
             }
         }
@@ -555,6 +638,10 @@ internal class VideoRenderer(
         pendingCsd = extractCsd(newTrack)
         pendingTrack = null
         hasPendingTrack = false
+
+        if (decoder == null && activeTrack.isProcessorReady) {
+            maybeInitDecoder()
+        }
 
         maybeCancelScheduledDraining()
 
