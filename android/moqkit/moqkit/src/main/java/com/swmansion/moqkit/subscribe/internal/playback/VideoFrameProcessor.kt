@@ -6,6 +6,12 @@ import uniffi.moq.MoqVideo
 
 private const val TAG = "VideoFrameProcessor"
 
+internal interface VideoPayloadProcessor {
+    val isReady: Boolean
+    fun processPayload(payload: ByteArray, keyframe: Boolean): ByteArray?
+    fun getFormat(): MediaFormat?
+}
+
 /**
  * Selects the right payload transform and CSD extraction strategy based on the video config.
  *
@@ -14,7 +20,7 @@ private const val TAG = "VideoFrameProcessor"
  *
  * Consumers call [processPayload] and get back ready-to-decode Annex B bytes.
  */
-internal class VideoFrameProcessor(private val config: MoqVideo) {
+internal class VideoFrameProcessor(private val config: MoqVideo) : VideoPayloadProcessor {
 
     private val transform = VideoPayloadTransformBuilder.from(config)
 
@@ -22,7 +28,7 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
     private var format: MediaFormat? = null
 
     /** True once a MediaFormat with CSD is available and the decoder can be configured. */
-    val isReady: Boolean get() = format != null
+    override val isReady: Boolean get() = format != null
 
     init {
         if (config.description != null) {
@@ -41,7 +47,7 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
     }
 
     /** Returns the MediaFormat once CSD is available, null otherwise. */
-    fun getFormat(): MediaFormat? = format
+    override fun getFormat(): MediaFormat? = format
 
     /**
      * Process a compressed video frame payload.
@@ -49,7 +55,7 @@ internal class VideoFrameProcessor(private val config: MoqVideo) {
      * @return Annex B bytes ready for MediaCodec, or null if the frame should be dropped
      *         (e.g., waiting for a keyframe with parameter sets).
      */
-    fun processPayload(payload: ByteArray, keyframe: Boolean): ByteArray? {
+    override fun processPayload(payload: ByteArray, keyframe: Boolean): ByteArray? {
         if (!isReady) {
             Log.i(TAG, "Video processor not ready")
             if (!keyframe) {

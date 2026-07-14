@@ -91,6 +91,41 @@ class FrameBufferTest {
         assertEquals(AdmissionRejectReason.OLD_EPOCH, (old.single() as AdmissionEffect.Rejected).reason)
     }
 
+    @Test
+    fun supportsNonDestructiveInspectionAndExplicitDiscardForSwitching() {
+        val buffer = FrameBuffer(
+            AdmissionPolicy(maxBytes = 100, maxFrames = 10, maxDurationUs = 1_000),
+        )
+        buffer.offer(frame(100, true, epoch = 1, group = 1))
+        buffer.offer(frame(110, false, epoch = 1, group = 1))
+
+        assertEquals(100L, buffer.peekFront()?.timestampUs)
+        assertEquals(100L, buffer.firstWhere { it.keyframe }?.timestampUs)
+        assertEquals(100L, buffer.removeFront()?.timestampUs)
+        assertEquals(110L, buffer.peekFront()?.timestampUs)
+    }
+
+    @Test
+    fun singleFrameEvictionRearmsKeyframeGateWhenAnchorIsLost() {
+        val buffer = FrameBuffer(
+            AdmissionPolicy(
+                maxBytes = 100,
+                maxFrames = 2,
+                maxDurationUs = 1_000,
+                evictWholeGops = false,
+            ),
+        )
+        buffer.offer(frame(100, true, epoch = 1, group = 1))
+        buffer.offer(frame(110, false, epoch = 1, group = 1))
+        buffer.offer(frame(120, false, epoch = 1, group = 1))
+
+        assertNull(buffer.pollPlayable(nowUs = 0L))
+        assertEquals(
+            AdmissionRejectReason.WAITING_FOR_KEYFRAME,
+            (buffer.offer(frame(130, false, epoch = 1, group = 1)).single() as AdmissionEffect.Rejected).reason,
+        )
+    }
+
     private fun frame(
         timestampUs: Long,
         keyframe: Boolean,

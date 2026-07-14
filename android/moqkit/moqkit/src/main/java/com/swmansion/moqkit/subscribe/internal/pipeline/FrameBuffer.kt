@@ -38,29 +38,18 @@ internal class FrameBuffer(
         private set
 
     fun offer(frame: TimedFrame): List<AdmissionEffect> {
-        if (frame.sizeBytes.toLong() > policy.maxBytes) {
-            return rejected(frame, AdmissionRejectReason.FRAME_TOO_LARGE)
-        }
+        rejectionReason(frame)?.let { return rejected(frame, it) }
+        if (currentEpoch == null) currentEpoch = frame.epoch
 
-        val epoch = currentEpoch
-        when {
-            epoch == null -> currentEpoch = frame.epoch
-            frame.epoch < epoch -> return rejected(frame, AdmissionRejectReason.OLD_EPOCH)
-            frame.epoch > epoch -> return rejected(frame, AdmissionRejectReason.UNEXPECTED_EPOCH)
+        val effects = mutableListOf<AdmissionEffect>()
+        if (frame.keyframe && !keyframeAccepted && frames.isNotEmpty()) {
+            effects += evictAllBufferedFrames()
         }
-
-        if (!keyframeAccepted && !frame.keyframe) {
-            return rejected(frame, AdmissionRejectReason.WAITING_FOR_KEYFRAME)
-        }
-        if (isDuplicate(frame)) {
-            return rejected(frame, AdmissionRejectReason.DUPLICATE)
-        }
-
         if (frame.keyframe) keyframeAccepted = true
         insertSorted(frame)
         bytes += frame.sizeBytes
 
-        val effects = mutableListOf<AdmissionEffect>(AdmissionEffect.Admitted(frame))
+        effects += AdmissionEffect.Admitted(frame)
         while (isOverflowing() && frames.isNotEmpty()) {
             effects += evictOldestGop()
         }
@@ -90,6 +79,32 @@ internal class FrameBuffer(
         bytes = bytes,
         durationUs = durationUs(),
     )
+
+    fun rejectionReason(frame: TimedFrame): AdmissionRejectReason? {
+        if (frame.sizeBytes.toLong() > policy.maxBytes) return AdmissionRejectReason.FRAME_TOO_LARGE
+        val epoch = currentEpoch
+        if (epoch != null && frame.epoch < epoch) return AdmissionRejectReason.OLD_EPOCH
+        if (epoch != null && frame.epoch > epoch) return AdmissionRejectReason.UNEXPECTED_EPOCH
+        if (!keyframeAccepted && !frame.keyframe) return AdmissionRejectReason.WAITING_FOR_KEYFRAME
+        if (isDuplicate(frame)) return AdmissionRejectReason.DUPLICATE
+        return null
+    }
+
+    fun peekFront(): TimedFrame? = frames.firstOrNull()
+
+    fun peekAt(index: Int): TimedFrame? = frames.getOrNull(index)
+
+    fun firstWhere(predicate: (TimedFrame) -> Boolean): TimedFrame? = frames.firstOrNull(predicate)
+
+    fun removeFront(): TimedFrame? {
+        if (frames.isEmpty()) return null
+        val removed = frames.removeAt(0)
+        bytes -= removed.sizeBytes
+        if (removed.keyframe && frames.firstOrNull()?.keyframe != true) {
+            keyframeAccepted = false
+        }
+        return removed
+    }
 
     private fun rejected(frame: TimedFrame, reason: AdmissionRejectReason): List<AdmissionEffect> =
         listOf(AdmissionEffect.Rejected(frame, reason))
@@ -141,14 +156,27 @@ internal class FrameBuffer(
 
         var evictedBytes = 0L
         repeat(evictionCount) {
-            evictedBytes += frames.removeAt(0).sizeBytes
+            val removed = frames.removeAt(0)
+            evictedBytes += removed.sizeBytes
         }
         bytes -= evictedBytes
+        if (policy.requireKeyframeAfterReset) {
+            keyframeAccepted = frames.firstOrNull()?.keyframe == true
+        }
         return AdmissionEffect.EvictedGop(
             groupSequence = groupSequence,
             count = evictionCount,
             bytes = evictedBytes,
         )
+    }
+
+    private fun evictAllBufferedFrames(): AdmissionEffect.EvictedGop {
+        val count = frames.size
+        val evictedBytes = bytes
+        val groupSequence = frames.firstOrNull()?.groupSequence
+        frames.clear()
+        bytes = 0L
+        return AdmissionEffect.EvictedGop(groupSequence, count, evictedBytes)
     }
 
     private inline fun <T> List<T>.indexOfFirstFrom(startIndex: Int, predicate: (T) -> Boolean): Int {
