@@ -66,6 +66,7 @@ internal class StallMonitor(
             is PipelineEvent.StallEnded,
             is PipelineEvent.LatencySample,
             is PipelineEvent.DecoderRecovery,
+            is PipelineEvent.DecoderFlushed,
             is PipelineEvent.ClockRetarget,
             is PipelineEvent.TransportClosed -> Unit
         }

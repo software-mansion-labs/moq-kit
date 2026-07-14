@@ -5,6 +5,8 @@ import android.view.Surface
 import com.swmansion.moqkit.UnsupportedCodecException
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipeline
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackPipelineSwitchOutcome
+import com.swmansion.moqkit.subscribe.internal.playback.PipelineDiagnosticLogFormatter
+import com.swmansion.moqkit.subscribe.internal.playback.PipelineLogLevel
 import com.swmansion.moqkit.subscribe.internal.playback.PlayerEventHub
 import com.swmansion.moqkit.subscribe.internal.playback.PlaybackStatsTracker
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
@@ -70,6 +72,7 @@ class Player(
     private val stallCoordinator = PipelineStallCoordinator(pipelineBus, scope)
     private val statsTracker = PlaybackStatsTracker(events = eventHub)
     private val pipelineStatsObservation = pipelineBus.observe(statsTracker::onPipelineEvent)
+    private val pipelineLogObservation = pipelineBus.observe(::logPipelineDiagnostic)
     private val mutableStatsUpdates = MutableSharedFlow<PlaybackStats>(extraBufferCapacity = 8)
 
     /**
@@ -331,6 +334,7 @@ class Player(
         teardownPlayback(permanent = true, reason = "close()")
         emitPlayerDestroy()
         pipelineStatsObservation.close()
+        pipelineLogObservation.close()
         stallCoordinator.close()
         scope.cancel()
         broadcastOwner.release()
@@ -351,7 +355,24 @@ class Player(
             scope = scope,
             statsTracker = statsTracker,
             pipelineBus = pipelineBus,
+            onFatalError = ::handlePlaybackPipelineFatalError,
         )
+    }
+
+    private fun handlePlaybackPipelineFatalError(error: Throwable) {
+        if (!playing || playbackPipeline == null) return
+        val reason = "Playback pipeline failure: ${error.message ?: error::class.java.simpleName}"
+        Log.e(TAG, reason, error)
+        playing = false
+        teardownPlayback(permanent = true, reason = reason)
+    }
+
+    private fun logPipelineDiagnostic(event: PipelineEvent) {
+        val entry = PipelineDiagnosticLogFormatter.format(event) ?: return
+        when (entry.level) {
+            PipelineLogLevel.DEBUG -> Log.d(TAG, entry.message)
+            PipelineLogLevel.WARN -> Log.w(TAG, entry.message)
+        }
     }
 
     private fun restartPlaybackForSelectionChange() {

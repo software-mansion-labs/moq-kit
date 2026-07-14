@@ -17,6 +17,7 @@ import com.swmansion.moqkit.subscribe.PlaybackStats
 import com.swmansion.moqkit.subscribe.VideoTrackInfo
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionEffect
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionRejectReason
+import com.swmansion.moqkit.subscribe.internal.pipeline.DriverKind
 import com.swmansion.moqkit.subscribe.internal.pipeline.IngestEvent
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
@@ -63,8 +64,13 @@ internal class PlaybackPipeline(
     private val scope: CoroutineScope,
     private val statsTracker: PlaybackStatsTracker,
     private val pipelineBus: PipelineBus,
+    private val onFatalError: (Throwable) -> Unit,
 ) {
-    private val clock = PlaybackClock(PipelinePolicies.clock, MonotonicTimeSource)
+    private val clock = PlaybackClock(
+        PipelinePolicies.clock,
+        MonotonicTimeSource,
+        masterDriverKind = if (audioTrack != null) DriverKind.AUDIO else DriverKind.VIDEO,
+    )
     @Volatile
     private var audioTimeline: TrackTimeline? = null
 
@@ -94,6 +100,7 @@ internal class PlaybackPipeline(
         require(videoTrack != null || audioTrack != null) {
             "at least one audio or video track is expected"
         }
+        Log.i(TAG, "Master clock configured kind=${clock.masterDriverKind}")
 
         startAudio()
         initialSurface?.let { startVideo(it) }
@@ -253,7 +260,6 @@ internal class PlaybackPipeline(
         audioTimeline = timeline
         try {
             renderer.start()
-            videoRenderer?.onMasterClockChanged()
             statsTracker.emitSubscribeStart(MediaFrameKind.AUDIO, audioInfo.name, audioEpoch)
             audioIngestJob = launchAudioIngestJob(audioInfo, renderer, audioEpoch, timeline)
         } catch (t: Throwable) {
@@ -357,7 +363,9 @@ internal class PlaybackPipeline(
                                 context = eventContext,
                                 reset = decision,
                                 flushedFrames = 0,
-                                resetExecutor = renderer::flush,
+                                resetExecutor = {
+                                    renderer.flush(decision.reason, decision.gapUs)
+                                },
                             )
                             decision.resumeFrom?.mediaFrame?.let(::submit)
                         }
@@ -480,7 +488,13 @@ internal class PlaybackPipeline(
                                 context = eventContext,
                                 reset = decision,
                                 flushedFrames = flushedFrames,
-                                resetExecutor = { videoRenderer?.resetForTimeline(track) },
+                                resetExecutor = {
+                                    videoRenderer?.resetForTimeline(
+                                        track = track,
+                                        reason = decision.reason,
+                                        gapUs = decision.gapUs,
+                                    )
+                                },
                             )
                             decision.resumeFrom?.mediaFrame?.let { submit(it, eventContext) }
                         }
@@ -566,18 +580,10 @@ internal class PlaybackPipeline(
 
     private fun handleAudioRendererError(error: Throwable) {
         if (audioRenderer == null) return
-        Log.e(TAG, "Audio renderer error", error)
-        val hadVideo = videoIngestJobs.active?.isActive == true
-        audioIngestJob?.cancel()
-        audioIngestJob = null
-        audioRenderer?.stop()
-        audioRenderer = null
-        audioTimeline = null
+        Log.e(TAG, "Audio renderer fatal error; terminating playback", error)
         val trackName = selectedAudioTrack?.name ?: "audio"
         statsTracker.emitDecodeError(MediaFrameKind.AUDIO, trackName, error.message ?: "Unknown error")
-        if (!hadVideo) statsTracker.emitPlaybackEnd(error.message)
-        videoRenderer?.onMasterClockChanged()
-        restartCoordinator()
+        onFatalError(error)
     }
 
     private fun stopVideo() {

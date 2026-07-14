@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Process
 import android.util.Log
+import com.swmansion.moqkit.subscribe.DecoderFlushReason
 import com.swmansion.moqkit.subscribe.DiscontinuityReason
 import com.swmansion.moqkit.subscribe.DropReason
 import com.swmansion.moqkit.subscribe.DropStage
@@ -12,16 +13,17 @@ import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.PipelineContext
 import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
+import com.swmansion.moqkit.subscribe.RecoveryStep
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionPolicy
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionEffect
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionRejectReason
 import com.swmansion.moqkit.subscribe.internal.pipeline.AudioDeviceClockDriver
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEvent
+import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEventObserver
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryExecutor
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryResult
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderSupervisor
 import com.swmansion.moqkit.subscribe.internal.pipeline.FrameBuffer
-import com.swmansion.moqkit.subscribe.internal.pipeline.DriverKind
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PcmRing
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
@@ -29,14 +31,12 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
 import com.swmansion.moqkit.subscribe.internal.pipeline.PlaybackClock
 import com.swmansion.moqkit.subscribe.internal.pipeline.RecoveryAttempt
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineResetReason
 import com.swmansion.moqkit.subscribe.internal.pipeline.TrackTimeline
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 import uniffi.moq.MoqAudio
 import java.time.Duration
 import java.util.concurrent.locks.ReentrantLock
@@ -67,6 +67,10 @@ internal class AudioRenderer(
     private val lock = ReentrantLock()
     private val decoderInputLock = Any()
     private val decoderScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val decoderEventObserver = DecoderEventObserver<AudioDecoder>(
+        scope = decoderScope,
+        onEvent = ::onDecoderEvent,
+    )
     private val decoderFormat = AudioMediaFormatFactory.from(config)
         ?: throw IllegalStateException("Unsupported audio codec: ${config.codec}")
     private val audioClockDriver = AudioDeviceClockDriver(sampleRate) {
@@ -87,7 +91,6 @@ internal class AudioRenderer(
 
     private var audioTrack: AudioTrack? = null
     private var decoderRecovery: DecoderRecoveryExecutor<AudioDecoder>? = null
-    private var decoderEventsJob: Job? = null
     private val decoder: AudioDecoder?
         get() = decoderRecovery?.currentSession
     private var playbackThread: Thread? = null
@@ -139,7 +142,7 @@ internal class AudioRenderer(
 
         audioTrack = track
         track.setVolume(volume)
-        clock.attachDriver(audioClockDriver, DriverKind.AUDIO)
+        clock.attachAudioDriver(audioClockDriver)
 
         decoderRecovery = DecoderRecoveryExecutor(
             supervisor = DecoderSupervisor(PipelinePolicies.recovery, MonotonicTimeSource),
@@ -278,17 +281,24 @@ internal class AudioRenderer(
         audioTrack?.setVolume(clampedValue)
     }
 
-    /** Flush decoder and ring buffer (e.g. on discontinuity). */
-    fun flush() {
-        resetAudioPipelineState()
+    /** Flush decoder and ring buffer after a timeline discontinuity. */
+    fun flush(reason: TimelineResetReason, gapUs: Long?) {
+        val droppedFrames = resetAudioPipelineState()
         try {
-            decoder?.flush()
+            decoder?.let { session ->
+                decoderEventObserver.flush(session)
+                emitDecoderFlushed(
+                    reason = DecoderFlushReason.TIMELINE_RESET,
+                    trigger = buildTimelineResetTrigger(reason, gapUs),
+                    droppedFrames = droppedFrames,
+                )
+            }
         } catch (error: Throwable) {
             recoverDecoder(error)
         }
     }
 
-    private fun resetAudioPipelineState() {
+    private fun resetAudioPipelineState(): Int {
         val compressedFrames = synchronized(decoderInputLock) { compressedInput.reset(trackEpoch) }
         lock.withLock {
             ringBuffer.reset()
@@ -298,6 +308,7 @@ internal class AudioRenderer(
         if (compressedFrames > 0) {
             recordCompressedDrop(DropReason.RESET_FLUSH, compressedFrames)
         }
+        return compressedFrames
     }
 
     fun stop() {
@@ -306,8 +317,7 @@ internal class AudioRenderer(
         playbackThread?.takeIf { it !== Thread.currentThread() }?.join(1000)
         playbackThread = null
 
-        decoderEventsJob?.cancel()
-        decoderEventsJob = null
+        decoderEventObserver.close()
         decoderRecovery?.release()
         decoderRecovery = null
         decoderScope.cancel()
@@ -317,7 +327,7 @@ internal class AudioRenderer(
         } catch (_: Exception) {}
         audioTrack = null
 
-        clock.detachDriver(DriverKind.AUDIO)
+        clock.detachAudioDriver()
         Log.d(TAG, "AudioRenderer stopped")
     }
 
@@ -338,8 +348,7 @@ internal class AudioRenderer(
         try {
             session.start()
         } catch (error: Throwable) {
-            decoderEventsJob?.cancel()
-            decoderEventsJob = null
+            decoderEventObserver.close()
             session.release()
             throw error
         }
@@ -347,10 +356,7 @@ internal class AudioRenderer(
     }
 
     private fun observeDecoderEvents(session: AudioDecoder) {
-        decoderEventsJob?.cancel()
-        decoderEventsJob = decoderScope.launch {
-            session.events().collect { event -> onDecoderEvent(session, event) }
-        }
+        decoderEventObserver.observe(session)
     }
 
     private fun onDecoderEvent(session: AudioDecoder, event: DecoderEvent) {
@@ -448,7 +454,7 @@ internal class AudioRenderer(
     private fun recoverDecoder(error: Throwable) {
         val recovery = decoderRecovery ?: return
         val reset = timeline.requestReset()
-        resetAudioPipelineState()
+        val droppedFrames = resetAudioPipelineState()
         pipelineBus?.emit(
             PipelineEvent.Discontinuity(
                 context = diagnosticsContext(),
@@ -460,11 +466,17 @@ internal class AudioRenderer(
         when (result) {
             is DecoderRecoveryResult.Recovered -> {
                 observeDecoderEvents(result.session)
+                if (result.attempt.step == RecoveryStep.FLUSH) {
+                    emitDecoderFlushed(
+                        reason = DecoderFlushReason.DECODER_RECOVERY,
+                        trigger = result.attempt.trigger,
+                        droppedFrames = droppedFrames,
+                    )
+                }
                 drainDecoderInput()
             }
             is DecoderRecoveryResult.Failed -> {
-                decoderEventsJob?.cancel()
-                decoderEventsJob = null
+                decoderEventObserver.close()
                 onError(result.error)
             }
         }
@@ -480,6 +492,24 @@ internal class AudioRenderer(
             ),
         )
     }
+
+    private fun emitDecoderFlushed(
+        reason: DecoderFlushReason,
+        trigger: String,
+        droppedFrames: Int,
+    ) {
+        pipelineBus?.emit(
+            PipelineEvent.DecoderFlushed(
+                context = diagnosticsContext(),
+                reason = reason,
+                trigger = trigger,
+                droppedFrames = droppedFrames,
+            ),
+        )
+    }
+
+    private fun buildTimelineResetTrigger(reason: TimelineResetReason, gapUs: Long?): String =
+        if (gapUs == null) reason.name else "${reason.name} gapUs=$gapUs"
 
     private fun diagnosticsContext() = PipelineContext(
         trackId = trackName,

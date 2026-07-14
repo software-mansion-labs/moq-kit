@@ -18,26 +18,33 @@ internal enum class DriverKind { AUDIO, VIDEO }
 internal class PlaybackClock(
     private val policy: ClockPolicy,
     timeSource: TimeSource,
+    val masterDriverKind: DriverKind = DriverKind.VIDEO,
+    private val videoDriver: AdjustableClockDriver = WallClockDriver(timeSource),
 ) {
     private val lock = Any()
-    private val drivers = mutableMapOf<DriverKind, ClockDriver>(
-        DriverKind.VIDEO to WallClockDriver(timeSource),
-    )
+    private var audioDriver: ClockDriver? = null
     private var liveEdgeUs: Long? = null
 
-    fun attachDriver(driver: ClockDriver, kind: DriverKind) {
-        synchronized(lock) { drivers[kind] = driver }
+    fun attachAudioDriver(driver: ClockDriver) {
+        check(masterDriverKind == DriverKind.AUDIO) {
+            "cannot attach an audio driver to a video-master clock"
+        }
+        synchronized(lock) {
+            audioDriver = driver
+        }
     }
 
-    fun detachDriver(kind: DriverKind) {
-        synchronized(lock) { drivers.remove(kind) }
+    fun detachAudioDriver() {
+        synchronized(lock) {
+            audioDriver = null
+        }
     }
-
-    val activeDriverKind: DriverKind?
-        get() = synchronized(lock) { activeDriverKindLocked() }
 
     fun nowMediaUs(): Long? = synchronized(lock) {
-        activeDriverKindLocked()?.let { drivers[it]?.positionUs() }
+        when (masterDriverKind) {
+            DriverKind.AUDIO -> audioDriver?.positionUs()
+            DriverKind.VIDEO -> videoDriver.positionUs()
+        }
     }
 
     fun startVideoAt(positionUs: Long) {
@@ -70,7 +77,7 @@ internal class PlaybackClock(
     /** Selects and applies the video-clock adjustment. Audio-master playback is never retargeted. */
     fun retarget(targetLatencyUs: Long): RetargetDecision = synchronized(lock) {
         require(targetLatencyUs >= 0L) { "target latency must be non-negative" }
-        if (activeDriverKindLocked() != DriverKind.VIDEO) return RetargetDecision.NoOp
+        if (masterDriverKind != DriverKind.VIDEO) return RetargetDecision.NoOp
         val driver = adjustableVideoDriverLocked()
         val current = driver.positionUs() ?: return RetargetDecision.NoOp
         val edge = liveEdgeUs ?: return RetargetDecision.NoOp
@@ -100,15 +107,7 @@ internal class PlaybackClock(
         RetargetDecision.Nudge(boundedRate)
     }
 
-    private fun activeDriverKindLocked(): DriverKind? = when {
-        drivers.containsKey(DriverKind.AUDIO) -> DriverKind.AUDIO
-        drivers.containsKey(DriverKind.VIDEO) -> DriverKind.VIDEO
-        else -> null
-    }
-
-    private fun adjustableVideoDriverLocked(): AdjustableClockDriver =
-        drivers[DriverKind.VIDEO] as? AdjustableClockDriver
-            ?: error("video clock driver is not adjustable")
+    private fun adjustableVideoDriverLocked(): AdjustableClockDriver = videoDriver
 
     private fun subtractClamped(left: Long, right: Long): Long = try {
         Math.subtractExact(left, right)

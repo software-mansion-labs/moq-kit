@@ -77,6 +77,20 @@ class VideoRendererTrackTest {
     }
 
     @Test
+    fun reportsFramesDiscardedWhilePreparingARenditionSwitch() {
+        val track = track(targetBuffering = Duration.ZERO)
+        track.setBufferState(VideoBufferState.PENDING)
+        track.insert(byteArrayOf(0), timestampUs = 500L, keyframe = true)
+        track.insert(byteArrayOf(1), timestampUs = 1_000L, keyframe = false)
+        track.insert(byteArrayOf(2), timestampUs = 2_000L, keyframe = false)
+        track.insert(byteArrayOf(3), timestampUs = 3_000L, keyframe = true)
+        assertTrue(track.discardFront())
+
+        assertEquals(2, track.discardNonKeyframesBeforePts(3_000L))
+        assertEquals(3_000L, track.peekFront()?.first)
+    }
+
+    @Test
     fun loweringTargetLatencyCanReleaseAnAlreadyBufferedTrack() {
         val track = track(targetBuffering = Duration.ofMillis(2))
         track.insert(byteArrayOf(1), timestampUs = 1_000L, keyframe = true)

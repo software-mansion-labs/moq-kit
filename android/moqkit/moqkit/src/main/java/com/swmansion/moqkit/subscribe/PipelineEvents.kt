@@ -69,6 +69,8 @@ enum class StallCause {
 
 enum class RecoveryStep { FLUSH, REBUILD, FAIL }
 
+enum class DecoderFlushReason { TIMELINE_RESET, RENDITION_SWITCH, DECODER_RECOVERY }
+
 enum class SwitchPhase { STEADY, PREPARING, CUT_IN, FLUSH_SWAP, ABORTED }
 
 /** Structured transport or pipeline closure detail. */
@@ -162,6 +164,18 @@ sealed interface PipelineEvent {
         val step: RecoveryStep,
         val trigger: String,
     ) : PipelineEvent
+
+    /** A completed decoder flush, including the state discarded by that flush. */
+    data class DecoderFlushed(
+        override val context: PipelineContext,
+        val reason: DecoderFlushReason,
+        val trigger: String,
+        val droppedFrames: Int,
+    ) : PipelineEvent {
+        init {
+            require(droppedFrames >= 0) { "droppedFrames must be non-negative" }
+        }
+    }
 
     data class SwitchProgress(
         override val context: PipelineContext,
