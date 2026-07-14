@@ -275,6 +275,19 @@ class PlaybackStatsTrackerTest {
     }
 
     @Test
+    fun pendingRenditionSwitchDoesNotCountAsPlaybackStall() {
+        val now = 1_000_000_000L
+        val tracker = PlaybackStatsTracker(clock = { now })
+        val context = PipelineContext("video/high", PipelineMediaKind.VIDEO, now)
+        tracker.beginSession(MediaFrameKind.VIDEO)
+
+        tracker.onPipelineEvent(PipelineEvent.StallStarted(context, StallCause.SWITCH_STALL))
+        tracker.onPipelineEvent(PipelineEvent.StallEnded(context, StallCause.SWITCH_STALL, 125))
+
+        assertNull(tracker.snapshot(audioLatency = null, videoLatency = null).videoStalls)
+    }
+
+    @Test
     fun closeOutInFlightStallsDoesNotCreateIdleStallStats() {
         val tracker = PlaybackStatsTracker()
 

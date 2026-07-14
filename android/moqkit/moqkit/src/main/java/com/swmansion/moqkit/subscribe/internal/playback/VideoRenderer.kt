@@ -1,6 +1,5 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
-import android.media.MediaFormat
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -87,6 +86,7 @@ internal class VideoRenderer(
     private val switchPolicy = PipelinePolicies.switch
     private val switchController = RenditionSwitchController(switchPolicy)
     private var onTrackActivated: (() -> Unit)? = null
+    private var onTrackAborted: (() -> Unit)? = null
 
     @Volatile
     var hasPendingTrack: Boolean = false
@@ -185,9 +185,7 @@ internal class VideoRenderer(
             surface = outputSurface,
             handler = handler,
         )
-        decoderEventsJob = decoderScope.launch {
-            session.events().collect(::onDecoderEvent)
-        }
+        observeDecoderEvents(session)
         try {
             session.start()
         } catch (error: Throwable) {
@@ -200,7 +198,15 @@ internal class VideoRenderer(
         return session
     }
 
-    private fun onDecoderEvent(event: DecoderEvent) {
+    private fun observeDecoderEvents(session: VideoDecoder) {
+        decoderEventsJob?.cancel()
+        decoderEventsJob = decoderScope.launch {
+            session.events().collect { event -> onDecoderEvent(session, event) }
+        }
+    }
+
+    private fun onDecoderEvent(session: VideoDecoder, event: DecoderEvent) {
+        if (decoder != null && decoder !== session) return
         when (event) {
             DecoderEvent.InputAvailable -> tryFeedDecoder()
             is DecoderEvent.OutputReady -> onDecodedFrame(
@@ -218,9 +224,14 @@ internal class VideoRenderer(
         when (val result = decoderRecovery.recover(error)) {
             is DecoderRecoveryResult.Recovered -> {
                 Log.w(TAG, "Decoder recovered via ${result.attempt.step}", error)
+                observeDecoderEvents(result.session)
                 tryFeedDecoder()
             }
-            is DecoderRecoveryResult.Failed -> handleFatalError(result.error)
+            is DecoderRecoveryResult.Failed -> {
+                decoderEventsJob?.cancel()
+                decoderEventsJob = null
+                handleFatalError(result.error)
+            }
         }
     }
 
@@ -304,6 +315,8 @@ internal class VideoRenderer(
             pendingCsd = null
             pendingTrack = null
             switchController.complete()
+            onTrackActivated = null
+            onTrackAborted = null
             timelineStarted = clock?.isVideoDriven != true
             lastKnownClockTimeUs = 0L
             if (clock?.isVideoDriven == true) {
@@ -373,9 +386,14 @@ internal class VideoRenderer(
     /**
      * Install a pending track. The switch state machine in [tryFeedDecoder] will
      * decide between cut-in and flush-and-swap, then call [performSwap].
-     * [onActivated] is called on the HandlerThread at the moment of the swap.
+     * [onActivated] is called on the HandlerThread at the moment of the swap. [onAborted] is
+     * called when the pending track fails to produce a viable keyframe before the timeout.
      */
-    fun setPendingTrack(track: VideoRendererTrack, onActivated: (() -> Unit)?) {
+    fun setPendingTrack(
+        track: VideoRendererTrack,
+        onActivated: (() -> Unit)?,
+        onAborted: (() -> Unit)?,
+    ) {
         hasPendingTrack = true
         emitSwitchProgress(track.trackName, SwitchPhase.PREPARING)
         handler.post {
@@ -385,6 +403,7 @@ internal class VideoRenderer(
             pendingTrack = track
             switchController.begin(track.trackName)
             onTrackActivated = onActivated
+            onTrackAborted = onAborted
             track.setOnDataAvailable {
                 postDecoderWork {
                     tryFeedDecoder()
@@ -400,7 +419,10 @@ internal class VideoRenderer(
                     pendingTrack = null
                     hasPendingTrack = false
                     onTrackActivated = null
+                    val aborted = onTrackAborted
+                    onTrackAborted = null
                     emitSwitchProgress(track.trackName, SwitchPhase.ABORTED)
+                    aborted?.invoke()
                 }
             }
             awaitingKeyframeTimeout = timeout
@@ -561,7 +583,7 @@ internal class VideoRenderer(
     private fun performSwap(newTrack: VideoRendererTrack, hardFlush: Boolean = false) {
         Log.d(TAG, "VideoRenderer: swapping to pending track (hardFlush=$hardFlush)")
 
-        ensureMatchingCodecs(activeTrack, newTrack)
+        AdaptiveVideoCodec.requireCompatible(activeTrack.getFormat(), newTrack.getFormat())
         // Rendition switching assumes all video tracks use the same source timestamp domain.
         // TimestampDomainMapper compares the active audio/video timeline domains before
         // scheduling; rendition tracks are still expected to share one video source domain.
@@ -585,7 +607,7 @@ internal class VideoRenderer(
         activeTrack = newTrack
         isPlaybackStartEventArmed = true
         metrics?.resetVideoDecodeStats(newTrack.trackName)
-        pendingCsd = extractCsd(newTrack)
+        pendingCsd = AdaptiveVideoCodec.codecData(newTrack.getFormat())
         pendingTrack = null
         hasPendingTrack = false
 
@@ -606,38 +628,8 @@ internal class VideoRenderer(
 
         onTrackActivated?.invoke()
         onTrackActivated = null
+        onTrackAborted = null
         emitSwitchProgress(newTrack.trackName, SwitchPhase.STEADY)
-    }
-
-    private fun ensureMatchingCodecs(oldTrack: VideoRendererTrack, newTrack: VideoRendererTrack) {
-        val activeMime = oldTrack.getFormat()?.getString(MediaFormat.KEY_MIME)
-        val newMime = newTrack.getFormat()?.getString(MediaFormat.KEY_MIME)
-
-        if (activeMime != null && newMime != null && activeMime != newMime) {
-            error("Cannot switch codecs during adaptive swap: $activeMime → $newMime")
-        }
-    }
-
-    private fun extractCsd(track: VideoRendererTrack): ByteArray? {
-        // Extract CSD from the new track's format so the decoder can handle
-        // adaptive resolution changes (needed for out-of-band CSD codecs like avc1/hev1).
-        val newFormat = track.getFormat()
-        if (newFormat != null) {
-            val csd0 = newFormat.getByteBuffer("csd-0")
-            if (csd0 != null) {
-                csd0.rewind()
-                val bytes0 = ByteArray(csd0.remaining()).also { csd0.get(it) }
-                val csd1 = newFormat.getByteBuffer("csd-1")
-                if (csd1 != null) {
-                    csd1.rewind()
-                    val bytes1 = ByteArray(csd1.remaining()).also { csd1.get(it) }
-                    return bytes0 + bytes1
-                } else {
-                    return bytes0
-                }
-            }
-        }
-        return null
     }
 
     // Decoded frame handling (HandlerThread only)

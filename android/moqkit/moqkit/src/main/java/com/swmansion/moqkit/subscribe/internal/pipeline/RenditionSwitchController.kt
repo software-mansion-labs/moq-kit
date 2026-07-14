@@ -71,3 +71,65 @@ internal class RenditionSwitchController(
         }
     }
 }
+
+/** Owns the active and pending resources associated with one rendition switch. */
+internal class RenditionSwitchResources<Resource : Any>(
+    initialActive: Resource? = null,
+    private val close: (Resource) -> Unit,
+) {
+    private val lock = Any()
+
+    @Volatile
+    var active: Resource? = initialActive
+        private set
+
+    @Volatile
+    var pending: Resource? = null
+        private set
+
+    fun replaceActive(resource: Resource) {
+        val previous = synchronized(lock) {
+            check(pending == null) { "cannot replace active resource during a pending switch" }
+            active.also { active = resource }
+        }
+        previous?.let(close)
+    }
+
+    fun begin(resource: Resource) {
+        synchronized(lock) {
+            check(pending == null) { "rendition switch already has a pending resource" }
+            pending = resource
+        }
+    }
+
+    fun activate(expected: Resource): Boolean {
+        val previous = synchronized(lock) {
+            if (pending !== expected) return false
+            active.also {
+                active = expected
+                pending = null
+            }
+        }
+        previous?.let(close)
+        return true
+    }
+
+    fun abort(expected: Resource): Boolean {
+        val resource = synchronized(lock) {
+            if (pending !== expected) return false
+            pending.also { pending = null }
+        }
+        resource?.let(close)
+        return true
+    }
+
+    fun close() {
+        val resources = synchronized(lock) {
+            listOfNotNull(pending, active).also {
+                pending = null
+                active = null
+            }
+        }
+        resources.forEach(close)
+    }
+}
