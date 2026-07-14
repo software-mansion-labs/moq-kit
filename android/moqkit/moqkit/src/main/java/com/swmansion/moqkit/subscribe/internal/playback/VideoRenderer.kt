@@ -343,6 +343,7 @@ internal class VideoRenderer(
                     ),
                 )
             } else {
+                metrics?.recordVideoFrameDropped()
                 emitFrameDropped(
                     trackName = activeTrack.trackName,
                     reason = DropReason.DECODER_INPUT_BACKPRESSURE,
