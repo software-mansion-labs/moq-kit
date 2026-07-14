@@ -8,17 +8,20 @@ internal interface VideoOutputSession {
     fun dropOutput(index: Int): Boolean
 }
 
+internal data class VideoOutputHandle(
+    val session: VideoOutputSession,
+    val index: Int,
+)
+
 /** Android MediaCodec output adapter; scheduling policy remains in the pure core. */
-internal class AndroidVideoRenderSink(
-    private val session: () -> VideoOutputSession?,
-) : RenderSink {
+internal class AndroidVideoRenderSink : RenderSink {
     override fun render(frame: DecodedFrame, atNanos: Long): Boolean {
-        val index = frame.handle as? Int ?: return false
-        return session()?.renderOutput(index, atNanos) == true
+        val handle = frame.handle as? VideoOutputHandle ?: return false
+        return handle.session.renderOutput(handle.index, atNanos)
     }
 
     override fun drop(frame: DecodedFrame) {
-        val index = frame.handle as? Int ?: return
-        session()?.dropOutput(index)
+        val handle = frame.handle as? VideoOutputHandle ?: return
+        handle.session.dropOutput(handle.index)
     }
 }

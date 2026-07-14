@@ -10,36 +10,49 @@ class AndroidVideoRenderSinkTest {
     @Test
     fun renderReleasesCodecOutputAtScheduledTime() {
         val session = FakeVideoOutputSession()
-        val sink = AndroidVideoRenderSink { session }
+        val sink = AndroidVideoRenderSink()
 
-        assertTrue(sink.render(DecodedFrame(ptsUs = 10, handle = 7), atNanos = 20))
+        assertTrue(
+            sink.render(
+                DecodedFrame(ptsUs = 10, handle = VideoOutputHandle(session, 7)),
+                atNanos = 20,
+            ),
+        )
         assertEquals(listOf(7 to 20L), session.rendered)
     }
 
     @Test
     fun dropReleasesCodecOutputWithoutRendering() {
         val session = FakeVideoOutputSession()
-        val sink = AndroidVideoRenderSink { session }
+        val sink = AndroidVideoRenderSink()
 
-        sink.drop(DecodedFrame(ptsUs = 10, handle = 7))
+        sink.drop(DecodedFrame(ptsUs = 10, handle = VideoOutputHandle(session, 7)))
 
         assertEquals(listOf(7), session.dropped)
     }
 
     @Test
-    fun renderFailsWhenOwningSessionIsGone() {
-        val sink = AndroidVideoRenderSink { null }
+    fun renderFailsWhenOwningSessionRejectsStaleOutput() {
+        val session = FakeVideoOutputSession(renderResult = false)
+        val sink = AndroidVideoRenderSink()
 
-        assertFalse(sink.render(DecodedFrame(ptsUs = 10, handle = 7), atNanos = 20))
+        assertFalse(
+            sink.render(
+                DecodedFrame(ptsUs = 10, handle = VideoOutputHandle(session, 7)),
+                atNanos = 20,
+            ),
+        )
     }
 
-    private class FakeVideoOutputSession : VideoOutputSession {
+    private class FakeVideoOutputSession(
+        private val renderResult: Boolean = true,
+    ) : VideoOutputSession {
         val rendered = mutableListOf<Pair<Int, Long>>()
         val dropped = mutableListOf<Int>()
 
         override fun renderOutput(index: Int, atNanos: Long): Boolean {
             rendered += index to atNanos
-            return true
+            return renderResult
         }
 
         override fun dropOutput(index: Int): Boolean {

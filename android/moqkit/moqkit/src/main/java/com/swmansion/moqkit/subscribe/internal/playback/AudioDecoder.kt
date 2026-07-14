@@ -21,6 +21,13 @@ internal data class AudioPcmOutput(
     val frameCount: Int,
 )
 
+internal data class AudioOutputHandle(
+    val session: AudioDecoder,
+    val index: Int,
+    val offset: Int,
+    val size: Int,
+)
+
 /** MediaCodec audio adapter. Buffer admission and recovery policy are owned by the pipeline. */
 internal class AudioDecoder(
     format: MediaFormat,
@@ -32,9 +39,10 @@ internal class AudioDecoder(
     private val handler = Handler(handlerThread.looper)
     private val decoderEvents = Channel<DecoderEvent>(Channel.UNLIMITED)
     private val inputLock = Any()
-    private val pendingInput = ArrayDeque<TimedFrame>()
+    private val legacyPendingInput = ArrayDeque<TimedFrame>()
     private val availableInputBuffers = ArrayDeque<Int>()
     private val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+    private val eventMode = onDecoded == null && onError == null
 
     @Volatile
     private var released = false
@@ -47,12 +55,12 @@ internal class AudioDecoder(
                 if (released) return
                 synchronized(inputLock) {
                     if (released) return
-                    val pending = pendingInput.removeFirstOrNull()
+                    val pending = legacyPendingInput.removeFirstOrNull()
                     if (pending != null) {
                         fillInputBuffer(index, pending)
                     } else {
                         availableInputBuffers.addLast(index)
-                        decoderEvents.trySend(DecoderEvent.InputAvailable)
+                        if (eventMode) decoderEvents.trySend(DecoderEvent.InputAvailable)
                     }
                 }
             }
@@ -63,23 +71,24 @@ internal class AudioDecoder(
                 info: MediaCodec.BufferInfo,
             ) {
                 if (released) return
-                try {
-                    val output = codec.getOutputBuffer(index) ?: return
-                    if (info.size <= 0) return
-                    output.position(info.offset)
-                    output.limit(info.offset + info.size)
-                    output.order(ByteOrder.nativeOrder())
-                    val shorts = output.asShortBuffer()
-                    val samples = ShortArray(info.size / 2)
-                    shorts.get(samples)
-                    val frameCount = samples.size / channels
-                    onDecoded?.invoke(samples, frameCount, info.presentationTimeUs)
-                    decoderEvents.trySend(
+                if (eventMode) {
+                    val result = decoderEvents.trySend(
                         DecoderEvent.OutputReady(
                             timestampUs = info.presentationTimeUs,
-                            handle = AudioPcmOutput(samples, frameCount),
+                            handle = AudioOutputHandle(
+                                session = this@AudioDecoder,
+                                index = index,
+                                offset = info.offset,
+                                size = info.size,
+                            ),
                         ),
                     )
+                    if (result.isFailure) releaseOutputBuffer(codec, index)
+                    return
+                }
+                try {
+                    val pcm = readOutput(index, info.offset, info.size) ?: return
+                    onDecoded?.invoke(pcm.samples, pcm.frameCount, info.presentationTimeUs)
                 } catch (error: Throwable) {
                     reportError("Error processing output buffer", error)
                 } finally {
@@ -94,7 +103,7 @@ internal class AudioDecoder(
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
                 if (released) return
                 Log.d(TAG, "Output format changed: $format")
-                decoderEvents.trySend(DecoderEvent.Reconfigured)
+                if (eventMode) decoderEvents.trySend(DecoderEvent.Reconfigured)
             }
         }, handler)
 
@@ -112,24 +121,26 @@ internal class AudioDecoder(
 
     override fun queueInput(frame: TimedFrame): Boolean {
         if (released) return false
-        handler.post {
-            synchronized(inputLock) {
-                if (released) return@synchronized
-                val index = availableInputBuffers.removeFirstOrNull()
-                if (index != null) fillInputBuffer(index, frame) else pendingInput.addLast(frame)
-            }
+        return synchronized(inputLock) {
+            if (released) return@synchronized false
+            val index = availableInputBuffers.removeFirstOrNull() ?: return@synchronized false
+            fillInputBuffer(index, frame)
         }
-        return true
     }
 
     fun submitFrame(payload: ByteArray, timestampUs: Long) {
-        queueInput(TimedFrame(MediaFrame(payload, timestampUs, keyframe = false)))
+        val frame = TimedFrame(MediaFrame(payload, timestampUs, keyframe = false))
+        synchronized(inputLock) {
+            if (released) return
+            val index = availableInputBuffers.removeFirstOrNull()
+            if (index != null) fillInputBuffer(index, frame) else legacyPendingInput.addLast(frame)
+        }
     }
 
     override fun flush() {
         check(!released) { "decoder is released" }
         synchronized(inputLock) {
-            pendingInput.clear()
+            legacyPendingInput.clear()
             availableInputBuffers.clear()
             codec.flush()
             codec.start()
@@ -141,7 +152,7 @@ internal class AudioDecoder(
         synchronized(inputLock) {
             if (released) return
             released = true
-            pendingInput.clear()
+            legacyPendingInput.clear()
             availableInputBuffers.clear()
         }
         decoderEvents.close()
@@ -158,15 +169,26 @@ internal class AudioDecoder(
         Log.d(TAG, "AudioDecoder released")
     }
 
-    private fun fillInputBuffer(index: Int, frame: TimedFrame) {
-        if (released) return
-        try {
-            val input = codec.getInputBuffer(index) ?: return
+    fun consumeOutput(handle: AudioOutputHandle): AudioPcmOutput? {
+        if (handle.session !== this || released) return null
+        return try {
+            readOutput(handle.index, handle.offset, handle.size)
+        } finally {
+            releaseOutputBuffer(codec, handle.index)
+        }
+    }
+
+    private fun fillInputBuffer(index: Int, frame: TimedFrame): Boolean {
+        if (released) return false
+        return try {
+            val input = codec.getInputBuffer(index) ?: return false
             input.clear()
             input.put(frame.mediaFrame.payload)
             codec.queueInputBuffer(index, 0, frame.sizeBytes, frame.timestampUs, 0)
+            true
         } catch (error: Throwable) {
             reportError("Error filling input buffer", error)
+            false
         }
     }
 
@@ -179,10 +201,21 @@ internal class AudioDecoder(
         }
     }
 
+    private fun readOutput(index: Int, offset: Int, size: Int): AudioPcmOutput? {
+        if (size <= 0) return null
+        val output = codec.getOutputBuffer(index) ?: return null
+        output.position(offset)
+        output.limit(offset + size)
+        output.order(ByteOrder.nativeOrder())
+        val shorts = output.asShortBuffer()
+        val samples = ShortArray(size / 2)
+        shorts.get(samples)
+        return AudioPcmOutput(samples, samples.size / channels)
+    }
+
     private fun reportError(message: String, error: Throwable) {
         if (released) return
         Log.e(TAG, message, error)
-        onError?.invoke(error)
-        decoderEvents.trySend(DecoderEvent.Error(error))
+        if (eventMode) decoderEvents.trySend(DecoderEvent.Error(error)) else onError?.invoke(error)
     }
 }
