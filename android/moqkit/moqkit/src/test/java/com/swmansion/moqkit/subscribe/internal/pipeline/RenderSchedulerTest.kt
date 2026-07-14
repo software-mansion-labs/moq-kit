@@ -81,10 +81,16 @@ class RenderSchedulerTest {
     }
 
     private fun scheduler(clockPositionUs: Long?): RenderScheduler {
-        val clock = PlaybackClock(ClockPolicy(), FakeTimeSource(0))
-        clock.attachDriver(object : ClockDriver {
-            override fun positionUs(): Long? = clockPositionUs
-        }, DriverKind.VIDEO)
+        val clock = PlaybackClock(
+            ClockPolicy(),
+            FakeTimeSource(0),
+            videoDriver = object : AdjustableClockDriver {
+                override fun positionUs(): Long? = clockPositionUs
+                override fun setRate(rate: Double) = Unit
+                override fun setPositionAndRate(positionUs: Long, rate: Double) = Unit
+                override fun reset() = Unit
+            },
+        )
         return RenderScheduler(
             RenderPolicy(
                 maxAheadUs = 500,

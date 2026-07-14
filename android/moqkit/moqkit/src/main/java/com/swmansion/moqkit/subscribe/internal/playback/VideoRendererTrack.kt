@@ -138,14 +138,15 @@ internal class VideoRendererTrack(
     val firstKeyframePts: Long?
         get() = synchronized(lock) { buffer.firstWhere { it.keyframe }?.timestampUs }
 
-    fun discardNonKeyframesBeforePts(pts: Long) {
-        synchronized(lock) {
-            while (true) {
-                val front = buffer.peekFront() ?: break
-                if (front.keyframe || front.timestampUs >= pts) break
-                buffer.removeFront() ?: break
-            }
+    fun discardNonKeyframesBeforePts(pts: Long): Int = synchronized(lock) {
+        var discarded = 0
+        while (true) {
+            val front = buffer.peekFront() ?: break
+            if (front.keyframe || front.timestampUs >= pts) break
+            buffer.removeFront() ?: break
+            discarded++
         }
+        discarded
     }
 
     fun discardFront(): Boolean = synchronized(lock) { buffer.removeFront() != null }

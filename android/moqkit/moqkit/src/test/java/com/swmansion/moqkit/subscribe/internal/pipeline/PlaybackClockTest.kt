@@ -8,23 +8,43 @@ import org.junit.Test
 
 class PlaybackClockTest {
     @Test
-    fun attachedAudioDriverIsMasterUntilDetached() {
+    fun configuredAudioMasterIsNotReplacedWhenItsDriverDetaches() {
         val time = FakeTimeSource(0)
-        val clock = PlaybackClock(ClockPolicy(), time)
+        val clock = PlaybackClock(
+            ClockPolicy(),
+            time,
+            masterDriverKind = DriverKind.AUDIO,
+        )
+        val audio = MutableClockDriver(200)
+        clock.attachAudioDriver(audio)
+
+        assertEquals(DriverKind.AUDIO, clock.masterDriverKind)
+        assertEquals(200L, clock.nowMediaUs())
+
+        clock.detachAudioDriver()
+        time.advance(500_000)
+
+        assertEquals(DriverKind.AUDIO, clock.masterDriverKind)
+        assertNull(clock.nowMediaUs())
+    }
+
+    @Test
+    fun attachedAudioDriverProvidesConfiguredMasterPosition() {
+        val time = FakeTimeSource(0)
+        val clock = PlaybackClock(
+            ClockPolicy(),
+            time,
+            masterDriverKind = DriverKind.AUDIO,
+        )
         val audio = MutableClockDriver(null)
         clock.startVideoAt(100)
-        clock.attachDriver(audio, DriverKind.AUDIO)
+        clock.attachAudioDriver(audio)
 
-        assertEquals(DriverKind.AUDIO, clock.activeDriverKind)
+        assertEquals(DriverKind.AUDIO, clock.masterDriverKind)
         assertNull(clock.nowMediaUs())
 
         audio.position = 200
         assertEquals(200L, clock.nowMediaUs())
-
-        time.advance(500_000)
-        clock.detachDriver(DriverKind.AUDIO)
-        assertEquals(DriverKind.VIDEO, clock.activeDriverKind)
-        assertEquals(600L, clock.nowMediaUs())
     }
 
     @Test
@@ -50,6 +70,7 @@ class PlaybackClockTest {
 
     @Test
     fun retargetAppliesNoOpNudgeAndJumpFromNamedPolicyBounds() {
+        val driver = AdjustableDriver(900)
         val clock = PlaybackClock(
             ClockPolicy(
                 retargetToleranceUs = 20,
@@ -58,9 +79,8 @@ class PlaybackClockTest {
                 maxRate = 1.1,
             ),
             FakeTimeSource(0),
+            videoDriver = driver,
         )
-        val driver = AdjustableDriver(900)
-        clock.attachDriver(driver, DriverKind.VIDEO)
         clock.onLiveEdge(1_000)
 
         assertEquals(RetargetDecision.NoOp, clock.retarget(targetLatencyUs = 90))
@@ -78,6 +98,7 @@ class PlaybackClockTest {
 
     @Test
     fun retargetSlowsVideoClockWhenPlaybackIsAheadOfTarget() {
+        val driver = AdjustableDriver(950)
         val clock = PlaybackClock(
             ClockPolicy(
                 retargetToleranceUs = 20,
@@ -86,9 +107,8 @@ class PlaybackClockTest {
                 maxRate = 1.1,
             ),
             FakeTimeSource(0),
+            videoDriver = driver,
         )
-        val driver = AdjustableDriver(950)
-        clock.attachDriver(driver, DriverKind.VIDEO)
         clock.onLiveEdge(1_000)
 
         val decision = clock.retarget(targetLatencyUs = 100)
@@ -99,10 +119,14 @@ class PlaybackClockTest {
 
     @Test
     fun audioMasterSuppressesVideoRetargeting() {
-        val clock = PlaybackClock(ClockPolicy(), FakeTimeSource(0))
         val video = AdjustableDriver(500)
-        clock.attachDriver(video, DriverKind.VIDEO)
-        clock.attachDriver(MutableClockDriver(700), DriverKind.AUDIO)
+        val clock = PlaybackClock(
+            ClockPolicy(),
+            FakeTimeSource(0),
+            masterDriverKind = DriverKind.AUDIO,
+            videoDriver = video,
+        )
+        clock.attachAudioDriver(MutableClockDriver(700))
         clock.onLiveEdge(1_000)
 
         assertEquals(RetargetDecision.NoOp, clock.retarget(targetLatencyUs = 100))

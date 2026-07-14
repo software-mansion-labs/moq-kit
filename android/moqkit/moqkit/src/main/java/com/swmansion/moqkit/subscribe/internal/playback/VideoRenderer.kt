@@ -5,17 +5,20 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import android.view.Surface
+import com.swmansion.moqkit.subscribe.DecoderFlushReason
 import com.swmansion.moqkit.subscribe.DropReason
 import com.swmansion.moqkit.subscribe.DropStage
 import com.swmansion.moqkit.subscribe.PipelineContext
 import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.RetargetDecision
+import com.swmansion.moqkit.subscribe.RecoveryStep
 import com.swmansion.moqkit.subscribe.SwitchPhase
 import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.DiscontinuityReason
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecodedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEvent
+import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEventObserver
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryExecutor
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryResult
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderSupervisor
@@ -33,13 +36,11 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.SwitchDecision
 import com.swmansion.moqkit.subscribe.internal.pipeline.SwitchState
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimestampDomainMapper
+import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineResetReason
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.android.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -104,6 +105,10 @@ internal class VideoRenderer(
     private val decoderScope = CoroutineScope(
         SupervisorJob() + handler.asCoroutineDispatcher("VideoRendererDecoder"),
     )
+    private val decoderEventObserver = DecoderEventObserver<VideoDecoder>(
+        scope = decoderScope,
+        onEvent = ::onDecoderEvent,
+    )
     private val renderController = RenderController(
         scheduler = RenderScheduler(PipelinePolicies.render, clock),
         sink = AndroidVideoRenderSink(),
@@ -111,7 +116,6 @@ internal class VideoRenderer(
 
     // Decoder state (only accessed on HandlerThread)
 
-    private var decoderEventsJob: Job? = null
     private val decoderRecovery = DecoderRecoveryExecutor(
         supervisor = DecoderSupervisor(PipelinePolicies.recovery, MonotonicTimeSource),
         createSession = ::createStartedDecoder,
@@ -184,8 +188,7 @@ internal class VideoRenderer(
         try {
             session.start()
         } catch (error: Throwable) {
-            decoderEventsJob?.cancel()
-            decoderEventsJob = null
+            decoderEventObserver.close()
             session.release()
             throw error
         }
@@ -194,10 +197,7 @@ internal class VideoRenderer(
     }
 
     private fun observeDecoderEvents(session: VideoDecoder) {
-        decoderEventsJob?.cancel()
-        decoderEventsJob = decoderScope.launch {
-            session.events().collect { event -> onDecoderEvent(session, event) }
-        }
+        decoderEventObserver.observe(session)
     }
 
     private fun onDecoderEvent(session: VideoDecoder, event: DecoderEvent) {
@@ -215,22 +215,28 @@ internal class VideoRenderer(
 
     private fun recoverDecoder(error: Throwable) {
         if (failed) return
-        resetForDecoderRecovery()
+        val droppedFrames = resetForDecoderRecovery()
         when (val result = decoderRecovery.recover(error)) {
             is DecoderRecoveryResult.Recovered -> {
                 Log.w(TAG, "Decoder recovered via ${result.attempt.step}", error)
                 observeDecoderEvents(result.session)
+                if (result.attempt.step == RecoveryStep.FLUSH) {
+                    emitDecoderFlushed(
+                        reason = DecoderFlushReason.DECODER_RECOVERY,
+                        trigger = result.attempt.trigger,
+                        droppedFrames = droppedFrames,
+                    )
+                }
                 tryFeedDecoder()
             }
             is DecoderRecoveryResult.Failed -> {
-                decoderEventsJob?.cancel()
-                decoderEventsJob = null
+                decoderEventObserver.close()
                 handleFatalError(result.error)
             }
         }
     }
 
-    private fun resetForDecoderRecovery() {
+    private fun resetForDecoderRecovery(): Int {
         val reset = activeTrack.timeline.requestReset()
         val flushedFrames = activeTrack.flush() + queuedFramesByPts.size + heldRenderCallbacks.size
         resetDecoderPipelineState()
@@ -253,6 +259,7 @@ internal class VideoRenderer(
                 ),
             )
         }
+        return flushedFrames
     }
 
     private fun resetDecoderPipelineState() {
@@ -315,8 +322,7 @@ internal class VideoRenderer(
             clock.resetVideo()
             cancelHeldRenders()
             queuedFramesByPts.clear()
-            decoderEventsJob?.cancel()
-            decoderEventsJob = null
+            decoderEventObserver.close()
             decoderRecovery.release()
             decoderScope.cancel()
             stallObservation?.close()
@@ -330,30 +336,46 @@ internal class VideoRenderer(
         postDecoderWork {
             val activeBecamePlayable = activeTrack.updateTargetBuffering(latency)
             pendingTrack?.updateTargetBuffering(latency)
-            if (clock.activeDriverKind == DriverKind.VIDEO && timelineStarted) {
+            if (clock.masterDriverKind == DriverKind.VIDEO && timelineStarted) {
                 syncClockToTargetLatency()
             }
-            if (clock.activeDriverKind == DriverKind.VIDEO || activeBecamePlayable) {
+            if (clock.masterDriverKind == DriverKind.VIDEO || activeBecamePlayable) {
                 tryFeedDecoder()
             }
         }
     }
 
-    /** Re-evaluates video timing after the shared clock switches between audio and video master. */
-    fun onMasterClockChanged() {
-        postDecoderWork { tryFeedDecoder() }
-    }
-
     /** Executes a reset selected by the track timeline; this method owns decoder-side effects. */
-    fun resetForTimeline(track: VideoRendererTrack) {
-        track.flush()
+    fun resetForTimeline(
+        track: VideoRendererTrack,
+        reason: TimelineResetReason,
+        gapUs: Long?,
+    ) {
+        val bufferedFrames = track.flush()
         if (track === activeTrack) {
             clock.resetVideo()
         }
         postDecoderWork {
             when (track) {
                 activeTrack -> {
-                    decoder?.flush()
+                    val decoderFrames = queuedFramesByPts.size + heldRenderCallbacks.size
+                    if (decoderFrames > 0) {
+                        metrics?.recordVideoFrameDropped(decoderFrames)
+                        emitFrameDropped(
+                            trackName = activeTrack.trackName,
+                            reason = DropReason.RESET_FLUSH,
+                            count = decoderFrames,
+                            stage = DropStage.DECODER,
+                        )
+                    }
+                    decoder?.let { session ->
+                        flushDecoder(
+                            session = session,
+                            reason = DecoderFlushReason.TIMELINE_RESET,
+                            trigger = buildTimelineResetTrigger(reason, gapUs),
+                            droppedFrames = bufferedFrames + decoderFrames,
+                        )
+                    }
                     resetDecoderPipelineState()
                 }
 
@@ -489,7 +511,7 @@ internal class VideoRenderer(
         if (trackId != activeTrack.trackName || clockStallTrackId != null) return
         clockStallTrackId = trackId
         lastKnownClockTimeUs = currentPlaybackTimeUs()
-        if (clock.activeDriverKind == DriverKind.VIDEO && timelineStarted) {
+        if (clock.masterDriverKind == DriverKind.VIDEO && timelineStarted) {
             clock.pauseVideo()
         }
     }
@@ -497,7 +519,7 @@ internal class VideoRenderer(
     private fun endVideoStall(trackId: String) {
         if (clockStallTrackId != trackId) return
         clockStallTrackId = null
-        if (clock.activeDriverKind == DriverKind.VIDEO && timelineStarted) {
+        if (clock.masterDriverKind == DriverKind.VIDEO && timelineStarted) {
             clock.resumeVideo()
         }
     }
@@ -505,12 +527,14 @@ internal class VideoRenderer(
     private fun maybePromotePendingTrack() {
         val pending = pendingTrack ?: return
         if (switchController.state is SwitchState.Preparing) {
+            var discardedFrames = 0
             while (true) {
                 val front = pending.peekFront() ?: break
                 if (front.second) break
                 if (!switchController.shouldDiscardPendingDelta(lastFedPtsUs, front.first)) break
-                pending.discardFront()
+                if (pending.discardFront()) discardedFrames++
             }
+            recordRenditionSwitchDrops(pending.trackName, discardedFrames)
             pending.firstKeyframePts?.let { keyframePtsUs ->
                 awaitingKeyframeTimeout?.let(handler::removeCallbacks)
                 awaitingKeyframeTimeout = null
@@ -528,7 +552,10 @@ internal class VideoRenderer(
 
         val cuttingIn = switchController.state as? SwitchState.CuttingIn
         if (cuttingIn != null) {
-            pending.discardNonKeyframesBeforePts(cuttingIn.keyframePtsUs)
+            recordRenditionSwitchDrops(
+                trackName = pending.trackName,
+                count = pending.discardNonKeyframesBeforePts(cuttingIn.keyframePtsUs),
+            )
         }
 
         when (switchController.onActiveProgress(lastFedPtsUs)) {
@@ -579,8 +606,23 @@ internal class VideoRenderer(
         val currentDecoder = decoder
         if (currentDecoder != null) {
             if (hardFlush) {
+                val droppedFrames = queuedFramesByPts.size + heldRenderCallbacks.size
+                if (droppedFrames > 0) {
+                    metrics?.recordVideoFrameDropped(droppedFrames)
+                    emitFrameDropped(
+                        trackName = activeTrack.trackName,
+                        reason = DropReason.RENDITION_SWITCH,
+                        count = droppedFrames,
+                        stage = DropStage.DECODER,
+                    )
+                }
+                flushDecoder(
+                    session = currentDecoder,
+                    reason = DecoderFlushReason.RENDITION_SWITCH,
+                    trigger = "hard swap to ${newTrack.trackName}",
+                    droppedFrames = droppedFrames,
+                )
                 cancelHeldRenders()
-                currentDecoder.flush()
                 queuedFramesByPts.clear()
             }
             // else: decoder keeps running and its input capacity remains valid
@@ -592,6 +634,10 @@ internal class VideoRenderer(
         }
 
         activeTrack.setOnDataAvailable(null)
+        recordRenditionSwitchDrops(
+            trackName = activeTrack.trackName,
+            count = activeTrack.flush(),
+        )
         activeTrack = newTrack
         isPlaybackStartEventArmed = true
         metrics?.resetVideoDecodeStats(newTrack.trackName)
@@ -644,6 +690,7 @@ internal class VideoRenderer(
         // not rendered, preventing duplicate-frame stutter.
         if (timestampUs <= noDisplayBeforePts) {
             outputHandle.session.dropOutput(outputHandle.index)
+            metrics?.recordVideoFrameDropped()
             emitFrameDropped(
                 trackName = diagnosticTrackName,
                 reason = DropReason.RENDITION_SWITCH,
@@ -831,7 +878,7 @@ internal class VideoRenderer(
     }
 
     private fun prepareClockForDrain(): Boolean {
-        val driverKind = clock.activeDriverKind
+        val driverKind = clock.masterDriverKind
         if (!timelineStarted) {
             val started = startVideoClockIfReady()
             if (!started && driverKind == DriverKind.VIDEO) return false
@@ -851,16 +898,18 @@ internal class VideoRenderer(
         timelineStarted = true
         lastKnownClockTimeUs = startUs
         clock.startVideoAt(startUs)
+        val masterClock = clock.masterDriverKind
         Log.d(
             TAG,
-            "Started video-driven clock sourceStartUs=$sourceStartUs displayStartUs=$startUs " +
+            "Started video timeline masterClock=$masterClock sourceStartUs=$sourceStartUs " +
+                "displayStartUs=$startUs " +
                 "bufferFillMs=${activeTrack.depthMs}",
         )
         return true
     }
 
     private fun syncClockToTargetLatency() {
-        if (clock.activeDriverKind != DriverKind.VIDEO) return
+        if (clock.masterDriverKind != DriverKind.VIDEO) return
         val liveEdgeSourceUs = activeTrack.timeline.liveEdgeUs() ?: return
         clock.onLiveEdge(audioTime(liveEdgeSourceUs))
         val decision = clock.retarget(activeTrack.targetBuffering.toMicrosecondsLongClamped())
@@ -875,7 +924,7 @@ internal class VideoRenderer(
     }
 
     private fun playbackTimeUsForScheduling(): Long? {
-        if (clock.activeDriverKind == DriverKind.VIDEO) {
+        if (clock.masterDriverKind == DriverKind.VIDEO) {
             return if (timelineStarted) currentPlaybackTimeUs() else null
         }
         return clock.nowMediaUs()?.takeIf { it > 0L }
@@ -915,10 +964,11 @@ internal class VideoRenderer(
     private fun emitFrameDropped(
         trackName: String,
         reason: DropReason,
-        ptsUs: Long,
+        ptsUs: Long? = null,
         bytes: Long = 0L,
         timestampNanos: Long = System.nanoTime(),
         stage: DropStage = DropStage.RENDERER,
+        count: Int = 1,
     ) {
         pipelineBus?.emit(
             PipelineEvent.FrameDropped(
@@ -926,10 +976,50 @@ internal class VideoRenderer(
                 stage = stage,
                 reason = reason,
                 ptsUs = ptsUs,
+                count = count,
                 bytes = bytes,
             ),
         )
     }
+
+    private fun recordRenditionSwitchDrops(trackName: String, count: Int) {
+        if (count <= 0) return
+        metrics?.recordVideoFrameDropped(count)
+        emitFrameDropped(
+            trackName = trackName,
+            reason = DropReason.RENDITION_SWITCH,
+            count = count,
+            stage = DropStage.BUFFER,
+        )
+    }
+
+    private fun flushDecoder(
+        session: VideoDecoder,
+        reason: DecoderFlushReason,
+        trigger: String,
+        droppedFrames: Int,
+    ) {
+        decoderEventObserver.flush(session)
+        emitDecoderFlushed(reason, trigger, droppedFrames)
+    }
+
+    private fun emitDecoderFlushed(
+        reason: DecoderFlushReason,
+        trigger: String,
+        droppedFrames: Int,
+    ) {
+        pipelineBus?.emit(
+            PipelineEvent.DecoderFlushed(
+                context = diagnosticsContext(activeTrack.trackName),
+                reason = reason,
+                trigger = trigger,
+                droppedFrames = droppedFrames,
+            ),
+        )
+    }
+
+    private fun buildTimelineResetTrigger(reason: TimelineResetReason, gapUs: Long?): String =
+        if (gapUs == null) reason.name else "${reason.name} gapUs=$gapUs"
 
     private fun emitSwitchProgress(trackName: String, phase: SwitchPhase) {
         pipelineBus?.emit(
