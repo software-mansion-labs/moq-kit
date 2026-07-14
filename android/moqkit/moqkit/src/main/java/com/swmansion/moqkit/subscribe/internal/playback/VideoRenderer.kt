@@ -109,7 +109,7 @@ internal class VideoRenderer(
     }
     private val renderController = RenderController(
         scheduler = RenderScheduler(PipelinePolicies.render, schedulerClock),
-        sink = AndroidVideoRenderSink { decoder },
+        sink = AndroidVideoRenderSink(),
     )
 
     // Decoder state (only accessed on HandlerThread)
@@ -204,7 +204,7 @@ internal class VideoRenderer(
         when (event) {
             DecoderEvent.InputAvailable -> tryFeedDecoder()
             is DecoderEvent.OutputReady -> onDecodedFrame(
-                bufferIndex = event.handle as Int,
+                outputHandle = event.handle as VideoOutputHandle,
                 timestampUs = event.timestampUs,
             )
             is DecoderEvent.Error -> recoverDecoder(event.throwable)
@@ -642,7 +642,7 @@ internal class VideoRenderer(
 
     // Decoded frame handling (HandlerThread only)
 
-    private fun onDecodedFrame(bufferIndex: Int, timestampUs: Long) {
+    private fun onDecodedFrame(outputHandle: VideoOutputHandle, timestampUs: Long) {
         val outputAtNs = System.nanoTime()
         val metadata = queuedFramesByPts.remove(timestampUs)
         val diagnosticTrackName = metadata?.trackName ?: activeTrack.trackName
@@ -661,13 +661,11 @@ internal class VideoRenderer(
         }
         val playable = metadata?.playable ?: true
         val displayTimestampUs = audioTime(timestampUs)
-        val dec = decoder ?: return
-
         // After a CuttingIn swap, suppress display of frames that overlap with the
         // previous rendition. They are still decoded (needed as reference frames) but
         // not rendered, preventing duplicate-frame stutter.
         if (timestampUs <= noDisplayBeforePts) {
-            dec.releaseOutputBuffer(bufferIndex, false)
+            outputHandle.session.dropOutput(outputHandle.index)
             emitFrameDropped(
                 trackName = diagnosticTrackName,
                 reason = DropReason.RENDITION_SWITCH,
@@ -679,7 +677,7 @@ internal class VideoRenderer(
         }
 
         if (!playable) {
-            dec.releaseOutputBuffer(bufferIndex, false)
+            outputHandle.session.dropOutput(outputHandle.index)
             metrics?.recordVideoFrameDropped()
             emitFrameDropped(
                 trackName = diagnosticTrackName,
@@ -693,7 +691,7 @@ internal class VideoRenderer(
         processDecodedFrame(
             sourceTimestampUs = timestampUs,
             displayTimestampUs = displayTimestampUs,
-            bufferIndex = bufferIndex,
+            outputHandle = outputHandle,
             metadata = metadata,
             trackName = diagnosticTrackName,
         )
@@ -702,7 +700,7 @@ internal class VideoRenderer(
     private fun processDecodedFrame(
         sourceTimestampUs: Long,
         displayTimestampUs: Long,
-        bufferIndex: Int,
+        outputHandle: VideoOutputHandle,
         metadata: QueuedFrameMetadata?,
         trackName: String,
     ) {
@@ -710,7 +708,7 @@ internal class VideoRenderer(
         val frame = DecodedFrame(
             ptsUs = displayTimestampUs,
             durationUs = metadata?.frontFrameIntervalUs,
-            handle = bufferIndex,
+            handle = outputHandle,
         )
         when (val execution = renderController.process(frame, nowNanos)) {
             is RenderExecution.DroppedLate -> {
@@ -731,7 +729,7 @@ internal class VideoRenderer(
                         processDecodedFrame(
                             sourceTimestampUs,
                             displayTimestampUs,
-                            bufferIndex,
+                            outputHandle,
                             metadata,
                             trackName,
                         )

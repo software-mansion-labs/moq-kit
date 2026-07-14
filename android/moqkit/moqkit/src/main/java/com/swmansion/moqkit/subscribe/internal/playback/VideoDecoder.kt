@@ -43,7 +43,12 @@ internal class VideoDecoder(
                 info: MediaCodec.BufferInfo,
             ) {
                 if (released) return
-                decoderEvents.trySend(DecoderEvent.OutputReady(info.presentationTimeUs, index))
+                decoderEvents.trySend(
+                    DecoderEvent.OutputReady(
+                        timestampUs = info.presentationTimeUs,
+                        handle = VideoOutputHandle(this@VideoDecoder, index),
+                    ),
+                )
             }
 
             override fun onError(codec: MediaCodec, error: MediaCodec.CodecException) {

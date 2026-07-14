@@ -249,6 +249,7 @@ internal class PlaybackPipeline(
         val timeline = createTimeline()
         val renderer = AudioRenderer(
             trackName = audioInfo.name,
+            trackEpoch = audioEpoch,
             config = audioInfo.rawConfig,
             targetBuffering = targetBuffering,
             timeline = timeline,

@@ -6,15 +6,20 @@ import android.media.AudioTrack
 import android.os.Process
 import android.util.Log
 import com.swmansion.moqkit.subscribe.DiscontinuityReason
+import com.swmansion.moqkit.subscribe.DropReason
+import com.swmansion.moqkit.subscribe.DropStage
 import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.PipelineContext
 import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionPolicy
+import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionEffect
+import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionRejectReason
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderEvent
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryExecutor
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderRecoveryResult
 import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderSupervisor
+import com.swmansion.moqkit.subscribe.internal.pipeline.FrameBuffer
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PcmRing
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
@@ -44,6 +49,7 @@ private const val TAG = "AudioRenderer"
  */
 internal class AudioRenderer(
     private val trackName: String,
+    private val trackEpoch: Long,
     private val config: MoqAudio,
     private val targetBuffering: Duration,
     private val timeline: TrackTimeline,
@@ -56,6 +62,7 @@ internal class AudioRenderer(
     private val sampleRate = config.sampleRate.toInt()
     private val channels = config.channelCount.toInt()
     private val lock = ReentrantLock()
+    private val decoderInputLock = Any()
     private val decoderScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val decoderFormat = AudioMediaFormatFactory.from(config)
         ?: throw IllegalStateException("Unsupported audio codec: ${config.codec}")
@@ -66,6 +73,12 @@ internal class AudioRenderer(
         channels = channels,
         policy = pcmPolicy(targetBuffering),
     )
+    private val compressedInput = FrameBuffer(
+        PipelinePolicies.admission.copy(
+            evictWholeGops = false,
+            requireKeyframeAfterReset = false,
+        ),
+    ).apply { reset(trackEpoch) }
 
     private var audioTrack: AudioTrack? = null
     private var decoderRecovery: DecoderRecoveryExecutor<AudioDecoder>? = null
@@ -149,6 +162,13 @@ internal class AudioRenderer(
                     track.write(chunkBuf, 0, framesRead * channels)
                     clock.setCurrentTimeUs(ts)
                     metrics?.audioPlaybackStarted(ts, hostTime = null)
+                    pipelineBus?.emit(
+                        PipelineEvent.FrameRendered(
+                            context = diagnosticsContext(),
+                            ptsUs = ts,
+                            renderNanos = System.nanoTime(),
+                        ),
+                    )
                 } else {
                     Thread.sleep(5)
                 }
@@ -164,19 +184,34 @@ internal class AudioRenderer(
 
     /** Submit a compressed audio frame for decoding. */
     fun submitFrame(payload: ByteArray, timestampUs: Long) {
-        val accepted = decoder?.queueInput(
-            TimedFrame(MediaFrame(payload, timestampUs, keyframe = false)),
-        ) == true
-        if (accepted) {
-            pipelineBus?.emit(
-                PipelineEvent.DecoderInputQueued(
-                    context = diagnosticsContext(),
-                    ptsUs = timestampUs,
-                ),
-            )
-        } else {
-            metrics?.recordAudioFramesDropped(1)
+        val frame = TimedFrame(
+            mediaFrame = MediaFrame(payload, timestampUs, keyframe = false),
+            epoch = trackEpoch,
+        )
+        val effects = synchronized(decoderInputLock) { compressedInput.offer(frame) }
+        effects.forEach { effect ->
+            when (effect) {
+                is AdmissionEffect.Admitted -> pipelineBus?.emit(
+                    PipelineEvent.FrameAdmitted(
+                        context = diagnosticsContext(),
+                        ptsUs = effect.frame.timestampUs,
+                        bufferDepth = synchronized(decoderInputLock) { compressedInput.depth() },
+                    ),
+                )
+                is AdmissionEffect.EvictedGop -> recordCompressedDrop(
+                    reason = DropReason.BACKLOG_OVERFLOW,
+                    count = effect.count,
+                    bytes = effect.bytes,
+                )
+                is AdmissionEffect.Rejected -> recordCompressedDrop(
+                    reason = effect.reason.toDropReason(),
+                    count = 1,
+                    bytes = effect.frame.sizeBytes.toLong(),
+                    ptsUs = effect.frame.timestampUs,
+                )
+            }
         }
+        drainDecoderInput()
     }
 
     fun expectPlaybackStart(context: TrackReadyContext) {
@@ -219,11 +254,15 @@ internal class AudioRenderer(
     }
 
     private fun resetAudioPipelineState() {
+        val compressedFrames = synchronized(decoderInputLock) { compressedInput.reset(trackEpoch) }
         lock.withLock {
             ringBuffer.reset()
             pendingReadyContext = null
         }
         metrics?.disarmAudioPlaybackStart()
+        if (compressedFrames > 0) {
+            recordCompressedDrop(DropReason.RESET_FLUSH, compressedFrames)
+        }
         clock.reset()
     }
 
@@ -277,10 +316,11 @@ internal class AudioRenderer(
 
     private fun onDecoderEvent(event: DecoderEvent) {
         when (event) {
-            DecoderEvent.InputAvailable,
+            DecoderEvent.InputAvailable -> drainDecoderInput()
             DecoderEvent.Reconfigured -> Unit
             is DecoderEvent.OutputReady -> {
-                val output = event.handle as AudioPcmOutput
+                val handle = event.handle as AudioOutputHandle
+                val output = handle.session.consumeOutput(handle) ?: return
                 onDecoded(output.samples, output.frameCount, event.timestampUs)
             }
             is DecoderEvent.Error -> recoverDecoder(event.throwable)
@@ -308,6 +348,62 @@ internal class AudioRenderer(
                 metrics?.emitTrackSwitch(MediaFrameKind.AUDIO, context.trackName, context.trackEpoch)
             }
         }
+    }
+
+    private fun drainDecoderInput() {
+        val queued = mutableListOf<TimedFrame>()
+        synchronized(decoderInputLock) {
+            val session = decoder ?: return
+            while (true) {
+                val frame = compressedInput.peekFront() ?: break
+                if (!session.queueInput(frame)) break
+                compressedInput.removeFront()
+                queued += frame
+            }
+        }
+        queued.forEach { frame ->
+            pipelineBus?.emit(
+                PipelineEvent.DecoderInputQueued(
+                    context = diagnosticsContext(),
+                    ptsUs = frame.timestampUs,
+                ),
+            )
+        }
+        if (queued.isNotEmpty()) {
+            pipelineBus?.emit(
+                PipelineEvent.BufferDepthChanged(
+                    context = diagnosticsContext(),
+                    depth = synchronized(decoderInputLock) { compressedInput.depth() },
+                ),
+            )
+        }
+    }
+
+    private fun recordCompressedDrop(
+        reason: DropReason,
+        count: Int,
+        bytes: Long = 0L,
+        ptsUs: Long? = null,
+    ) {
+        metrics?.recordAudioFramesDropped(count)
+        pipelineBus?.emit(
+            PipelineEvent.FrameDropped(
+                context = diagnosticsContext(),
+                stage = DropStage.BUFFER,
+                reason = reason,
+                ptsUs = ptsUs,
+                count = count,
+                bytes = bytes,
+            ),
+        )
+    }
+
+    private fun AdmissionRejectReason.toDropReason(): DropReason = when (this) {
+        AdmissionRejectReason.WAITING_FOR_KEYFRAME -> DropReason.WAITING_FOR_KEYFRAME
+        AdmissionRejectReason.FRAME_TOO_LARGE -> DropReason.BACKLOG_OVERFLOW
+        AdmissionRejectReason.OLD_EPOCH,
+        AdmissionRejectReason.UNEXPECTED_EPOCH -> DropReason.PUBLISHER_REWIND
+        AdmissionRejectReason.DUPLICATE -> DropReason.COVERED
     }
 
     private fun recoverDecoder(error: Throwable) {
