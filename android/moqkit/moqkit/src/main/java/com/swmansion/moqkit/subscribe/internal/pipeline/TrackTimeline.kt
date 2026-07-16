@@ -1,17 +1,33 @@
 package com.swmansion.moqkit.subscribe.internal.pipeline
 
 internal enum class TimelineDropReason {
+    /** Frame is older than the current playback position by more than the freshness budget. */
     STALE_VS_PLAYBACK,
+
+    /** Transport groups were skipped to keep playback within its live-latency budget. */
     LATENCY_BUDGET_SKIP,
+
+    /** Transport groups were evicted before the timeline could consume them. */
     NETWORK_EVICTED,
+
+    /** Transport groups were superseded by another range covering the same media. */
     COVERED,
+
+    /** Transport groups were skipped because the publisher sequence moved backward. */
     REWIND,
+
+    /** An expected transport sequence range was never delivered. */
     MISSING_SEQUENCE,
 }
 
 internal enum class TimelineResetReason {
+    /** Publisher started a new epoch after rewinding its media sequence. */
     PUBLISHER_REWIND,
+
+    /** Consecutive media timestamps differ by more than the configured maximum gap. */
     TIMESTAMP_GAP,
+
+    /** A downstream decoder or renderer recovery requested a local timeline reset. */
     DOWNSTREAM_RECOVERY,
 }
 

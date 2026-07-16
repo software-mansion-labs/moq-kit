@@ -28,7 +28,14 @@ internal data class AudioOutputHandle(
     val size: Int,
 )
 
-/** MediaCodec audio adapter. Buffer admission and recovery policy are owned by the pipeline. */
+/**
+ * MediaCodec audio adapter with two internal consumption modes.
+ *
+ * When decode callbacks are supplied, [submitFrame] owns pending input and decoded PCM is
+ * delivered directly to those callbacks for [com.swmansion.moqkit.subscribe.AudioDataStream].
+ * When both callbacks are absent, [events] exposes codec availability and output handles so the
+ * playback pipeline can own admission, backpressure, and recovery policy.
+ */
 internal class AudioDecoder(
     format: MediaFormat,
     private val onDecoded: ((ShortArray, Int, Long) -> Unit)? = null,
@@ -40,10 +47,10 @@ internal class AudioDecoder(
     @Volatile
     private var decoderEvents = Channel<DecoderEvent>(Channel.UNLIMITED)
     private val inputLock = Any()
-    private val legacyPendingInput = ArrayDeque<TimedFrame>()
+    private val callbackPendingInput = ArrayDeque<TimedFrame>()
     private val availableInputBuffers = ArrayDeque<Int>()
     private val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-    private val eventMode = onDecoded == null && onError == null
+    private val usesEventStream = onDecoded == null && onError == null
 
     @Volatile
     private var released = false
@@ -56,12 +63,12 @@ internal class AudioDecoder(
                 if (released) return
                 synchronized(inputLock) {
                     if (released) return
-                    val pending = legacyPendingInput.removeFirstOrNull()
+                    val pending = callbackPendingInput.removeFirstOrNull()
                     if (pending != null) {
                         fillInputBuffer(index, pending)
                     } else {
                         availableInputBuffers.addLast(index)
-                        if (eventMode) decoderEvents.trySend(DecoderEvent.InputAvailable)
+                        if (usesEventStream) decoderEvents.trySend(DecoderEvent.InputAvailable)
                     }
                 }
             }
@@ -72,7 +79,7 @@ internal class AudioDecoder(
                 info: MediaCodec.BufferInfo,
             ) {
                 if (released) return
-                if (eventMode) {
+                if (usesEventStream) {
                     val result = decoderEvents.trySend(
                         DecoderEvent.OutputReady(
                             timestampUs = info.presentationTimeUs,
@@ -104,7 +111,7 @@ internal class AudioDecoder(
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
                 if (released) return
                 Log.d(TAG, "Output format changed: $format")
-                if (eventMode) decoderEvents.trySend(DecoderEvent.Reconfigured)
+                if (usesEventStream) decoderEvents.trySend(DecoderEvent.Reconfigured)
             }
         }, handler)
 
@@ -129,21 +136,22 @@ internal class AudioDecoder(
         }
     }
 
+    /** Submits compressed input through callback mode, queueing until a codec buffer is free. */
     fun submitFrame(payload: ByteArray, timestampUs: Long) {
         val frame = TimedFrame(MediaFrame(payload, timestampUs, keyframe = false))
         synchronized(inputLock) {
             if (released) return
             val index = availableInputBuffers.removeFirstOrNull()
-            if (index != null) fillInputBuffer(index, frame) else legacyPendingInput.addLast(frame)
+            if (index != null) fillInputBuffer(index, frame) else callbackPendingInput.addLast(frame)
         }
     }
 
     override fun flush() {
         check(!released) { "decoder is released" }
         synchronized(inputLock) {
-            legacyPendingInput.clear()
+            callbackPendingInput.clear()
             availableInputBuffers.clear()
-            if (eventMode) rotateEventStream()
+            if (usesEventStream) rotateEventStream()
             codec.flush()
             codec.start()
         }
@@ -154,7 +162,7 @@ internal class AudioDecoder(
         synchronized(inputLock) {
             if (released) return
             released = true
-            legacyPendingInput.clear()
+            callbackPendingInput.clear()
             availableInputBuffers.clear()
         }
         decoderEvents.close()
@@ -221,7 +229,7 @@ internal class AudioDecoder(
     private fun reportError(message: String, error: Throwable) {
         if (released) return
         Log.e(TAG, message, error)
-        if (eventMode) decoderEvents.trySend(DecoderEvent.Error(error)) else onError?.invoke(error)
+        if (usesEventStream) decoderEvents.trySend(DecoderEvent.Error(error)) else onError?.invoke(error)
     }
 
     private fun rotateEventStream() {

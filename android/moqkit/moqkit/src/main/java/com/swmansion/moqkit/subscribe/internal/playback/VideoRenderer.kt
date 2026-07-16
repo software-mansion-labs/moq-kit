@@ -110,7 +110,7 @@ internal class VideoRenderer(
     )
     private val renderController = RenderController(
         scheduler = RenderScheduler(PipelinePolicies.render, clock),
-        sink = AndroidVideoRenderSink(),
+        sink = MediaCodecVideoRenderSink(),
     )
 
     // Decoder state (only accessed on HandlerThread)

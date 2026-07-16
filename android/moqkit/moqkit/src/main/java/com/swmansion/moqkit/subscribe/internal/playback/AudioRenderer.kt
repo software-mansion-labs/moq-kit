@@ -24,6 +24,7 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.DecoderSupervisor
 import com.swmansion.moqkit.subscribe.internal.pipeline.FrameBuffer
 import com.swmansion.moqkit.subscribe.internal.pipeline.MonotonicTimeSource
 import com.swmansion.moqkit.subscribe.internal.pipeline.PcmRing
+import com.swmansion.moqkit.subscribe.internal.pipeline.PcmRingPolicy
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
 import com.swmansion.moqkit.subscribe.internal.pipeline.PlaybackClock
@@ -40,6 +41,8 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 private const val TAG = "AudioRenderer"
+private const val AUDIO_TRACK_WRITE_RETRY_DELAY_MILLIS = 1L
+private const val EMPTY_PCM_RING_POLL_DELAY_MILLIS = 5L
 
 /**
  * Orchestrates a supervised AudioDecoder session, PcmRing, AudioTrack, and playback thread.
@@ -78,7 +81,7 @@ internal class AudioRenderer(
     private var ringBuffer = PcmRing(
         sampleRate = sampleRate,
         channels = channels,
-        policy = pcmPolicy(targetBuffering),
+        policy = pcmRingPolicy(targetBuffering),
     )
     private val compressedInput = FrameBuffer(
         PipelinePolicies.admission.copy(
@@ -178,7 +181,7 @@ internal class AudioRenderer(
                             )
                             check(count >= 0) { "AudioTrack write failed: $count" }
                             if (count == 0) {
-                                Thread.sleep(1)
+                                Thread.sleep(AUDIO_TRACK_WRITE_RETRY_DELAY_MILLIS)
                                 continue
                             }
                             val frameOffset = writtenSamples / channels
@@ -198,7 +201,7 @@ internal class AudioRenderer(
                             renderNanos = System.nanoTime(),
                         )
                     } else {
-                        Thread.sleep(5)
+                        Thread.sleep(EMPTY_PCM_RING_POLL_DELAY_MILLIS)
                     }
                 }
             } catch (error: Throwable) {
@@ -264,7 +267,7 @@ internal class AudioRenderer(
     /** Update the target latency, resizing the ring buffer. */
     fun updateTargetLatency(latency: Duration) {
         lock.withLock {
-            ringBuffer.resize(pcmPolicy(latency))
+            ringBuffer.resize(pcmRingPolicy(latency))
         }
     }
 
@@ -453,7 +456,7 @@ internal class AudioRenderer(
         }
     }
 
-    private fun pcmPolicy(latency: Duration): AdmissionPolicy {
+    private fun pcmRingPolicy(latency: Duration): PcmRingPolicy {
         require(!latency.isNegative && !latency.isZero) { "invalid latency" }
         val durationUs = latency.toMicrosecondsLongClamped().coerceAtLeast(1L)
         val frames = kotlin.math.ceil(sampleRate.toDouble() * durationUs / 1_000_000.0)
@@ -464,12 +467,10 @@ internal class AudioRenderer(
         } catch (_: ArithmeticException) {
             Long.MAX_VALUE
         }
-        return AdmissionPolicy(
+        return PcmRingPolicy(
             maxBytes = bytes,
             maxFrames = frames,
             maxDurationUs = durationUs,
-            evictWholeGops = false,
-            requireKeyframeAfterReset = false,
         )
     }
 

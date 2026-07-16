@@ -5,12 +5,10 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class PcmRingTest {
-    private val policy = AdmissionPolicy(
+    private val policy = PcmRingPolicy(
         maxBytes = 8,
         maxFrames = 4,
         maxDurationUs = 4_000,
-        evictWholeGops = false,
-        requireKeyframeAfterReset = false,
     )
 
     @Test
@@ -34,7 +32,7 @@ class PcmRingTest {
 
         val result = ring.write(0, shortArrayOf(9), 1)
 
-        assertEquals(PcmWriteResult(acceptedFrames = 0, rejectedOldFrames = 1), result)
+        assertEquals(PcmRing.WriteResult(acceptedFrames = 0, rejectedOldFrames = 1), result)
         val output = ShortArray(2)
         assertEquals(2, ring.read(output, 2))
         assertArrayEquals(shortArrayOf(3, 4), output)

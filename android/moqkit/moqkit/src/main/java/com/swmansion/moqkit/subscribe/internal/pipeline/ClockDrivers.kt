@@ -63,7 +63,16 @@ internal class WallClockDriver(
     }
 }
 
-/** Maps AudioTrack's unsigned playback-head frame counter onto media timestamps. */
+/**
+ * Maps AudioTrack's unsigned playback-head frame counter onto media timestamps.
+ *
+ * AudioTrack advances through device frames, while successive writes may begin at
+ * discontinuous media timestamps. Each discontinuity starts a new mapping segment at the
+ * cumulative device-frame position where that write begins. The clock follows the previous
+ * segment until the playback head reaches the new segment, then continues from the new media
+ * timestamp. This preserves forward gaps and rewinds without assuming that written media is
+ * timestamp-contiguous.
+ */
 internal class AudioDeviceClockDriver(
     private val sampleRate: Int,
     private val playbackHeadFrames: () -> Long?,

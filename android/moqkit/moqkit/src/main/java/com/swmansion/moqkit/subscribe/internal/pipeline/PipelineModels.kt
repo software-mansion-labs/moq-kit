@@ -41,10 +41,19 @@ internal data class TimedFrame(
 }
 
 internal enum class TransportSkipReason {
+    /** Groups skipped to keep playback within its live-latency budget. */
     LATENCY_BUDGET,
+
+    /** Groups removed by transport retention or capacity limits before they were consumed. */
     EVICTED,
+
+    /** Groups superseded by another transport range that covers the same media. */
     COVERED,
+
+    /** Groups skipped because the publisher sequence moved backward. */
     REWIND,
+
+    /** Groups expected from the sequence but never delivered by the transport. */
     MISSING_SEQUENCE,
 }
 
