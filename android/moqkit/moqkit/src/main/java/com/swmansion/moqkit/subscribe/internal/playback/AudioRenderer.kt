@@ -10,8 +10,6 @@ import com.swmansion.moqkit.subscribe.DiscontinuityReason
 import com.swmansion.moqkit.subscribe.DropReason
 import com.swmansion.moqkit.subscribe.DropStage
 import com.swmansion.moqkit.subscribe.MediaFrame
-import com.swmansion.moqkit.subscribe.PipelineContext
-import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.RecoveryStep
 import com.swmansion.moqkit.subscribe.internal.pipeline.AdmissionPolicy
@@ -29,7 +27,6 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.PcmRing
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelineBus
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
 import com.swmansion.moqkit.subscribe.internal.pipeline.PlaybackClock
-import com.swmansion.moqkit.subscribe.internal.pipeline.RecoveryAttempt
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimelineResetReason
 import com.swmansion.moqkit.subscribe.internal.pipeline.TrackTimeline
@@ -57,11 +54,12 @@ internal class AudioRenderer(
     private val targetBuffering: Duration,
     private val timeline: TrackTimeline,
     private val metrics: PlaybackStatsTracker? = null,
-    private val pipelineBus: PipelineBus? = null,
+    pipelineBus: PipelineBus? = null,
     private val onError: (Throwable) -> Unit = {},
     initialVolume: Float = 1f,
     private val clock: PlaybackClock,
 ) {
+    private val telemetry = RendererTelemetry(PipelineMediaKind.AUDIO, metrics, pipelineBus)
     private val sampleRate = config.sampleRate.toInt()
     private val channels = config.channelCount.toInt()
     private val lock = ReentrantLock()
@@ -147,7 +145,7 @@ internal class AudioRenderer(
         decoderRecovery = DecoderRecoveryExecutor(
             supervisor = DecoderSupervisor(PipelinePolicies.recovery, MonotonicTimeSource),
             createSession = ::createStartedDecoder,
-            onRecovery = ::emitDecoderRecovery,
+            onRecovery = { telemetry.decoderRecovery(trackName, it) },
         )
         decoderRecovery!!.start()
 
@@ -194,12 +192,10 @@ internal class AudioRenderer(
                         val renderedFrames = writtenSamples / channels
                         val renderedEndUs = addClamped(mediaStartUs, framesToUs(renderedFrames))
                         metrics?.audioPlaybackStarted(renderedEndUs, hostTime = null)
-                        pipelineBus?.emit(
-                            PipelineEvent.FrameRendered(
-                                context = diagnosticsContext(),
-                                ptsUs = renderedEndUs,
-                                renderNanos = System.nanoTime(),
-                            ),
+                        telemetry.frameRendered(
+                            trackName = trackName,
+                            ptsUs = renderedEndUs,
+                            renderNanos = System.nanoTime(),
                         )
                     } else {
                         Thread.sleep(5)
@@ -229,12 +225,10 @@ internal class AudioRenderer(
         val effects = synchronized(decoderInputLock) { compressedInput.offer(frame) }
         effects.forEach { effect ->
             when (effect) {
-                is AdmissionEffect.Admitted -> pipelineBus?.emit(
-                    PipelineEvent.FrameAdmitted(
-                        context = diagnosticsContext(),
-                        ptsUs = effect.frame.timestampUs,
-                        bufferDepth = synchronized(decoderInputLock) { compressedInput.depth() },
-                    ),
+                is AdmissionEffect.Admitted -> telemetry.frameAdmitted(
+                    trackName = trackName,
+                    ptsUs = effect.frame.timestampUs,
+                    bufferDepth = synchronized(decoderInputLock) { compressedInput.depth() },
                 )
                 is AdmissionEffect.EvictedGop -> recordCompressedDrop(
                     reason = DropReason.BACKLOG_OVERFLOW,
@@ -287,9 +281,10 @@ internal class AudioRenderer(
         try {
             decoder?.let { session ->
                 decoderEventObserver.flush(session)
-                emitDecoderFlushed(
+                telemetry.decoderFlushed(
+                    trackName = trackName,
                     reason = DecoderFlushReason.TIMELINE_RESET,
-                    trigger = buildTimelineResetTrigger(reason, gapUs),
+                    trigger = timelineResetTrigger(reason, gapUs),
                     droppedFrames = droppedFrames,
                 )
             }
@@ -305,9 +300,7 @@ internal class AudioRenderer(
             pendingReadyContext = null
         }
         metrics?.disarmAudioPlaybackStart()
-        if (compressedFrames > 0) {
-            recordCompressedDrop(DropReason.RESET_FLUSH, compressedFrames)
-        }
+        recordCompressedDrop(DropReason.RESET_FLUSH, compressedFrames)
         return compressedFrames
     }
 
@@ -374,12 +367,7 @@ internal class AudioRenderer(
     }
 
     private fun onDecoded(pcmData: ShortArray, frameCount: Int, timestampUs: Long) {
-        pipelineBus?.emit(
-            PipelineEvent.DecoderOutputReady(
-                context = diagnosticsContext(),
-                ptsUs = timestampUs,
-            ),
-        )
+        telemetry.decoderOutputReady(trackName, timestampUs)
         var readyContext: TrackReadyContext? = null
         lock.withLock {
             val result = ringBuffer.write(timestampUs, pcmData, frameCount)
@@ -407,19 +395,12 @@ internal class AudioRenderer(
             }
         }
         queued.forEach { frame ->
-            pipelineBus?.emit(
-                PipelineEvent.DecoderInputQueued(
-                    context = diagnosticsContext(),
-                    ptsUs = frame.timestampUs,
-                ),
-            )
+            telemetry.decoderInputQueued(trackName, frame.timestampUs)
         }
         if (queued.isNotEmpty()) {
-            pipelineBus?.emit(
-                PipelineEvent.BufferDepthChanged(
-                    context = diagnosticsContext(),
-                    depth = synchronized(decoderInputLock) { compressedInput.depth() },
-                ),
+            telemetry.bufferDepth(
+                trackName = trackName,
+                depth = synchronized(decoderInputLock) { compressedInput.depth() },
             )
         }
     }
@@ -429,19 +410,14 @@ internal class AudioRenderer(
         count: Int,
         bytes: Long = 0L,
         ptsUs: Long? = null,
-    ) {
-        metrics?.recordAudioFramesDropped(count)
-        pipelineBus?.emit(
-            PipelineEvent.FrameDropped(
-                context = diagnosticsContext(),
-                stage = DropStage.BUFFER,
-                reason = reason,
-                ptsUs = ptsUs,
-                count = count,
-                bytes = bytes,
-            ),
-        )
-    }
+    ) = telemetry.frameDropped(
+        trackName = trackName,
+        stage = DropStage.BUFFER,
+        reason = reason,
+        count = count,
+        ptsUs = ptsUs,
+        bytes = bytes,
+    )
 
     private fun AdmissionRejectReason.toDropReason(): DropReason = when (this) {
         AdmissionRejectReason.WAITING_FOR_KEYFRAME -> DropReason.WAITING_FOR_KEYFRAME
@@ -455,19 +431,14 @@ internal class AudioRenderer(
         val recovery = decoderRecovery ?: return
         val reset = timeline.requestReset()
         val droppedFrames = resetAudioPipelineState()
-        pipelineBus?.emit(
-            PipelineEvent.Discontinuity(
-                context = diagnosticsContext(),
-                epoch = reset.epoch,
-                reason = DiscontinuityReason.LOCAL_RESET,
-            ),
-        )
+        telemetry.discontinuity(trackName, reset.epoch, DiscontinuityReason.LOCAL_RESET)
         val result = recovery.recover(error)
         when (result) {
             is DecoderRecoveryResult.Recovered -> {
                 observeDecoderEvents(result.session)
                 if (result.attempt.step == RecoveryStep.FLUSH) {
-                    emitDecoderFlushed(
+                    telemetry.decoderFlushed(
+                        trackName = trackName,
                         reason = DecoderFlushReason.DECODER_RECOVERY,
                         trigger = result.attempt.trigger,
                         droppedFrames = droppedFrames,
@@ -481,41 +452,6 @@ internal class AudioRenderer(
             }
         }
     }
-
-    private fun emitDecoderRecovery(attempt: RecoveryAttempt) {
-        pipelineBus?.emit(
-            PipelineEvent.DecoderRecovery(
-                context = diagnosticsContext(),
-                attempt = attempt.attempt,
-                step = attempt.step,
-                trigger = attempt.trigger,
-            ),
-        )
-    }
-
-    private fun emitDecoderFlushed(
-        reason: DecoderFlushReason,
-        trigger: String,
-        droppedFrames: Int,
-    ) {
-        pipelineBus?.emit(
-            PipelineEvent.DecoderFlushed(
-                context = diagnosticsContext(),
-                reason = reason,
-                trigger = trigger,
-                droppedFrames = droppedFrames,
-            ),
-        )
-    }
-
-    private fun buildTimelineResetTrigger(reason: TimelineResetReason, gapUs: Long?): String =
-        if (gapUs == null) reason.name else "${reason.name} gapUs=$gapUs"
-
-    private fun diagnosticsContext() = PipelineContext(
-        trackId = trackName,
-        mediaKind = PipelineMediaKind.AUDIO,
-        timestampNanos = System.nanoTime(),
-    )
 
     private fun pcmPolicy(latency: Duration): AdmissionPolicy {
         require(!latency.isNegative && !latency.isZero) { "invalid latency" }
