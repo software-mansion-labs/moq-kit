@@ -56,7 +56,18 @@ internal data class RenderPolicy(
     }
 }
 
-/** Playback-clock retargeting thresholds and bounded rate nudges. */
+/**
+ * Playback-clock retargeting thresholds and bounded rate nudges.
+ *
+ * Errors within [retargetToleranceUs] leave the clock at normal speed. Errors at or beyond
+ * [jumpThresholdUs] jump directly to the target position. Errors between those thresholds
+ * are corrected gradually with a rate bounded by [minRate] and [maxRate].
+ *
+ * @property retargetToleranceUs Maximum clock error that requires no position correction.
+ * @property jumpThresholdUs Minimum clock error corrected with an immediate position jump.
+ * @property minRate Slowest rate used when the clock is ahead of its target position.
+ * @property maxRate Fastest rate used when the clock is behind its target position.
+ */
 internal data class ClockPolicy(
     val retargetToleranceUs: Long = 20_000L,
     val jumpThresholdUs: Long = 500_000L,

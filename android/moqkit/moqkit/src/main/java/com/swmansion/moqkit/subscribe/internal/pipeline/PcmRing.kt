@@ -3,19 +3,31 @@ package com.swmansion.moqkit.subscribe.internal.pipeline
 import kotlin.math.ceil
 import kotlin.math.min
 
-internal data class PcmWriteResult(
-    val acceptedFrames: Int,
-    val rejectedOldFrames: Int = 0,
-    val evictedFrames: Int = 0,
-    val silenceFrames: Int = 0,
-)
+internal data class PcmRingPolicy(
+    val maxBytes: Long,
+    val maxFrames: Int,
+    val maxDurationUs: Long,
+) {
+    init {
+        require(maxBytes > 0L) { "maxBytes must be positive" }
+        require(maxFrames > 0) { "maxFrames must be positive" }
+        require(maxDurationUs > 0L) { "maxDurationUs must be positive" }
+    }
+}
 
 /** Timestamp-positioned PCM16 ring with explicit admission effects. */
 internal class PcmRing(
     val sampleRate: Int,
     val channels: Int,
-    policy: AdmissionPolicy,
+    policy: PcmRingPolicy,
 ) {
+    data class WriteResult(
+        val acceptedFrames: Int,
+        val rejectedOldFrames: Int = 0,
+        val evictedFrames: Int = 0,
+        val silenceFrames: Int = 0,
+    )
+
     private var samples = ShortArray(capacityFrom(policy) * channels)
     private var writeFrame = 0L
     private var readFrame = 0L
@@ -36,11 +48,11 @@ internal class PcmRing(
     val timestampUs: Long
         get() = multiplyOrMax(readFrame, MICROS_PER_SECOND) / sampleRate
 
-    fun write(timestampUs: Long, samples: ShortArray, frameCount: Int): PcmWriteResult {
+    fun write(timestampUs: Long, samples: ShortArray, frameCount: Int): WriteResult {
         require(timestampUs >= 0L) { "timestampUs must be non-negative" }
         require(frameCount >= 0) { "frameCount must be non-negative" }
         require(samples.size >= frameCount * channels) { "insufficient PCM samples" }
-        if (frameCount == 0) return PcmWriteResult(acceptedFrames = 0)
+        if (frameCount == 0) return WriteResult(acceptedFrames = 0)
 
         var start = timestampToFrame(timestampUs)
         var frames = frameCount
@@ -62,7 +74,7 @@ internal class PcmRing(
             frames -= oldFrames
         }
         if (frames == 0) {
-            return PcmWriteResult(acceptedFrames = 0, rejectedOldFrames = rejectedOld)
+            return WriteResult(acceptedFrames = 0, rejectedOldFrames = rejectedOld)
         }
 
         if (frames > capacity) {
@@ -92,7 +104,7 @@ internal class PcmRing(
         if (end > writeFrame) writeFrame = end
         if (writeFrame - readFrame >= capacity) buffering = false
 
-        return PcmWriteResult(
+        return WriteResult(
             acceptedFrames = frames,
             rejectedOldFrames = rejectedOld,
             evictedFrames = evicted,
@@ -111,7 +123,7 @@ internal class PcmRing(
         return frames
     }
 
-    fun resize(policy: AdmissionPolicy) {
+    fun resize(policy: PcmRingPolicy) {
         val newCapacity = capacityFrom(policy)
         if (newCapacity == capacity) return
 
@@ -132,7 +144,7 @@ internal class PcmRing(
         buffering = true
     }
 
-    private fun capacityFrom(policy: AdmissionPolicy): Int {
+    private fun capacityFrom(policy: PcmRingPolicy): Int {
         require(sampleRate > 0) { "invalid sample rate" }
         require(channels > 0) { "invalid channels" }
         val durationFrames = ceil(sampleRate.toDouble() * policy.maxDurationUs / MICROS_PER_SECOND)

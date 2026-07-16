@@ -13,8 +13,12 @@ internal data class VideoOutputHandle(
     val index: Int,
 )
 
-/** Android MediaCodec output adapter; scheduling policy remains in the pure core. */
-internal class AndroidVideoRenderSink : RenderSink {
+/**
+ * Translates pure-core scheduling decisions into timed MediaCodec output-buffer releases.
+ * Rendering policy remains in the scheduler; this adapter only applies that decision to the
+ * decoder session that owns each output buffer.
+ */
+internal class MediaCodecVideoRenderSink : RenderSink {
     override fun render(frame: DecodedFrame, atNanos: Long): Boolean {
         val handle = frame.handle as? VideoOutputHandle ?: return false
         return handle.session.renderOutput(handle.index, atNanos)

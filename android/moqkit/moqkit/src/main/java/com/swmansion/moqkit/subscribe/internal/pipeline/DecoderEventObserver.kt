@@ -17,23 +17,23 @@ internal class DecoderEventObserver<Session : DecoderSession>(
 
     @Synchronized
     fun observe(session: Session) {
-        invalidateCurrentObservation()
-        startObservation(session)
+        invalidate()
+        start(session)
     }
 
     @Synchronized
     fun flush(session: Session) {
-        invalidateCurrentObservation()
+        invalidate()
         session.flush()
-        startObservation(session)
+        start(session)
     }
 
     @Synchronized
     override fun close() {
-        invalidateCurrentObservation()
+        invalidate()
     }
 
-    private fun startObservation(session: Session) {
+    private fun start(session: Session) {
         val observedGeneration = ++generation
         job = scope.launch {
             session.events().collect { event ->
@@ -42,7 +42,7 @@ internal class DecoderEventObserver<Session : DecoderSession>(
         }
     }
 
-    private fun invalidateCurrentObservation() {
+    private fun invalidate() {
         generation++
         job?.cancel()
         job = null

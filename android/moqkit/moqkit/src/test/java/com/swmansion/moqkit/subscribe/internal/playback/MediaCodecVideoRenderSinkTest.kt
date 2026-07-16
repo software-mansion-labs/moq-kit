@@ -6,11 +6,11 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class AndroidVideoRenderSinkTest {
+class MediaCodecVideoRenderSinkTest {
     @Test
     fun renderReleasesCodecOutputAtScheduledTime() {
         val session = FakeVideoOutputSession()
-        val sink = AndroidVideoRenderSink()
+        val sink = MediaCodecVideoRenderSink()
 
         assertTrue(
             sink.render(
@@ -24,7 +24,7 @@ class AndroidVideoRenderSinkTest {
     @Test
     fun dropReleasesCodecOutputWithoutRendering() {
         val session = FakeVideoOutputSession()
-        val sink = AndroidVideoRenderSink()
+        val sink = MediaCodecVideoRenderSink()
 
         sink.drop(DecodedFrame(ptsUs = 10, handle = VideoOutputHandle(session, 7)))
 
@@ -34,7 +34,7 @@ class AndroidVideoRenderSinkTest {
     @Test
     fun renderFailsWhenOwningSessionRejectsStaleOutput() {
         val session = FakeVideoOutputSession(renderResult = false)
-        val sink = AndroidVideoRenderSink()
+        val sink = MediaCodecVideoRenderSink()
 
         assertFalse(
             sink.render(
