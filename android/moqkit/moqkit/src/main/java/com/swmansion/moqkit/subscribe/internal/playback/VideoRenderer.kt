@@ -8,7 +8,6 @@ import android.view.Surface
 import com.swmansion.moqkit.subscribe.DecoderFlushReason
 import com.swmansion.moqkit.subscribe.DropReason
 import com.swmansion.moqkit.subscribe.DropStage
-import com.swmansion.moqkit.subscribe.PipelineContext
 import com.swmansion.moqkit.subscribe.PipelineEvent
 import com.swmansion.moqkit.subscribe.PipelineMediaKind
 import com.swmansion.moqkit.subscribe.RetargetDecision
@@ -31,7 +30,6 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.RenderController
 import com.swmansion.moqkit.subscribe.internal.pipeline.RenderExecution
 import com.swmansion.moqkit.subscribe.internal.pipeline.RenderScheduler
 import com.swmansion.moqkit.subscribe.internal.pipeline.RenditionSwitchController
-import com.swmansion.moqkit.subscribe.internal.pipeline.RecoveryAttempt
 import com.swmansion.moqkit.subscribe.internal.pipeline.SwitchDecision
 import com.swmansion.moqkit.subscribe.internal.pipeline.SwitchState
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
@@ -73,7 +71,7 @@ internal class VideoRenderer(
     private val clock: PlaybackClock,
     private val timestampMapper: TimestampDomainMapper? = null,
     private val metrics: PlaybackStatsTracker? = null,
-    private val pipelineBus: PipelineBus? = null,
+    pipelineBus: PipelineBus? = null,
     private val onError: (Throwable) -> Unit = {},
 ) {
     private data class QueuedFrameMetadata(
@@ -84,6 +82,7 @@ internal class VideoRenderer(
     )
 
     private var pendingTrack: VideoRendererTrack? = null
+    private val telemetry = RendererTelemetry(PipelineMediaKind.VIDEO, metrics, pipelineBus)
     private val switchPolicy = PipelinePolicies.switch
     private val switchController = RenditionSwitchController(switchPolicy)
     private var onTrackActivated: (() -> Unit)? = null
@@ -119,7 +118,7 @@ internal class VideoRenderer(
     private val decoderRecovery = DecoderRecoveryExecutor(
         supervisor = DecoderSupervisor(PipelinePolicies.recovery, MonotonicTimeSource),
         createSession = ::createStartedDecoder,
-        onRecovery = ::emitDecoderRecovery,
+        onRecovery = { telemetry.decoderRecovery(activeTrack.trackName, it) },
     )
     private val decoder: VideoDecoder?
         get() = decoderRecovery.currentSession
@@ -221,7 +220,8 @@ internal class VideoRenderer(
                 Log.w(TAG, "Decoder recovered via ${result.attempt.step}", error)
                 observeDecoderEvents(result.session)
                 if (result.attempt.step == RecoveryStep.FLUSH) {
-                    emitDecoderFlushed(
+                    telemetry.decoderFlushed(
+                        trackName = activeTrack.trackName,
                         reason = DecoderFlushReason.DECODER_RECOVERY,
                         trigger = result.attempt.trigger,
                         droppedFrames = droppedFrames,
@@ -241,24 +241,13 @@ internal class VideoRenderer(
         val flushedFrames = activeTrack.flush() + queuedFramesByPts.size + heldRenderCallbacks.size
         resetDecoderPipelineState()
         isPlaybackStartEventArmed = true
-        pipelineBus?.emit(
-            PipelineEvent.Discontinuity(
-                context = diagnosticsContext(activeTrack.trackName),
-                epoch = reset.epoch,
-                reason = DiscontinuityReason.LOCAL_RESET,
-            ),
+        telemetry.discontinuity(activeTrack.trackName, reset.epoch, DiscontinuityReason.LOCAL_RESET)
+        telemetry.frameDropped(
+            trackName = activeTrack.trackName,
+            stage = DropStage.DECODER,
+            reason = DropReason.DECODER_RECOVERY_FLUSH,
+            count = flushedFrames,
         )
-        if (flushedFrames > 0) {
-            metrics?.recordVideoFrameDropped(flushedFrames)
-            pipelineBus?.emit(
-                PipelineEvent.FrameDropped(
-                    context = diagnosticsContext(activeTrack.trackName),
-                    stage = DropStage.DECODER,
-                    reason = DropReason.DECODER_RECOVERY_FLUSH,
-                    count = flushedFrames,
-                ),
-            )
-        }
         return flushedFrames
     }
 
@@ -275,17 +264,6 @@ internal class VideoRenderer(
     private fun cancelHeldRenders() {
         heldRenderCallbacks.forEach(handler::removeCallbacks)
         heldRenderCallbacks.clear()
-    }
-
-    private fun emitDecoderRecovery(attempt: RecoveryAttempt) {
-        pipelineBus?.emit(
-            PipelineEvent.DecoderRecovery(
-                context = diagnosticsContext(activeTrack.trackName),
-                attempt = attempt.attempt,
-                step = attempt.step,
-                trigger = attempt.trigger,
-            ),
-        )
     }
 
     private fun onPipelineEvent(event: PipelineEvent) {
@@ -359,20 +337,17 @@ internal class VideoRenderer(
             when (track) {
                 activeTrack -> {
                     val decoderFrames = queuedFramesByPts.size + heldRenderCallbacks.size
-                    if (decoderFrames > 0) {
-                        metrics?.recordVideoFrameDropped(decoderFrames)
-                        emitFrameDropped(
-                            trackName = activeTrack.trackName,
-                            reason = DropReason.RESET_FLUSH,
-                            count = decoderFrames,
-                            stage = DropStage.DECODER,
-                        )
-                    }
+                    telemetry.frameDropped(
+                        trackName = activeTrack.trackName,
+                        stage = DropStage.DECODER,
+                        reason = DropReason.RESET_FLUSH,
+                        count = decoderFrames,
+                    )
                     decoder?.let { session ->
                         flushDecoder(
                             session = session,
                             reason = DecoderFlushReason.TIMELINE_RESET,
-                            trigger = buildTimelineResetTrigger(reason, gapUs),
+                            trigger = timelineResetTrigger(reason, gapUs),
                             droppedFrames = bufferedFrames + decoderFrames,
                         )
                     }
@@ -411,7 +386,7 @@ internal class VideoRenderer(
         onAborted: (() -> Unit)?,
     ) {
         hasPendingTrack = true
-        emitSwitchProgress(track.trackName, SwitchPhase.PREPARING)
+        telemetry.switchProgress(track.trackName, SwitchPhase.PREPARING)
         handler.post {
             pendingTrack?.setOnDataAvailable(null)
             noDisplayBeforePts = 0L
@@ -437,7 +412,7 @@ internal class VideoRenderer(
                     onTrackActivated = null
                     val aborted = onTrackAborted
                     onTrackAborted = null
-                    emitSwitchProgress(track.trackName, SwitchPhase.ABORTED)
+                    telemetry.switchProgress(track.trackName, SwitchPhase.ABORTED)
                     aborted?.invoke()
                 }
             }
@@ -467,7 +442,7 @@ internal class VideoRenderer(
             if (entry == null) {
                 return
             }
-            emitBufferDepth(activeTrack)
+            telemetry.bufferDepth(activeTrack.trackName, activeTrack.bufferDepth)
 
             lastFedPtsUs = entry.item.timestampUs
             val queuedAtNs = System.nanoTime()
@@ -487,21 +462,19 @@ internal class VideoRenderer(
                     frontFrameIntervalUs = frontFrameIntervalUs,
                 )
                 metrics?.recordVideoDecodeBufferSubmitted(activeTrack.trackName)
-                pipelineBus?.emit(
-                    PipelineEvent.DecoderInputQueued(
-                        context = diagnosticsContext(activeTrack.trackName, queuedAtNs),
-                        ptsUs = entry.item.timestampUs,
-                    ),
+                telemetry.decoderInputQueued(
+                    trackName = activeTrack.trackName,
+                    ptsUs = entry.item.timestampUs,
+                    timestampNanos = queuedAtNs,
                 )
             } else {
-                metrics?.recordVideoFrameDropped()
-                emitFrameDropped(
+                telemetry.frameDropped(
                     trackName = activeTrack.trackName,
+                    stage = DropStage.DECODER,
                     reason = DropReason.DECODER_INPUT_BACKPRESSURE,
                     ptsUs = entry.item.timestampUs,
                     bytes = entry.item.payload.size.toLong(),
                     timestampNanos = queuedAtNs,
-                    stage = DropStage.DECODER,
                 )
             }
         }
@@ -539,11 +512,11 @@ internal class VideoRenderer(
                 awaitingKeyframeTimeout?.let(handler::removeCallbacks)
                 awaitingKeyframeTimeout = null
                 when (switchController.onKeyframeAvailable(lastFedPtsUs, keyframePtsUs)) {
-                    SwitchDecision.FlushSwap -> emitSwitchProgress(
+                    SwitchDecision.FlushSwap -> telemetry.switchProgress(
                         pending.trackName,
                         SwitchPhase.FLUSH_SWAP,
                     )
-                    SwitchDecision.Wait -> emitSwitchProgress(pending.trackName, SwitchPhase.CUT_IN)
+                    SwitchDecision.Wait -> telemetry.switchProgress(pending.trackName, SwitchPhase.CUT_IN)
                     is SwitchDecision.Abort,
                     is SwitchDecision.CutIn -> Unit
                 }
@@ -607,15 +580,12 @@ internal class VideoRenderer(
         if (currentDecoder != null) {
             if (hardFlush) {
                 val droppedFrames = queuedFramesByPts.size + heldRenderCallbacks.size
-                if (droppedFrames > 0) {
-                    metrics?.recordVideoFrameDropped(droppedFrames)
-                    emitFrameDropped(
-                        trackName = activeTrack.trackName,
-                        reason = DropReason.RENDITION_SWITCH,
-                        count = droppedFrames,
-                        stage = DropStage.DECODER,
-                    )
-                }
+                telemetry.frameDropped(
+                    trackName = activeTrack.trackName,
+                    stage = DropStage.DECODER,
+                    reason = DropReason.RENDITION_SWITCH,
+                    count = droppedFrames,
+                )
                 flushDecoder(
                     session = currentDecoder,
                     reason = DecoderFlushReason.RENDITION_SWITCH,
@@ -661,7 +631,7 @@ internal class VideoRenderer(
         onTrackActivated?.invoke()
         onTrackActivated = null
         onTrackAborted = null
-        emitSwitchProgress(newTrack.trackName, SwitchPhase.STEADY)
+        telemetry.switchProgress(newTrack.trackName, SwitchPhase.STEADY)
     }
 
     // Decoded frame handling (HandlerThread only)
@@ -670,11 +640,10 @@ internal class VideoRenderer(
         val outputAtNs = System.nanoTime()
         val metadata = queuedFramesByPts.remove(timestampUs)
         val diagnosticTrackName = metadata?.trackName ?: activeTrack.trackName
-        pipelineBus?.emit(
-            PipelineEvent.DecoderOutputReady(
-                context = diagnosticsContext(diagnosticTrackName, outputAtNs),
-                ptsUs = timestampUs,
-            ),
+        telemetry.decoderOutputReady(
+            trackName = diagnosticTrackName,
+            ptsUs = timestampUs,
+            timestampNanos = outputAtNs,
         )
         if (metadata != null) {
             metrics?.recordVideoDecodeTime(
@@ -690,9 +659,9 @@ internal class VideoRenderer(
         // not rendered, preventing duplicate-frame stutter.
         if (timestampUs <= noDisplayBeforePts) {
             outputHandle.session.dropOutput(outputHandle.index)
-            metrics?.recordVideoFrameDropped()
-            emitFrameDropped(
+            telemetry.frameDropped(
                 trackName = diagnosticTrackName,
+                stage = DropStage.RENDERER,
                 reason = DropReason.RENDITION_SWITCH,
                 ptsUs = timestampUs,
                 timestampNanos = outputAtNs,
@@ -703,9 +672,9 @@ internal class VideoRenderer(
 
         if (!playable) {
             outputHandle.session.dropOutput(outputHandle.index)
-            metrics?.recordVideoFrameDropped()
-            emitFrameDropped(
+            telemetry.frameDropped(
                 trackName = diagnosticTrackName,
+                stage = DropStage.RENDERER,
                 reason = DropReason.STALE_VS_PLAYBACK,
                 ptsUs = timestampUs,
                 timestampNanos = outputAtNs,
@@ -737,9 +706,9 @@ internal class VideoRenderer(
         )
         when (val execution = renderController.process(frame, nowNanos)) {
             is RenderExecution.DroppedLate -> {
-                metrics?.recordVideoFrameDropped()
-                emitFrameDropped(
+                telemetry.frameDropped(
                     trackName = trackName,
+                    stage = DropStage.RENDERER,
                     reason = DropReason.LATE_RENDER,
                     ptsUs = sourceTimestampUs,
                     timestampNanos = nowNanos,
@@ -767,24 +736,22 @@ internal class VideoRenderer(
 
             is RenderExecution.Rendered -> {
                 if (!execution.confirmed) {
-                    metrics?.recordVideoFrameDropped()
-                    emitFrameDropped(
+                    telemetry.frameDropped(
                         trackName = trackName,
+                        stage = DropStage.DECODER,
                         reason = DropReason.DECODER_RECOVERY_FLUSH,
                         ptsUs = sourceTimestampUs,
                         timestampNanos = nowNanos,
-                        stage = DropStage.DECODER,
                     )
                     return
                 }
 
                 metrics?.recordVideoFrameDisplayed()
-                pipelineBus?.emit(
-                    PipelineEvent.FrameRendered(
-                        context = diagnosticsContext(trackName, nowNanos),
-                        ptsUs = sourceTimestampUs,
-                        renderNanos = execution.renderNanos,
-                    ),
+                telemetry.frameRendered(
+                    trackName = trackName,
+                    ptsUs = sourceTimestampUs,
+                    renderNanos = execution.renderNanos,
+                    timestampNanos = nowNanos,
                 )
                 emitPlaybackStartIfArmed(
                     sourceTimestampUs = sourceTimestampUs,
@@ -914,12 +881,7 @@ internal class VideoRenderer(
         clock.onLiveEdge(audioTime(liveEdgeSourceUs))
         val decision = clock.retarget(activeTrack.targetBuffering.toMicrosecondsLongClamped())
         if (decision != RetargetDecision.NoOp) {
-            pipelineBus?.emit(
-                PipelineEvent.ClockRetarget(
-                    context = diagnosticsContext(activeTrack.trackName),
-                    decision = decision,
-                ),
-            )
+            telemetry.clockRetarget(activeTrack.trackName, decision)
         }
     }
 
@@ -945,53 +907,12 @@ internal class VideoRenderer(
             thresholdUs = PTS_CORRECTION_THRESHOLD_US,
         ) ?: videoTime
 
-    private fun diagnosticsContext(trackName: String, timestampNanos: Long = System.nanoTime()) =
-        PipelineContext(
-            trackId = trackName,
-            mediaKind = PipelineMediaKind.VIDEO,
-            timestampNanos = timestampNanos,
-        )
-
-    private fun emitBufferDepth(track: VideoRendererTrack) {
-        pipelineBus?.emit(
-            PipelineEvent.BufferDepthChanged(
-                context = diagnosticsContext(track.trackName),
-                depth = track.bufferDepth,
-            ),
-        )
-    }
-
-    private fun emitFrameDropped(
-        trackName: String,
-        reason: DropReason,
-        ptsUs: Long? = null,
-        bytes: Long = 0L,
-        timestampNanos: Long = System.nanoTime(),
-        stage: DropStage = DropStage.RENDERER,
-        count: Int = 1,
-    ) {
-        pipelineBus?.emit(
-            PipelineEvent.FrameDropped(
-                context = diagnosticsContext(trackName, timestampNanos),
-                stage = stage,
-                reason = reason,
-                ptsUs = ptsUs,
-                count = count,
-                bytes = bytes,
-            ),
-        )
-    }
-
-    private fun recordRenditionSwitchDrops(trackName: String, count: Int) {
-        if (count <= 0) return
-        metrics?.recordVideoFrameDropped(count)
-        emitFrameDropped(
-            trackName = trackName,
-            reason = DropReason.RENDITION_SWITCH,
-            count = count,
-            stage = DropStage.BUFFER,
-        )
-    }
+    private fun recordRenditionSwitchDrops(trackName: String, count: Int) = telemetry.frameDropped(
+        trackName = trackName,
+        stage = DropStage.BUFFER,
+        reason = DropReason.RENDITION_SWITCH,
+        count = count,
+    )
 
     private fun flushDecoder(
         session: VideoDecoder,
@@ -1000,34 +921,6 @@ internal class VideoRenderer(
         droppedFrames: Int,
     ) {
         decoderEventObserver.flush(session)
-        emitDecoderFlushed(reason, trigger, droppedFrames)
+        telemetry.decoderFlushed(activeTrack.trackName, reason, trigger, droppedFrames)
     }
-
-    private fun emitDecoderFlushed(
-        reason: DecoderFlushReason,
-        trigger: String,
-        droppedFrames: Int,
-    ) {
-        pipelineBus?.emit(
-            PipelineEvent.DecoderFlushed(
-                context = diagnosticsContext(activeTrack.trackName),
-                reason = reason,
-                trigger = trigger,
-                droppedFrames = droppedFrames,
-            ),
-        )
-    }
-
-    private fun buildTimelineResetTrigger(reason: TimelineResetReason, gapUs: Long?): String =
-        if (gapUs == null) reason.name else "${reason.name} gapUs=$gapUs"
-
-    private fun emitSwitchProgress(trackName: String, phase: SwitchPhase) {
-        pipelineBus?.emit(
-            PipelineEvent.SwitchProgress(
-                context = diagnosticsContext(trackName),
-                phase = phase,
-            ),
-        )
-    }
-
 }
