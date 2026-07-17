@@ -26,7 +26,12 @@ xcodebuild docbuild \
   -destination "generic/platform=iOS Simulator" \
   -derivedDataPath .build/docbuild
 
-path=$(find .build/docbuild -name "*.doccarchive")
+path=$(find .build/docbuild -type d -name "MoQKit.doccarchive" -print -quit)
+
+if [[ -z "$path" ]]; then
+  echo "MoQKit DocC archive not found" >&2
+  exit 1
+fi
 
 xcrun docc process-archive transform-for-static-hosting "$path" \
   --output-path ./docs/ios \
