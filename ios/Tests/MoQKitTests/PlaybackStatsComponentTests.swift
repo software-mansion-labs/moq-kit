@@ -50,8 +50,7 @@ final class PlaybackSampleStatsComponentTests: XCTestCase {
 
 final class PlaybackLifecycleStateComponentTests: XCTestCase {
     func testStallLifecycleDedupesAndReportsRebufferChange() throws {
-        let clock = ContinuousClock()
-        let instant = clock.now
+        let instant: PlaybackLifecycleInstant = 0
         var lifecycle = PlaybackLifecycleState()
 
         lifecycle.beginSession(rebufferKind: .audio, at: instant)
@@ -74,8 +73,7 @@ final class PlaybackLifecycleStateComponentTests: XCTestCase {
     }
 
     func testTrackSwitchLifecycleAggregatesMilestones() throws {
-        let clock = ContinuousClock()
-        let instant = clock.now
+        let instant: PlaybackLifecycleInstant = 0
         var lifecycle = PlaybackLifecycleState()
 
         lifecycle.beginSession(rebufferKind: .video, at: instant)

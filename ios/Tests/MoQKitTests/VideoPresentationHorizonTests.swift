@@ -2,9 +2,9 @@ import CoreMedia
 @testable import MoQKit
 import XCTest
 
-final class VideoStallHorizonTests: XCTestCase {
+final class VideoPresentationHorizonTests: XCTestCase {
     func testFutureVisibleHorizonDelaysStallStart() throws {
-        var horizon = VideoStallHorizon()
+        var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: 100_000)
 
         XCTAssertFalse(
@@ -20,7 +20,7 @@ final class VideoStallHorizonTests: XCTestCase {
     }
 
     func testStallStartsWhenVisibleHorizonHasElapsed() throws {
-        var horizon = VideoStallHorizon()
+        var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: 100_000)
 
         horizon.recordVisibleFrame(
@@ -35,7 +35,7 @@ final class VideoStallHorizonTests: XCTestCase {
     }
 
     func testSampleDurationIsPreferredOverFrameInterval() throws {
-        var horizon = VideoStallHorizon()
+        var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: 40_000)
 
         horizon.recordVisibleFrame(
@@ -48,7 +48,7 @@ final class VideoStallHorizonTests: XCTestCase {
     }
 
     func testFrontFrameIntervalIsUsedWhenSampleDurationIsUnavailable() throws {
-        var horizon = VideoStallHorizon()
+        var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: nil)
 
         horizon.recordVisibleFrame(
@@ -61,7 +61,7 @@ final class VideoStallHorizonTests: XCTestCase {
     }
 
     func testVisiblePTSDeltaIsUsedWhenSampleDurationAndFrontIntervalAreUnavailable() throws {
-        var horizon = VideoStallHorizon()
+        var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: nil)
 
         horizon.recordVisibleFrame(
@@ -79,7 +79,7 @@ final class VideoStallHorizonTests: XCTestCase {
     }
 
     func testNewPlayableFrameClearsActiveStall() throws {
-        var horizon = VideoStallHorizon()
+        var horizon = VideoPresentationHorizon()
         let first = try makeSampleBuffer(durationUs: 40_000)
         let second = try makeSampleBuffer(durationUs: 40_000)
 
@@ -100,7 +100,7 @@ final class VideoStallHorizonTests: XCTestCase {
     }
 
     func testResetClearsVisibleHorizonAndPendingCheck() throws {
-        var horizon = VideoStallHorizon()
+        var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: 100_000)
 
         horizon.recordVisibleFrame(
@@ -144,7 +144,7 @@ private func makeSampleBuffer(durationUs: UInt64?) throws -> CMSampleBuffer {
     )
     guard status == noErr, let sampleBuffer else {
         throw NSError(
-            domain: "VideoStallHorizonTests",
+            domain: "VideoPresentationHorizonTests",
             code: Int(status),
             userInfo: nil
         )

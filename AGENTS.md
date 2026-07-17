@@ -33,6 +33,7 @@ Common validation commands:
 ```bash
 mise tasks
 mise run ios:check
+mise run ios:test
 mise run ios:demo:build
 mise run android:check
 mise run ios:build

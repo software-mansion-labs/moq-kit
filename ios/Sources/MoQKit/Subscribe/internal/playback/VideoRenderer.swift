@@ -6,10 +6,6 @@ import MoqFFI
 // MARK: - VideoRenderer
 
 protocol VideoRendererDelegate: AnyObject, Sendable {
-    func videoRendererDidBeginStall(_ renderer: VideoRenderer)
-    func videoRendererDidEndStall(_ renderer: VideoRenderer)
-    func videoRendererDidDisplayFrame(_ renderer: VideoRenderer)
-    func videoRendererDidDropFrame(_ renderer: VideoRenderer)
     func videoRenderer(
         _ renderer: VideoRenderer,
         didStartPlayback context: PlaybackStartContext,
@@ -22,13 +18,13 @@ protocol VideoRendererDelegate: AnyObject, Sendable {
 /// Video playback pipeline: drains compressed frames from a `VideoRendererTrack` into
 /// `AVSampleBufferDisplayLayer` (which handles VideoToolbox decoding internally).
 ///
-/// The app-owned jitter buffer remains the latency policy source. AVFoundation's queued
+/// The app-owned frame buffer remains the latency policy source. AVFoundation's queued
 /// renderer is fed only a small decode/render lead ahead of the current media clock.
 ///
 /// Supports seamless rendition switching via an active + pending track model:
 /// - The active track feeds the display layer continuously.
 /// - A pending track accumulates incoming frames in the background.
-/// - The drain loop runs a `SwapPhase` state machine: it discards stale pending frames,
+/// - The drain loop runs a rendition-switch state machine: it discards stale pending frames,
 ///   waits for a viable keyframe, then either cuts in seamlessly (no flush) when the
 ///   active track reaches that PTS, or flushes the display layer and swaps immediately
 ///   when the pending track is too far behind. Emergency swap fires when the active
@@ -41,18 +37,7 @@ final class VideoRenderer: @unchecked Sendable {
     private static let enqueueQueueKey = DispatchSpecificKey<Void>()
 
     let layer: AVSampleBufferDisplayLayer
-
-    // MARK: - Pending-track swap state machine
-
-    private enum SwapPhase {
-        /// Pending track set; dropping stale frames, waiting for a recent keyframe.
-        case awaitingKeyframe
-        /// Found a keyframe at `keyframePts`; waiting for active track to reach that PTS,
-        /// then swap without flushing the display layer.
-        case cuttingIn(keyframePts: UInt64)
-        /// Pending track too far behind; flush display layer and swap immediately.
-        case flushAndSwap
-    }
+    private let renderTarget: VideoRenderTarget
 
     private struct RenderDelay {
         let frontDisplayTimeUs: UInt64
@@ -62,43 +47,48 @@ final class VideoRenderer: @unchecked Sendable {
 
     private var activeTrack: VideoRendererTrack
     private var pendingTrack: VideoRendererTrack?
-    private var pendingPhase: SwapPhase?
     private var onTrackActivated: (() -> Void)?
+    private var onTrackAborted: (() -> Void)?
 
     private let enqueueQueue: DispatchQueue
     private let timing: any MediaPlaybackClock
-    private let timestampAligner: MediaTimestampAligner?
+    private let timestampMapper: TimestampDomainMapper?
+    private let pipelineBus: PipelineBus
+    private let stallAttributor: PipelineStallAttributor
+    private let feedScheduler = DisplayFeedScheduler()
+    private let clockController = ClockRetargetController()
+    private let switchController = RenditionSwitchController()
+    private let recoveryController = VideoRecoveryController()
     private var timelineStarted: Bool
     private weak var delegate: (any VideoRendererDelegate)?
-    private var stallHorizon = VideoStallHorizon()
+    private var stallHorizon = VideoPresentationHorizon()
     private var lastKnownClockTimeUs: UInt64 = 0
     private var pendingStallCheck: DispatchWorkItem?
     private var pendingDrainWakeup: DispatchWorkItem?
+    private var pendingSwitchTimeout: DispatchWorkItem?
+    private var videoStallStartedNanos: UInt64?
+    private var videoStallCause: StallCause?
     private var isPlaybackStartEventArmed = true
     private var hasLoggedFirstEnqueue = false
     private var hasLoggedNoActiveFrame = false
 
-    /// Frames older than this relative to the active PTS are discarded from the pending
-    /// buffer while scanning for a cut-in keyframe (500 ms).
-    private let cutInWindowUs: Int64 = 500_000
-    /// If the first pending keyframe is more than this behind the active PTS, use the
-    /// flush-and-swap strategy instead of cut-in (2 s).
-    private let flushThresholdUs: Int64 = 2_000_000
     private let ptsCorrectionThresholdUs: Int64 = 2_000_000
-    private let fallbackRenderLeadUs: UInt64 = 50_000
-    private let maxRenderLeadUs: UInt64 = 100_000
-    private let clockRetargetToleranceUs: UInt64 = 20_000
 
     init(
         timing: any MediaPlaybackClock,
-        timestampAligner: MediaTimestampAligner? = nil,
+        timestampMapper: TimestampDomainMapper? = nil,
         track: VideoRendererTrack,
         layer: AVSampleBufferDisplayLayer,
-        delegate: any VideoRendererDelegate
+        delegate: any VideoRendererDelegate,
+        pipelineBus: PipelineBus,
+        stallAttributor: PipelineStallAttributor
     ) {
         self.layer = layer
+        self.renderTarget = VideoRenderTarget(layer: layer)
         self.timing = timing
-        self.timestampAligner = timestampAligner
+        self.timestampMapper = timestampMapper
+        self.pipelineBus = pipelineBus
+        self.stallAttributor = stallAttributor
         self.delegate = delegate
         self.activeTrack = track
         let enqueueQueue = DispatchQueue(
@@ -131,10 +121,12 @@ final class VideoRenderer: @unchecked Sendable {
             activeTrack.setOnDataAvailable(nil)
             pendingTrack?.setOnDataAvailable(nil)
             pendingTrack = nil
-            pendingPhase = nil
+            onTrackAborted?()
+            onTrackAborted = nil
+            switchController.complete()
             onTrackActivated = nil
 
-            layer.stopRequestingMediaData()
+            renderTarget.stopRequestingMediaData()
             if timing.isVideoDriven {
                 timing.setRate(0)
             }
@@ -146,6 +138,8 @@ final class VideoRenderer: @unchecked Sendable {
             stallHorizon.reset()
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
+            pendingSwitchTimeout?.cancel()
+            pendingSwitchTimeout = nil
             lastKnownClockTimeUs = 0
             isPlaybackStartEventArmed = true
             hasLoggedFirstEnqueue = false
@@ -153,13 +147,13 @@ final class VideoRenderer: @unchecked Sendable {
         }
     }
 
-    /// Flushes the active track's jitter buffer and removes the displayed image.
+    /// Flushes the active track's frame buffer and removes the displayed image.
     func flush() {
         syncOnEnqueueQueue {
             KitLogger.player.debug(
                 "VideoRenderer flushing active track, bufferFillMs=\(self.activeTrack.depthMs)")
             activeTrack.flush()
-            layer.flushAndRemoveImage()
+            renderTarget.flush(removeDisplayedImage: true)
             pendingStallCheck?.cancel()
             pendingStallCheck = nil
             stallHorizon.reset()
@@ -170,20 +164,31 @@ final class VideoRenderer: @unchecked Sendable {
         }
     }
 
-    /// Installs a pending track. The drain loop's `SwapPhase` state machine will
+    /// Installs a pending track. The drain loop's rendition-switch state machine will
     /// decide between a seamless cut-in and a flush-and-swap, then call `performSwap`.
     /// `onActivated` is called on `enqueueQueue` at the moment of the swap.
-    func setPendingTrack(_ track: VideoRendererTrack, onActivated: @escaping () -> Void) {
+    func setPendingTrack(
+        _ track: VideoRendererTrack,
+        onActivated: @escaping () -> Void,
+        onAborted: @escaping () -> Void
+    ) {
         enqueueQueue.async {
             KitLogger.player.debug("VideoRenderer installed pending track for seamless switch")
             // Discard any previous pending track without firing its callback.
             self.pendingTrack?.setOnDataAvailable(nil)
+            self.onTrackAborted?()
             track.setBufferState(.pending)
             self.pendingTrack = track
-            self.pendingPhase = .awaitingKeyframe
             self.onTrackActivated = onActivated
+            self.onTrackAborted = onAborted
+            self.switchController.begin(
+                targetTrack: track.trackName,
+                nowNanos: DispatchTime.now().uptimeNanoseconds
+            )
+            self.emitSwitchProgress(.preparing, track: track)
             // Re-arm so the loop re-evaluates the swap strategy when pending gets data.
             track.setOnDataAvailable(self.makeDataAvailableCallback())
+            self.scheduleSwitchTimeout()
         }
     }
 
@@ -205,21 +210,32 @@ final class VideoRenderer: @unchecked Sendable {
 
     var hasPendingTrack: Bool { syncOnEnqueueQueue { pendingTrack != nil } }
 
+    var activeTimeline: TrackTimeline { syncOnEnqueueQueue { activeTrack.timeline } }
+
+    var activeDiagnosticDepth: BufferDepth {
+        syncOnEnqueueQueue { activeTrack.diagnosticDepth }
+    }
+
     // MARK: - Private: drain loop
 
     private func armVideoEnqueue() {
-        layer.requestMediaDataWhenReady(on: enqueueQueue) { [weak self] in
+        renderTarget.requestMediaDataWhenReady(on: enqueueQueue) { [weak self] in
             guard let self else { return }
 
             self.pendingDrainWakeup?.cancel()
             self.pendingDrainWakeup = nil
 
-            guard self.prepareClockForDrain() else {
-                self.layer.stopRequestingMediaData()
+            guard self.recoverDisplayIfNeeded() else {
+                self.renderTarget.stopRequestingMediaData()
                 return
             }
 
-            while self.layer.isReadyForMoreMediaData {
+            guard self.prepareClockForDrain() else {
+                self.renderTarget.stopRequestingMediaData()
+                return
+            }
+
+            while self.renderTarget.isReadyForMoreMediaData {
                 self.advancePendingTrackSwapIfNeeded()
 
                 guard let front = self.activeTrack.peekFront() else {
@@ -228,7 +244,7 @@ final class VideoRenderer: @unchecked Sendable {
                 }
 
                 if let delay = self.renderDelay(forVideoTimestampUs: front.timestampUs) {
-                    self.layer.stopRequestingMediaData()
+                    self.renderTarget.stopRequestingMediaData()
                     self.scheduleDrainWakeup(delay)
                     return
                 }
@@ -260,30 +276,54 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     private func advancePendingTrackSwapIfNeeded() {
-        guard let pending = pendingTrack, let phase = pendingPhase else { return }
+        guard let pending = pendingTrack else { return }
 
         let sourcePlayheadUs = currentSourceVideoTimeUs()
 
-        switch phase {
-        case .awaitingKeyframe:
+        if case .abort = switchController.onTime(
+            nowNanos: DispatchTime.now().uptimeNanoseconds
+        ) {
+            abortPendingSwitch()
+            return
+        }
+
+        if case .preparing = switchController.state {
             discardStalePendingFrames(from: pending, sourcePlayheadUs: sourcePlayheadUs)
-            updatePendingPhaseFromKeyframe(in: pending, sourcePlayheadUs: sourcePlayheadUs)
-
-        case .cuttingIn(let keyframePts):
-            pending.discardNonKeyframesBeforePts(keyframePts)
-            if sourcePlayheadUs >= keyframePts {
-                pending.setBufferState(.playing)
-                performSwap(to: pending)
+            if let keyframePts = pending.firstKeyframePts {
+                let decision = switchController.onKeyframeAvailable(
+                    activePtsUs: sourcePlayheadUs,
+                    keyframePtsUs: keyframePts
+                )
+                if decision == .flushSwap {
+                    emitSwitchProgress(.flushSwap, track: pending)
+                } else {
+                    emitSwitchProgress(.cutIn, track: pending)
+                }
             }
+        }
 
-        case .flushAndSwap:
-            layer.flushAndRemoveImage()
+        switch switchController.onActiveProgress(sourcePlayheadUs) {
+        case .cutIn(let keyframePts):
+            pending.discardNonKeyframesBeforePts(keyframePts)
+            pending.setBufferState(.playing)
+            performSwap(to: pending)
+        case .flushSwap:
+            let dropped = activeTrack.diagnosticDepth.frames
+            renderTarget.flush(removeDisplayedImage: true)
             stallHorizon.reset()
+            emitDisplayFlush(
+                reason: .renditionSwitch,
+                trigger: "rendition timestamp domains require flush",
+                droppedFrames: dropped,
+                track: pending
+            )
             if let keyframePts = pending.firstKeyframePts {
                 pending.discardNonKeyframesBeforePts(keyframePts)
             }
             pending.setBufferState(.playing)
             performSwap(to: pending)
+        case .wait, .abort:
+            break
         }
     }
 
@@ -293,38 +333,27 @@ final class VideoRenderer: @unchecked Sendable {
     ) {
         while let front = pending.peekFront(),
             !front.isKeyframe,
-            Int64(sourcePlayheadUs) - Int64(front.timestampUs) > cutInWindowUs
+            switchController.shouldDiscardPendingDelta(
+                activePtsUs: sourcePlayheadUs,
+                framePtsUs: front.timestampUs
+            )
         {
             pending.discardFront()
         }
     }
 
-    private func updatePendingPhaseFromKeyframe(
-        in pending: VideoRendererTrack,
-        sourcePlayheadUs: UInt64
-    ) {
-        guard let keyframePts = pending.firstKeyframePts else { return }
-
-        let gap = Int64(sourcePlayheadUs) - Int64(keyframePts)
-        pendingPhase =
-            gap > flushThresholdUs
-            ? .flushAndSwap
-            : .cuttingIn(keyframePts: keyframePts)
-    }
-
     private func renderDelay(forVideoTimestampUs timestampUs: UInt64) -> RenderDelay? {
-        guard timing.isVideoDriven else { return nil }
-
         let playheadUs = currentPlaybackTimeUs()
-        let leadUs = renderLeadUs()
-        let renderBoundUs = addClamping(playheadUs, leadUs)
         let frontDisplayTimeUs = displayTimeUs(forVideoTimeUs: timestampUs)
-
-        guard frontDisplayTimeUs > renderBoundUs else { return nil }
+        guard case .hold = feedScheduler.decision(
+            framePtsUs: frontDisplayTimeUs,
+            playheadUs: playheadUs,
+            isPlaybackCandidate: true
+        ) else { return nil }
         return RenderDelay(
             frontDisplayTimeUs: frontDisplayTimeUs,
             playheadUs: playheadUs,
-            renderLeadUs: leadUs
+            renderLeadUs: UInt64(PipelinePolicies.render.maxAheadUs)
         )
     }
 
@@ -338,26 +367,45 @@ final class VideoRenderer: @unchecked Sendable {
             for: entry.item.sampleBuffer,
             sourceTimestampUs: entry.timestampUs)
 
-        if !playable {
+        let feedDecision = feedScheduler.decision(
+            framePtsUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
+            playheadUs: currentPlaybackTimeUs(),
+            isPlaybackCandidate: playable
+        )
+        let visible = feedDecision == .visible
+        if !visible {
             doNotDisplaySample(displaySample.sampleBuffer)
+            pipelineBus.emit(.frameDropped(
+                context: pipelineContext(for: activeTrack),
+                stage: .renderer,
+                reason: playable ? .lateRender : .staleVsPlayback,
+                ptsUs: Int64(clamping: entry.timestampUs),
+                count: 1
+            ))
         }
 
-        layer.enqueue(displaySample.sampleBuffer)
-        if playable {
+        pipelineBus.emit(.decoderInputQueued(
+            context: pipelineContext(for: activeTrack),
+            ptsUs: Int64(clamping: entry.timestampUs)
+        ))
+        renderTarget.enqueue(displaySample.sampleBuffer)
+        if visible {
+            pipelineBus.emit(.frameRendered(
+                context: pipelineContext(for: activeTrack),
+                ptsUs: Int64(clamping: entry.timestampUs),
+                renderNanos: DispatchTime.now().uptimeNanoseconds
+            ))
             let shouldEndStall = stallHorizon.recordVisibleFrame(
                 sampleBuffer: displaySample.sampleBuffer,
                 presentationTime: displaySample.presentationTime,
                 frontFrameIntervalUs: frontFrameIntervalUs
             )
-            delegate?.videoRendererDidDisplayFrame(self)
             if shouldEndStall {
                 endVideoStall()
             }
-        } else {
-            delegate?.videoRendererDidDropFrame(self)
         }
         hasLoggedNoActiveFrame = false
-        if playable {
+        if visible {
             emitPlaybackStartIfArmed(
                 sourceTimestampUs: entry.timestampUs,
                 presentationTimeUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
@@ -367,7 +415,7 @@ final class VideoRenderer: @unchecked Sendable {
         if !hasLoggedFirstEnqueue {
             hasLoggedFirstEnqueue = true
             KitLogger.player.debug(
-                "VideoRenderer enqueued first frame sourceTimestampUs=\(entry.timestampUs), presentationTimeUs=\(MediaClockTime.timestampUs(from: displaySample.presentationTime)), playable=\(playable), bufferFillMs=\(self.activeTrack.depthMs)"
+                "VideoRenderer enqueued first frame sourceTimestampUs=\(entry.timestampUs), presentationTimeUs=\(MediaClockTime.timestampUs(from: displaySample.presentationTime)), visible=\(visible), bufferFillMs=\(self.activeTrack.depthMs)"
             )
         }
         return true
@@ -399,7 +447,7 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     private func startClockIfReady() -> Bool {
-        guard activeTrack.state == JitterBuffer<VideoRendererSample>.State.playing else {
+        guard activeTrack.state == VideoRendererTrack.State.playing else {
             return false
         }
         guard
@@ -425,20 +473,28 @@ final class VideoRenderer: @unchecked Sendable {
         let desiredPlayheadUs = displayTimeUs(forVideoTimeUs: desiredSourceUs)
         let currentPlayheadUs = currentPlaybackTimeUs()
 
-        if desiredPlayheadUs > addClamping(currentPlayheadUs, clockRetargetToleranceUs) {
-            lastKnownClockTimeUs = desiredPlayheadUs
-            timing.setRate(1.0, timeUs: desiredPlayheadUs)
-        } else if currentPlayheadUs > addClamping(desiredPlayheadUs, clockRetargetToleranceUs) {
-            lastKnownClockTimeUs = currentPlayheadUs
-            timing.setRate(0)
-            scheduleDrainWakeup(afterUs: currentPlayheadUs - desiredPlayheadUs)
-        } else {
+        let decision = clockController.decision(
+            currentUs: currentPlayheadUs,
+            targetUs: desiredPlayheadUs
+        )
+        pipelineBus.emit(.clockRetarget(
+            context: pipelineContext(for: activeTrack),
+            decision: decision
+        ))
+        switch decision {
+        case .noOp:
             timing.setRate(1.0)
+        case .jump(let positionUs):
+            let target = UInt64(max(0, positionUs))
+            lastKnownClockTimeUs = target
+            timing.setRate(1.0, timeUs: target)
+        case .nudge(let rate):
+            timing.setRate(rate)
         }
     }
 
     private func handleNoActiveFrame() {
-        layer.stopRequestingMediaData()
+        renderTarget.stopRequestingMediaData()
         if !hasLoggedNoActiveFrame {
             hasLoggedNoActiveFrame = true
         }
@@ -491,14 +547,35 @@ final class VideoRenderer: @unchecked Sendable {
         if timing.isVideoDriven {
             timing.setRate(0)
         }
-        delegate?.videoRendererDidBeginStall(self)
+        let now = DispatchTime.now().uptimeNanoseconds
+        let cause = stallAttributor.cause(
+            trackId: activeTrack.trackName,
+            mediaKind: .video,
+            nowNanos: now,
+            fallback: pendingTrack == nil ? .renderStall : .switchStall
+        )
+        videoStallStartedNanos = now
+        videoStallCause = cause
+        pipelineBus.emit(.stallStarted(
+            context: pipelineContext(for: activeTrack),
+            cause: cause
+        ))
     }
 
     private func endVideoStall() {
         if timing.isVideoDriven {
             timing.setRate(1.0)
         }
-        delegate?.videoRendererDidEndStall(self)
+        if let started = videoStallStartedNanos, let cause = videoStallCause {
+            let now = DispatchTime.now().uptimeNanoseconds
+            pipelineBus.emit(.stallEnded(
+                context: pipelineContext(for: activeTrack),
+                cause: cause,
+                durationMillis: now >= started ? (now - started) / 1_000_000 : 0
+            ))
+        }
+        videoStallStartedNanos = nil
+        videoStallCause = nil
     }
 
     @discardableResult
@@ -547,37 +624,19 @@ final class VideoRenderer: @unchecked Sendable {
 
     private func currentSourceVideoTimeUs() -> UInt64 {
         let playbackTimeUs = currentPlaybackTimeUs()
-        guard let timestampAligner else { return playbackTimeUs }
-        return timestampAligner.videoTime(
-            audioTime: playbackTimeUs,
-            threshold: ptsCorrectionThresholdUs)
+        let sourceTime = timestampMapper?.videoTimeUs(
+            audioTimeUs: playbackTimeUs,
+            thresholdUs: ptsCorrectionThresholdUs
+        ) ?? playbackTimeUs
+        activeTrack.timeline.onPlaybackPosition(Int64(clamping: sourceTime))
+        return sourceTime
     }
 
     private func displayTimeUs(forVideoTimeUs timestampUs: UInt64) -> UInt64 {
-        guard let timestampAligner else { return timestampUs }
-        return timestampAligner.audioTime(
-            videoTime: timestampUs,
-            threshold: ptsCorrectionThresholdUs)
-    }
-
-    private func renderLeadUs() -> UInt64 {
-        guard let frameIntervalUs = activeTrack.frontFrameIntervalUs,
-            frameIntervalUs > 0
-        else {
-            return fallbackRenderLeadUs
-        }
-
-        return min(multiplyClamping(frameIntervalUs, by: 3), maxRenderLeadUs)
-    }
-
-    private func addClamping(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
-        let result = lhs.addingReportingOverflow(rhs)
-        return result.overflow ? UInt64.max : result.partialValue
-    }
-
-    private func multiplyClamping(_ value: UInt64, by multiplier: UInt64) -> UInt64 {
-        let result = value.multipliedReportingOverflow(by: multiplier)
-        return result.overflow ? UInt64.max : result.partialValue
+        timestampMapper?.audioTimeUs(
+            videoTimeUs: timestampUs,
+            thresholdUs: ptsCorrectionThresholdUs
+        ) ?? timestampUs
     }
 
     /// Atomically promotes `newTrack` to active, fires `onTrackActivated`, and re-registers
@@ -585,16 +644,120 @@ final class VideoRenderer: @unchecked Sendable {
     private func performSwap(to newTrack: VideoRendererTrack) {
         activeTrack.setOnDataAvailable(nil)
         activeTrack = newTrack
+        timestampMapper?.setVideoTimeline(newTrack.timeline)
         pendingTrack = nil
-        pendingPhase = nil
+        switchController.complete()
+        pendingSwitchTimeout?.cancel()
+        pendingSwitchTimeout = nil
         isPlaybackStartEventArmed = true
         newTrack.setOnDataAvailable(makeDataAvailableCallback())
-        // Current rendition switching assumes all video tracks share one timestamp domain.
-        // If future renditions do not, MediaTimestampAligner needs per-video-track live
-        // edges or a reset/recompute when the pending track becomes active.
         KitLogger.player.debug("VideoRenderer: swapped to pending track")
+        emitSwitchProgress(.steady, track: newTrack)
         onTrackActivated?()
         onTrackActivated = nil
+        onTrackAborted = nil
+    }
+
+    private func scheduleSwitchTimeout() {
+        pendingSwitchTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingSwitchTimeout = nil
+            self.advancePendingTrackSwapIfNeeded()
+        }
+        pendingSwitchTimeout = work
+        enqueueQueue.asyncAfter(
+            deadline: .now() + Double(PipelinePolicies.switch.keyframeTimeoutUs) / 1_000_000,
+            execute: work
+        )
+    }
+
+    private func abortPendingSwitch() {
+        guard let pending = pendingTrack else { return }
+        pending.setOnDataAvailable(nil)
+        pending.flush()
+        pendingTrack = nil
+        pendingSwitchTimeout?.cancel()
+        pendingSwitchTimeout = nil
+        emitSwitchProgress(.aborted, track: pending)
+        onTrackAborted?()
+        onTrackAborted = nil
+        onTrackActivated = nil
+    }
+
+    private func recoverDisplayIfNeeded() -> Bool {
+        guard renderTarget.status == .failed
+                || renderTarget.requiresFlushToResumeDecoding
+        else { return true }
+
+        let trigger = renderTarget.error?.localizedDescription
+            ?? "AVFoundation requires a display flush"
+        let attempt = recoveryController.onFailure(trigger: trigger)
+        let context = pipelineContext(for: activeTrack)
+        pipelineBus.emit(.decoderRecovery(
+            context: context,
+            attempt: attempt.attempt,
+            step: attempt.step,
+            trigger: attempt.trigger
+        ))
+
+        guard attempt.step == .flush else {
+            pipelineBus.emit(.transportClosed(
+                context: context,
+                error: PipelineError(code: "video-renderer-failed", message: trigger)
+            ))
+            return false
+        }
+
+        let dropped = activeTrack.diagnosticDepth.frames
+        renderTarget.flush(removeDisplayedImage: false)
+        let reset: TimelineDecision<VideoRendererSample> =
+            activeTrack.timeline.requestReset()
+        activeTrack.flush()
+        stallHorizon.reset()
+        if case .reset(_, let epoch, _, _) = reset {
+            pipelineBus.emit(.discontinuity(
+                context: context,
+                epoch: epoch,
+                reason: .localReset
+            ))
+        }
+        emitDisplayFlush(
+            reason: .decoderRecovery,
+            trigger: trigger,
+            droppedFrames: dropped,
+            track: activeTrack
+        )
+        return true
+    }
+
+    private func emitDisplayFlush(
+        reason: DecoderFlushReason,
+        trigger: String,
+        droppedFrames: Int,
+        track: VideoRendererTrack
+    ) {
+        pipelineBus.emit(.decoderFlushed(
+            context: pipelineContext(for: track),
+            reason: reason,
+            trigger: trigger,
+            droppedFrames: droppedFrames
+        ))
+    }
+
+    private func emitSwitchProgress(_ phase: SwitchPhase, track: VideoRendererTrack) {
+        pipelineBus.emit(.switchProgress(
+            context: pipelineContext(for: track),
+            phase: phase
+        ))
+    }
+
+    private func pipelineContext(for track: VideoRendererTrack) -> PipelineContext {
+        PipelineContext(
+            trackId: track.trackName,
+            mediaKind: .video,
+            timestampNanos: DispatchTime.now().uptimeNanoseconds
+        )
     }
 
     /// Returns the closure registered with each track's `setOnDataAvailable`.
@@ -616,14 +779,14 @@ final class VideoRenderer: @unchecked Sendable {
         sourceTimestampUs: UInt64
     ) -> (sampleBuffer: CMSampleBuffer, presentationTime: CMTime) {
         let sourceTime = CMTime(value: CMTimeValue(sourceTimestampUs), timescale: 1_000_000)
-        guard let timestampAligner,
-            let offset = timestampAligner.videoOffset(threshold: ptsCorrectionThresholdUs)
+        guard let timestampMapper,
+            let offset = timestampMapper.videoOffsetUs(thresholdUs: ptsCorrectionThresholdUs)
         else {
             return (sampleBuffer, sourceTime)
         }
-        let correctedTimestampUs = timestampAligner.audioTime(
-            videoTime: sourceTimestampUs,
-            threshold: ptsCorrectionThresholdUs)
+        let correctedTimestampUs = timestampMapper.audioTimeUs(
+            videoTimeUs: sourceTimestampUs,
+            thresholdUs: ptsCorrectionThresholdUs)
         guard correctedTimestampUs != sourceTimestampUs else { return (sampleBuffer, sourceTime) }
 
         guard

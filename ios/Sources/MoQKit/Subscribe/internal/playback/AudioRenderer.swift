@@ -15,9 +15,6 @@ protocol AudioRendererDelegate: AnyObject, Sendable {
         didRenderAudioAt timestampUs: UInt64,
         hostTime: UInt64?
     )
-    func audioRendererDidBeginStall(_ renderer: AudioRenderer)
-    func audioRendererDidEndStall(_ renderer: AudioRenderer)
-    func audioRenderer(_ renderer: AudioRenderer, didDropFrames count: Int)
 }
 
 /// Audio playback pipeline: ring buffer, AVAudioEngine, and external `AudioDrivenClock`.
@@ -42,9 +39,12 @@ final class AudioRenderer: @unchecked Sendable {
     init(
         config: MoqAudio,
         clock: AudioDrivenClock,
+        timeline: TrackTimeline,
         targetLatency: Duration,
         initialVolume: Float = 1.0,
-        delegate: any AudioRendererDelegate
+        delegate: any AudioRendererDelegate,
+        pipelineBus: PipelineBus,
+        stallAttributor: PipelineStallAttributor
     ) throws {
         // Create a temporary decoder only to discover the output format for AVAudioEngine setup.
         let formatDecoder = try AudioDecoder(config: config)
@@ -68,7 +68,9 @@ final class AudioRenderer: @unchecked Sendable {
         }
 
         let eventBridge = AudioRenderEventBridge(
-            delegate: delegate
+            delegate: delegate,
+            pipelineBus: pipelineBus,
+            stallAttributor: stallAttributor
         )
         self.eventBridge = eventBridge
         let sourceNode = AVAudioSourceNode(format: formatDecoder.outputFormat) {
@@ -104,6 +106,7 @@ final class AudioRenderer: @unchecked Sendable {
 
             if framesRead > 0 {
                 clock.setTimeUs(ts)
+                timeline.onPlaybackPosition(Int64(clamping: ts))
                 let hostTime =
                     timestamp.pointee.mHostTime > 0 ? timestamp.pointee.mHostTime : nil
                 eventBridge.recordRenderedAudio(
@@ -144,15 +147,15 @@ final class AudioRenderer: @unchecked Sendable {
     }
 
     /// Enqueue decoded PCM into the ring buffer. Thread-safe — called from the ingest task.
-    func enqueue(pcm: AVAudioPCMBuffer, timestampUs: UInt64) {
+    @discardableResult
+    func enqueue(pcm: AVAudioPCMBuffer, timestampUs: UInt64) -> PcmWriteResult {
         let frameCount = Int(pcm.frameLength)
-        guard frameCount > 0, let channelData = pcm.floatChannelData else { return }
-        ringState.decodeFrameSize = frameCount
-        let droppedFrames = ringState.write(
-            timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
-        if droppedFrames > 0 {
-            delegate?.audioRenderer(self, didDropFrames: droppedFrames)
+        guard frameCount > 0, let channelData = pcm.floatChannelData else {
+            return PcmWriteResult(acceptedFrames: 0)
         }
+        let result = ringState.write(
+            timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
+        return result
     }
 
     func expectPlaybackStart(
@@ -200,6 +203,8 @@ final class AudioRenderer: @unchecked Sendable {
 
     var bufferFill: Duration { .millisecondsClamped(ringState.fillMs) }
 
+    var diagnosticDepth: BufferDepth { ringState.depth }
+
     private static func clampedVolume(_ volume: Float) -> Float {
         guard !volume.isNaN else { return 0 }
         return min(max(volume, 0), 1)
@@ -213,6 +218,8 @@ final class AudioRenderer: @unchecked Sendable {
 /// on `queue`.
 private final class AudioRenderEventBridge: @unchecked Sendable {
     private weak var delegate: (any AudioRendererDelegate)?
+    private let pipelineBus: PipelineBus
+    private let stallAttributor: PipelineStallAttributor
     weak var renderer: AudioRenderer?
 
     private let queue = DispatchQueue(
@@ -221,9 +228,18 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
     )
 
     private let isClosed = ManagedAtomic<Bool>(false)
+    private var trackName = "audio"
+    private var stallStartedNanos: UInt64?
+    private var stallCause: StallCause?
 
-    init(delegate: any AudioRendererDelegate) {
+    init(
+        delegate: any AudioRendererDelegate,
+        pipelineBus: PipelineBus,
+        stallAttributor: PipelineStallAttributor
+    ) {
         self.delegate = delegate
+        self.pipelineBus = pipelineBus
+        self.stallAttributor = stallAttributor
     }
 
     deinit {
@@ -234,6 +250,9 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
     /// render callback observes a timestamp at or beyond `sourceTimestampUs`.
     func expectPlaybackStart(_ context: PlaybackStartContext) {
         guard !isClosed.load(ordering: .relaxed), let renderer else { return }
+        queue.async { [weak self] in
+            self?.trackName = context.trackName
+        }
         delegate?.audioRenderer(renderer, didPreparePlaybackStart: context)
     }
 
@@ -246,20 +265,24 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         timestampUs: UInt64,
         hostTime: UInt64?
     ) {
-        guard let renderer,
-              delegate?.audioRendererHasPendingPlaybackStart(renderer) == true
-        else { return }
-
         queue.async { [weak self] in
             guard let self,
                   let renderer = self.renderer,
                   !self.isClosed.load(ordering: .relaxed)
             else { return }
-            self.delegate?.audioRenderer(
-                renderer,
-                didRenderAudioAt: timestampUs,
-                hostTime: hostTime
-            )
+            let context = self.pipelineContext()
+            self.pipelineBus.emit(.frameRendered(
+                context: context,
+                ptsUs: Int64(clamping: timestampUs),
+                renderNanos: context.timestampNanos
+            ))
+            if self.delegate?.audioRendererHasPendingPlaybackStart(renderer) == true {
+                self.delegate?.audioRenderer(
+                    renderer,
+                    didRenderAudioAt: timestampUs,
+                    hostTime: hostTime
+                )
+            }
         }
     }
 
@@ -267,12 +290,34 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         guard !isClosed.load(ordering: .relaxed) else { return }
         queue.async { [weak self] in
             guard let self,
-                  let renderer = self.renderer,
                   !self.isClosed.load(ordering: .relaxed)
             else { return }
-            stalled
-                ? self.delegate?.audioRendererDidBeginStall(renderer)
-                : self.delegate?.audioRendererDidEndStall(renderer)
+            let context = self.pipelineContext()
+            if stalled {
+                let cause = self.stallAttributor.cause(
+                    trackId: context.trackId,
+                    mediaKind: .audio,
+                    nowNanos: context.timestampNanos,
+                    fallback: .renderStall
+                )
+                self.stallStartedNanos = context.timestampNanos
+                self.stallCause = cause
+                self.pipelineBus.emit(.stallStarted(
+                    context: context,
+                    cause: cause
+                ))
+            } else if let started = self.stallStartedNanos,
+                      let cause = self.stallCause {
+                self.pipelineBus.emit(.stallEnded(
+                    context: context,
+                    cause: cause,
+                    durationMillis: context.timestampNanos >= started
+                        ? (context.timestampNanos - started) / 1_000_000
+                        : 0
+                ))
+                self.stallStartedNanos = nil
+                self.stallCause = nil
+            }
         }
     }
 
@@ -280,26 +325,32 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         guard !isClosed.exchange(true, ordering: .relaxed) else { return }
         clearExpectedPlaybackStart()
     }
+
+    private func pipelineContext() -> PipelineContext {
+        PipelineContext(
+            trackId: trackName,
+            mediaKind: .audio,
+            timestampNanos: DispatchTime.now().uptimeNanoseconds
+        )
+    }
 }
 
 // MARK: - RingState
 
-/// Thread-safe wrapper around `AudioRingBuffer` using `os_unfair_lock`.
+/// Thread-safe wrapper around `PcmRing` using `os_unfair_lock`.
 /// Shared between the ingest task (writes) and the audio render callback (reads).
 private final class RingState: @unchecked Sendable {
-    private var ringBuffer: AudioRingBuffer
+    private var ringBuffer: PcmRing
     private let lock: UnsafeMutablePointer<os_unfair_lock>
 
     let channels: Int
-    /// Approximate number of samples per decoded frame (set once from first decode).
-    var decodeFrameSize: Int = 1024
 
     init(rate: Int, channels: Int, latency: Duration) {
         self.channels = channels
-        self.ringBuffer = AudioRingBuffer(
+        self.ringBuffer = PcmRing(
             rate: rate,
             channels: channels,
-            latencyMs: latency.milliseconds
+            policy: PcmRingPolicy(maxDurationUs: latency.microsecondsUInt64Clamped)
         )
         self.lock = .allocate(capacity: 1)
         self.lock.initialize(to: os_unfair_lock())
@@ -314,13 +365,12 @@ private final class RingState: @unchecked Sendable {
         timestampUs: UInt64,
         channelData: UnsafePointer<UnsafeMutablePointer<Float32>>,
         frameCount: Int
-    ) -> Int {
+    ) -> PcmWriteResult {
         os_unfair_lock_lock(lock)
-        let discarded = ringBuffer.write(
+        let result = ringBuffer.write(
             timestampUs: timestampUs, channelData: channelData, frameCount: frameCount)
         os_unfair_lock_unlock(lock)
-
-        return discarded / max(decodeFrameSize, 1)
+        return result
     }
 
     func read(
@@ -335,7 +385,9 @@ private final class RingState: @unchecked Sendable {
 
     func resize(latency: Duration) {
         os_unfair_lock_lock(lock)
-        ringBuffer.resize(latencyMs: latency.milliseconds)
+        ringBuffer.resize(
+            policy: PcmRingPolicy(maxDurationUs: latency.microsecondsUInt64Clamped)
+        )
         os_unfair_lock_unlock(lock)
     }
 
@@ -350,5 +402,16 @@ private final class RingState: @unchecked Sendable {
         let v = ringBuffer.fillMs
         os_unfair_lock_unlock(lock)
         return v
+    }
+
+    var depth: BufferDepth {
+        os_unfair_lock_lock(lock)
+        let frames = ringBuffer.length
+        let bytes = UInt64(frames * channels * MemoryLayout<Float32>.size)
+        let durationUs = UInt64(
+            max(0, Double(frames) / Double(ringBuffer.rate) * 1_000_000)
+        )
+        os_unfair_lock_unlock(lock)
+        return BufferDepth(frames: frames, bytes: bytes, durationUs: durationUs)
     }
 }

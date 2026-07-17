@@ -1,12 +1,14 @@
 import CoreMedia
 
-enum VideoStallDecision: Equatable {
+enum VideoPresentationDecision: Equatable {
     case wait(delayUs: UInt64)
     case beginStall
     case alreadyStalled
 }
 
-struct VideoStallHorizon {
+/// Tracks how long the last scheduled visible frame remains valid. It detects the
+/// presentation boundary only; `PipelineStallAttributor` owns cause attribution.
+struct VideoPresentationHorizon {
     // ~30 fps; used when no per-frame duration or interval is available.
     private static let fallbackVisibleFrameDurationUs: UInt64 = 33_333
 
@@ -49,7 +51,7 @@ struct VideoStallHorizon {
         return true
     }
 
-    mutating func evaluateStallStart(at nowUs: UInt64) -> VideoStallDecision {
+    mutating func evaluateStallStart(at nowUs: UInt64) -> VideoPresentationDecision {
         guard !isStalled else {
             hasPendingStallMarker = false
             return .alreadyStalled

@@ -9,11 +9,6 @@ enum PlaybackPipelineSwitchOutcome {
     case restartRequired
 }
 
-private struct PlaybackSubscriptions {
-    var video: MediaTrack? = nil
-    var audio: MediaTrack? = nil
-}
-
 /// Decodes and renders subscribed media tracks, and exposes seamless rendition switching.
 ///
 /// One pipeline instance covers all combinations of selected tracks:
@@ -27,11 +22,15 @@ final class PlaybackPipeline {
     private let mediaSource: BroadcastMediaSource
     private var targetBuffering: Duration
     private let tracker: PlaybackStatsTracker
-    private let aligner: MediaTimestampAligner
+    private let pipelineBus: PipelineBus
+    private let audioTimeline: TrackTimeline?
+    private let timestampMapper: TimestampDomainMapper
+    private let stallAttributor: PipelineStallAttributor
     private let frameObserver: any MediaFrameObserver
     private let playbackClock: any MediaPlaybackClock
     private let audioRenderer: AudioRenderer?
     private let videoRenderer: VideoRenderer?
+    private let onVideoSwitchAborted: @MainActor @Sendable (String?) -> Void
     private var videoTrackName: String?
     private var audioTrackName: String?
     private var videoEpoch: TrackEpoch = .zero
@@ -51,15 +50,21 @@ final class PlaybackPipeline {
         targetBuffering: Duration,
         volume: Float,
         videoLayer: AVSampleBufferDisplayLayer,
-        tracker: PlaybackStatsTracker
+        tracker: PlaybackStatsTracker,
+        pipelineBus: PipelineBus,
+        onVideoSwitchAborted: @escaping @MainActor @Sendable (String?) -> Void
     ) throws {
         precondition(
             videoTrack != nil || audioTrack != nil,
             "PlaybackPipeline requires at least one track"
         )
 
-        let aligner = MediaTimestampAligner()
-        let frameObserver = CompositeMediaFrameObserver([tracker, aligner])
+        let frameObserver: any MediaFrameObserver = tracker
+        let stallAttributor = PipelineStallAttributor(bus: pipelineBus)
+        let latencyUs = Int64(clamping: targetBuffering.microsecondsUInt64Clamped)
+        let audioTimeline = audioTrack == nil
+            ? nil
+            : TrackTimeline(policy: TimelinePolicy(targetLatencyUs: latencyUs))
         let initialVideoEpoch: TrackEpoch = videoTrack == nil ? .zero : TrackEpoch.zero.next()
         let initialAudioEpoch: TrackEpoch = audioTrack == nil ? .zero : TrackEpoch.zero.next()
         let subscriptions = try Self.makePlaybackSubscriptions(
@@ -75,8 +80,11 @@ final class PlaybackPipeline {
         self.mediaSource = mediaSource
         self.targetBuffering = targetBuffering
         self.tracker = tracker
-        self.aligner = aligner
+        self.pipelineBus = pipelineBus
+        self.onVideoSwitchAborted = onVideoSwitchAborted
         self.frameObserver = frameObserver
+        self.stallAttributor = stallAttributor
+        self.audioTimeline = audioTimeline
         self.audioSubscription = subscriptions.audio
         self.videoSubscription = subscriptions.video
         self.videoTrackName = videoTrack?.name
@@ -88,13 +96,16 @@ final class PlaybackPipeline {
         let playbackClock: any MediaPlaybackClock = audioClock ?? VideoDrivenClock()
         self.playbackClock = playbackClock
 
-        if let audioTrack, let audioClock {
+        if let audioTrack, let audioClock, let audioTimeline {
             let renderer = try AudioRenderer(
                 config: audioTrack.rawConfig,
                 clock: audioClock,
+                timeline: audioTimeline,
                 targetLatency: targetBuffering,
                 initialVolume: volume,
-                delegate: tracker
+                delegate: tracker,
+                pipelineBus: pipelineBus,
+                stallAttributor: stallAttributor
             )
             try renderer.start()
             self.audioRenderer = renderer
@@ -104,30 +115,42 @@ final class PlaybackPipeline {
 
         let rendererTrack: VideoRendererTrack?
         if let videoTrack {
-            let track = try VideoRendererTrack(
+            rendererTrack = try VideoRendererTrack(
                 trackName: videoTrack.name,
                 epoch: initialVideoEpoch,
                 config: videoTrack.rawConfig,
                 targetBuffering: targetBuffering
             )
+        } else {
+            rendererTrack = nil
+        }
+
+        let timestampMapper = TimestampDomainMapper(
+            audioTimeline: audioTimeline,
+            videoTimeline: rendererTrack?.timeline
+        )
+        self.timestampMapper = timestampMapper
+
+        if let track = rendererTrack {
             let renderer = VideoRenderer(
                 timing: playbackClock,
-                timestampAligner: aligner,
+                timestampMapper: timestampMapper,
                 track: track,
                 layer: videoLayer,
-                delegate: tracker
+                delegate: tracker,
+                pipelineBus: pipelineBus,
+                stallAttributor: stallAttributor
             )
             renderer.start()
             self.videoRenderer = renderer
-            rendererTrack = track
         } else {
             self.videoRenderer = nil
-            rendererTrack = nil
         }
 
         if let audioRenderer = self.audioRenderer,
            let audioSub = subscriptions.audio,
-           let audioTrack
+           let audioTrack,
+           let audioTimeline
         {
             self.audioTask = Self.makeAudioIngestTask(
                 trackName: audioTrack.name,
@@ -136,6 +159,8 @@ final class PlaybackPipeline {
                 config: audioTrack.rawConfig,
                 frameObserver: frameObserver,
                 tracker: tracker,
+                timeline: audioTimeline,
+                pipelineBus: pipelineBus,
                 targetBuffering: targetBuffering,
                 trackEpoch: initialAudioEpoch
             )
@@ -148,6 +173,7 @@ final class PlaybackPipeline {
                 track: rendererTrack,
                 frameObserver: frameObserver,
                 tracker: tracker,
+                pipelineBus: pipelineBus,
                 targetBuffering: targetBuffering,
                 trackEpoch: initialVideoEpoch
             )
@@ -162,8 +188,38 @@ final class PlaybackPipeline {
         let hasAudio = audioRenderer != nil
         let hasVideo = videoRenderer != nil
         let currentTimeUs = playbackClock.currentTimeUs
-        let audioLiveTime: Int64? = hasAudio ? aligner.audioLiveEdge.estimatedLivePTS() : nil
+        let audioLiveTime: Int64? = hasAudio ? audioTimeline?.liveEdgeUs() : nil
         let videoLiveTime: Int64? = hasVideo ? videoLiveTimeForStats(hasAudio: hasAudio) : nil
+        let targetUs = Int64(clamping: targetBuffering.microsecondsUInt64Clamped)
+
+        if let audioTrackName, let audioRenderer {
+            pipelineBus.emit(.latencySample(
+                context: PipelineContextFactory(
+                    trackId: audioTrackName,
+                    mediaKind: .audio
+                ).make(),
+                currentUs: Self.latencyUs(
+                    liveTime: audioLiveTime,
+                    currentTimeUs: currentTimeUs
+                ),
+                targetUs: targetUs,
+                bufferDepth: audioRenderer.diagnosticDepth
+            ))
+        }
+        if let videoTrackName, let videoRenderer {
+            pipelineBus.emit(.latencySample(
+                context: PipelineContextFactory(
+                    trackId: videoTrackName,
+                    mediaKind: .video
+                ).make(),
+                currentUs: Self.latencyUs(
+                    liveTime: videoLiveTime,
+                    currentTimeUs: currentTimeUs
+                ),
+                targetUs: targetUs,
+                bufferDepth: videoRenderer.activeDiagnosticDepth
+            ))
+        }
 
         return tracker.getStats(
             audioLatency: Self.playbackLatency(
@@ -181,6 +237,9 @@ final class PlaybackPipeline {
 
     func updateTargetLatency(_ latency: Duration) {
         targetBuffering = latency
+        audioTimeline?.setTargetLatencyUs(
+            Int64(clamping: latency.microsecondsUInt64Clamped)
+        )
         audioRenderer?.updateTargetLatency(latency)
         videoRenderer?.updateTargetBuffering(latency)
     }
@@ -217,9 +276,11 @@ final class PlaybackPipeline {
             config: track.rawConfig,
             targetBuffering: targetBuffering
         )
-        videoEpoch = nextEpoch
 
         let oldHandle = TrackIngestHandle(task: videoTask, subscription: videoSubscription)
+        let oldTrackName = videoTrackName
+        let oldEpoch = videoEpoch
+        videoEpoch = nextEpoch
         pendingVideoCleanup?.close()
         pendingVideoCleanup = oldHandle
 
@@ -232,13 +293,37 @@ final class PlaybackPipeline {
         }
         let trackerRef = self.tracker
         let switchedTrackName = track.name
-        videoRenderer.setPendingTrack(newRendererTrack) {
-            oldHandle.close()
-            DispatchQueue.main.async(execute: clearCleanup)
-            trackerRef.emitTrackSwitch(
-                kind: .video, trackName: switchedTrackName, trackEpoch: nextEpoch
-            )
-        }
+        videoRenderer.setPendingTrack(
+            newRendererTrack,
+            onActivated: {
+                oldHandle.close()
+                DispatchQueue.main.async(execute: clearCleanup)
+                trackerRef.emitTrackSwitch(
+                    kind: .video, trackName: switchedTrackName, trackEpoch: nextEpoch
+                )
+            },
+            onAborted: { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self, self.pendingVideoCleanup === oldHandle else { return }
+                    self.videoTask?.cancel()
+                    self.videoSubscription?.close()
+                    let restored = oldHandle.take()
+                    self.videoTask = restored.task
+                    self.videoSubscription = restored.subscription
+                    self.videoTrackName = oldTrackName
+                    self.videoEpoch = oldEpoch
+                    self.pendingVideoCleanup = nil
+                    self.tracker.emitSubscribeError(
+                        kind: .video,
+                        trackName: switchedTrackName,
+                        message: "Timed out waiting for a usable video keyframe",
+                        trackEpoch: nextEpoch
+                    )
+                    self.onVideoSwitchAborted(oldTrackName)
+                    self.restartCoordinator()
+                }
+            }
+        )
 
         videoSubscription = newSub
         videoTrackName = track.name
@@ -248,6 +333,7 @@ final class PlaybackPipeline {
             track: newRendererTrack,
             frameObserver: frameObserver,
             tracker: tracker,
+            pipelineBus: pipelineBus,
             targetBuffering: targetBuffering,
             trackEpoch: nextEpoch
         )
@@ -256,7 +342,7 @@ final class PlaybackPipeline {
     }
 
     func switchAudio(to track: AudioTrackInfo) throws -> PlaybackPipelineSwitchOutcome {
-        guard let audioRenderer else { return .restartRequired }
+        guard let audioRenderer, let audioTimeline else { return .restartRequired }
 
         KitLogger.player.debug("Switching audio track to \(track.name)")
 
@@ -289,6 +375,8 @@ final class PlaybackPipeline {
             config: track.rawConfig,
             frameObserver: frameObserver,
             tracker: tracker,
+            timeline: audioTimeline,
+            pipelineBus: pipelineBus,
             targetBuffering: targetBuffering,
             trackEpoch: nextEpoch
         )
@@ -343,134 +431,17 @@ final class PlaybackPipeline {
     /// latencies are comparable against `playbackClock.currentTimeUs`. In video-only mode the
     /// raw video edge is correct as-is (the clock IS the video timeline).
     private func videoLiveTimeForStats(hasAudio: Bool) -> Int64? {
-        guard let videoTime = aligner.videoLiveEdge.estimatedLivePTS(), videoTime >= 0
+        guard let videoTime = videoRenderer?.activeTimeline.liveEdgeUs(), videoTime >= 0
         else { return nil }
         guard hasAudio else { return videoTime }
 
-        let mapped = aligner.audioTime(
-            videoTime: UInt64(videoTime),
-            threshold: Int64(clamping: playbackStatsPTSCorrectionThreshold.microsecondsUInt64Clamped)
+        let mapped = timestampMapper.audioTimeUs(
+            videoTimeUs: UInt64(videoTime),
+            thresholdUs: Int64(clamping: playbackStatsPTSCorrectionThreshold.microsecondsUInt64Clamped)
         )
         guard mapped <= UInt64(Int64.max) else { return nil }
         return Int64(mapped)
     }
-}
-
-// MARK: - TrackIngestHandle
-
-/// Holds a (task, subscription) pair so the previous video rendition can keep producing
-/// frames until the renderer signals it has rendered a frame from the new rendition.
-///
-/// The video swap is double-buffered: we install a new ingest task immediately, but the
-/// old task and its subscription must stay alive until the renderer's `onActivated` callback
-/// fires. Closing the old pair early would tear down the jitter buffer that's still feeding
-/// the display layer, producing a visible gap. The handle is captured by both the renderer
-/// callback and the next switch's cleanup path; whichever runs first cancels the work,
-/// the other becomes a no-op via the lock-protected nullification.
-private final class TrackIngestHandle: @unchecked Sendable {
-    private let lock = NSLock()
-    private var task: Task<Void, Never>?
-    private var subscription: MediaTrack?
-
-    init(task: Task<Void, Never>?, subscription: MediaTrack?) {
-        self.task = task
-        self.subscription = subscription
-    }
-
-    func close() {
-        lock.lock()
-        let task = self.task
-        let subscription = self.subscription
-        self.task = nil
-        self.subscription = nil
-        lock.unlock()
-
-        task?.cancel()
-        subscription?.close()
-    }
-}
-
-// MARK: - Subscription / stats helpers
-
-extension PlaybackPipeline {
-    fileprivate static func makePlaybackSubscriptions(
-        videoTrack: VideoTrackInfo?,
-        videoEpoch: TrackEpoch,
-        audioTrack: AudioTrackInfo?,
-        audioEpoch: TrackEpoch,
-        mediaSource: BroadcastMediaSource,
-        maxLatency: Duration,
-        tracker: PlaybackStatsTracker
-    ) throws -> PlaybackSubscriptions {
-        var subscriptions = PlaybackSubscriptions()
-        // Capture the first error only; per-track failures are reported via
-        // `.trackSubscribeError` events. We rethrow only when *every* requested track
-        // failed to subscribe.
-        var firstError: Error?
-
-        if let videoTrack {
-            tracker.emitSubscribeStart(
-                kind: .video, trackName: videoTrack.name, trackEpoch: videoEpoch
-            )
-            KitLogger.player.debug(
-                "Video track: \(videoTrack.name), codec=\(videoTrack.config.codec), config=\(videoTrack.config.debugDescription), container=\(videoTrack.rawConfig.container.moqKitDescription)"
-            )
-            do {
-                subscriptions.video = try mediaSource.subscribeMedia(
-                    MediaTrackRequest(track: videoTrack, targetBuffering: maxLatency)
-                )
-            } catch {
-                if firstError == nil { firstError = error }
-                KitLogger.player.error(
-                    "Failed to subscribe to video track \(videoTrack.name): \(error)")
-                tracker.emitSubscribeError(
-                    kind: .video,
-                    trackName: videoTrack.name,
-                    message: error.localizedDescription,
-                    trackEpoch: videoEpoch
-                )
-            }
-        }
-
-        if let audioTrack {
-            tracker.emitSubscribeStart(
-                kind: .audio, trackName: audioTrack.name, trackEpoch: audioEpoch
-            )
-            KitLogger.player.debug(
-                "Audio track: \(audioTrack.name), config = \(audioTrack.config.debugDescription), container=\(audioTrack.rawConfig.container.moqKitDescription)"
-            )
-            do {
-                subscriptions.audio = try mediaSource.subscribeMedia(
-                    MediaTrackRequest(track: audioTrack, targetBuffering: maxLatency)
-                )
-            } catch {
-                if firstError == nil { firstError = error }
-                KitLogger.player.error(
-                    "Failed to subscribe to audio track \(audioTrack.name): \(error)")
-                tracker.emitSubscribeError(
-                    kind: .audio,
-                    trackName: audioTrack.name,
-                    message: error.localizedDescription,
-                    trackEpoch: audioEpoch
-                )
-            }
-        }
-
-        if subscriptions.video == nil && subscriptions.audio == nil, let firstError {
-            throw firstError
-        }
-        return subscriptions
-    }
-
-    fileprivate static func playbackLatency(
-        liveTime: Int64?, currentTimeUs: UInt64
-    ) -> Duration? {
-        guard let liveTime, currentTimeUs <= UInt64(Int64.max) else { return nil }
-        let result = liveTime.subtractingReportingOverflow(Int64(currentTimeUs))
-        guard !result.overflow else { return nil }
-        return .microseconds(max(0, result.partialValue))
-    }
-
 }
 
 // MARK: - Ingest tasks
@@ -482,12 +453,13 @@ extension PlaybackPipeline {
         track: VideoRendererTrack,
         frameObserver: any MediaFrameObserver,
         tracker: PlaybackStatsTracker,
+        pipelineBus: PipelineBus,
         targetBuffering: Duration,
         trackEpoch: TrackEpoch
     ) -> Task<Void, Never> {
         Task.detached {
-            var lastPtsUs: UInt64? = nil
             var firstAcceptedFrame = true
+            let context = PipelineContextFactory(trackId: trackName, mediaKind: .video)
             frameObserver.onMediaTrackStarted(kind: .video)
 
             defer {
@@ -497,21 +469,131 @@ extension PlaybackPipeline {
             do {
                 for try await frame in subscription.frames {
                     if Task.isCancelled { break }
-                    if let gap = discontinuityGapUs(frame: frame, lastPtsUs: lastPtsUs) {
-                        KitLogger.player.debug("Video discontinuity detected (gap: \(gap)us)")
-                        frameObserver.onMediaDiscontinuity(kind: .video, gapUs: gap)
-                    }
-                    lastPtsUs = frame.timestampUs
-
                     frameObserver.onMediaFrame(kind: .video, frame: frame)
+                    let ptsUs = Int64(clamping: frame.timestampUs)
+                    pipelineBus.emit(.frameArrived(
+                        context: context.make(),
+                        ptsUs: ptsUs,
+                        groupSequence: nil,
+                        frameIndex: nil,
+                        bytes: frame.payload.count
+                    ))
 
-                    let accepted = track.insert(
+                    guard frame.timestampUs <= UInt64(Int64.max) else {
+                        pipelineBus.emit(.frameDropped(
+                            context: context.make(),
+                            stage: .timeline,
+                            reason: .invalidPayload,
+                            bytes: UInt64(frame.payload.count)
+                        ))
+                        continue
+                    }
+
+                    let pipelineFrame = PipelineFrame(
+                        payload: frame.payload,
+                        timestampUs: ptsUs,
+                        keyframe: frame.keyframe,
+                        sizeBytes: frame.payload.count,
+                        epoch: trackEpoch
+                    )
+
+                    switch track.timeline.onFrame(pipelineFrame) {
+                    case .drop(_, let dropped):
+                        pipelineBus.emit(.frameDropped(
+                            context: context.make(),
+                            stage: .timeline,
+                            reason: .staleVsPlayback,
+                            ptsUs: dropped.timestampUs,
+                            count: 1,
+                            bytes: UInt64(dropped.sizeBytes)
+                        ))
+                        continue
+                    case .reset(let reason, let epoch, let resumeFrom, let gapUs):
+                        let discarded = track.diagnosticDepth
+                        track.flush()
+                        pipelineBus.emit(.discontinuity(
+                            context: context.make(),
+                            epoch: epoch,
+                            reason: reason == .publisherRewind ? .publisherRewind : .localReset
+                        ))
+                        if discarded.frames > 0 {
+                            pipelineBus.emit(.frameDropped(
+                                context: context.make(),
+                                stage: .buffer,
+                                reason: .resetFlush,
+                                count: discarded.frames,
+                                bytes: discarded.bytes
+                            ))
+                        }
+                        if let gapUs {
+                            frameObserver.onMediaDiscontinuity(kind: .video, gapUs: gapUs)
+                        }
+                        guard resumeFrom != nil else { continue }
+                    case .admit:
+                        break
+                    }
+
+                    let insertOutcome = track.insert(
                         payload: frame.payload,
                         timestampUs: frame.timestampUs,
                         keyframe: frame.keyframe
                     )
 
-                    if accepted && firstAcceptedFrame {
+                    switch insertOutcome {
+                    case .admitted(let depth, let evictions):
+                        for eviction in evictions {
+                            guard case .evictedGop(let count, let bytes) = eviction else {
+                                continue
+                            }
+                            pipelineBus.emit(.frameDropped(
+                                context: context.make(),
+                                stage: .buffer,
+                                reason: .backlogOverflow,
+                                count: count,
+                                bytes: bytes
+                            ))
+                        }
+                        pipelineBus.emit(.frameAdmitted(
+                            context: context.make(),
+                            ptsUs: ptsUs,
+                            bufferDepth: depth
+                        ))
+                        pipelineBus.emit(.bufferDepthChanged(
+                            context: context.make(),
+                            depth: depth
+                        ))
+                    case .rejected(let reason):
+                        let dropReason: DropReason
+                        switch reason {
+                        case .waitingForKeyframe:
+                            dropReason = .waitingForKeyframe
+                        case .duplicate:
+                            dropReason = .covered
+                        case .oldEpoch, .unexpectedEpoch:
+                            dropReason = .publisherRewind
+                        case .frameTooLarge:
+                            dropReason = .backlogOverflow
+                        }
+                        pipelineBus.emit(.frameDropped(
+                            context: context.make(),
+                            stage: .buffer,
+                            reason: dropReason,
+                            ptsUs: ptsUs,
+                            count: 1,
+                            bytes: UInt64(frame.payload.count)
+                        ))
+                    case .invalidPayload:
+                        pipelineBus.emit(.frameDropped(
+                            context: context.make(),
+                            stage: .decoder,
+                            reason: .invalidPayload,
+                            ptsUs: ptsUs,
+                            count: 1,
+                            bytes: UInt64(frame.payload.count)
+                        ))
+                    }
+
+                    if insertOutcome.accepted && firstAcceptedFrame {
                         firstAcceptedFrame = false
                         KitLogger.player.debug(
                             "First video frame accepted track=\(trackName), timestampUs=\(frame.timestampUs), keyframe=\(frame.keyframe), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
@@ -530,6 +612,7 @@ extension PlaybackPipeline {
                 if !Task.isCancelled {
                     KitLogger.player.debug("Video track stream ended track=\(trackName)")
                     tracker.emitSubscribeEnd(kind: .video, trackName: trackName, trackEpoch: trackEpoch)
+                    pipelineBus.emit(.transportClosed(context: context.make(), error: nil))
                 }
             } catch MoqError.Cancelled {
                 return
@@ -542,6 +625,13 @@ extension PlaybackPipeline {
                     message: error.localizedDescription,
                     trackEpoch: trackEpoch
                 )
+                pipelineBus.emit(.transportClosed(
+                    context: context.make(),
+                    error: PipelineError(
+                        code: String(describing: type(of: error)),
+                        message: error.localizedDescription
+                    )
+                ))
             }
         }
     }
@@ -553,13 +643,16 @@ extension PlaybackPipeline {
         config: MoqAudio,
         frameObserver: any MediaFrameObserver,
         tracker: PlaybackStatsTracker,
+        timeline: TrackTimeline,
+        pipelineBus: PipelineBus,
         targetBuffering: Duration,
         trackEpoch: TrackEpoch
     ) -> Task<Void, Never> {
         Task.detached {
             frameObserver.onMediaTrackStarted(kind: .audio)
+            let context = PipelineContextFactory(trackId: trackName, mediaKind: .audio)
 
-            let decoder: AudioDecoder
+            var decoder: AudioDecoder
             do {
                 decoder = try AudioDecoder(config: config)
             } catch {
@@ -572,8 +665,8 @@ extension PlaybackPipeline {
                 return
             }
 
-            var lastPtsUs: UInt64? = nil
             var firstFrame = true
+            let recovery = AudioRecoveryController()
 
             defer {
                 KitLogger.player.debug("Exited audio reading task track=\(trackName), cancelled=\(Task.isCancelled)")
@@ -583,20 +676,99 @@ extension PlaybackPipeline {
                 for try await frame in subscription.frames {
                     if Task.isCancelled { break }
                     do {
-                        if let gap = discontinuityGapUs(frame: frame, lastPtsUs: lastPtsUs) {
-                            KitLogger.player.debug(
-                                "Audio discontinuity detected (gap: \(gap)us), flushing")
-                            renderer.flush()
-                            frameObserver.onMediaDiscontinuity(kind: .audio, gapUs: gap)
-                        }
-                        lastPtsUs = frame.timestampUs
-
                         frameObserver.onMediaFrame(kind: .audio, frame: frame)
+                        let ptsUs = Int64(clamping: frame.timestampUs)
+                        pipelineBus.emit(.frameArrived(
+                            context: context.make(),
+                            ptsUs: ptsUs,
+                            groupSequence: nil,
+                            frameIndex: nil,
+                            bytes: frame.payload.count
+                        ))
 
+                        guard frame.timestampUs <= UInt64(Int64.max) else {
+                            pipelineBus.emit(.frameDropped(
+                                context: context.make(),
+                                stage: .timeline,
+                                reason: .invalidPayload,
+                                bytes: UInt64(frame.payload.count)
+                            ))
+                            continue
+                        }
+
+                        let pipelineFrame = PipelineFrame(
+                            payload: frame.payload,
+                            timestampUs: ptsUs,
+                            keyframe: frame.keyframe,
+                            sizeBytes: frame.payload.count,
+                            epoch: trackEpoch
+                        )
+                        switch timeline.onFrame(pipelineFrame) {
+                        case .drop(_, let dropped):
+                            pipelineBus.emit(.frameDropped(
+                                context: context.make(),
+                                stage: .timeline,
+                                reason: .staleVsPlayback,
+                                ptsUs: dropped.timestampUs,
+                                bytes: UInt64(dropped.sizeBytes)
+                            ))
+                            continue
+                        case .reset(let reason, let epoch, _, let gapUs):
+                            renderer.flush()
+                            pipelineBus.emit(.discontinuity(
+                                context: context.make(),
+                                epoch: epoch,
+                                reason: reason == .publisherRewind ? .publisherRewind : .localReset
+                            ))
+                            if let gapUs {
+                                frameObserver.onMediaDiscontinuity(kind: .audio, gapUs: gapUs)
+                            }
+                        case .admit:
+                            break
+                        }
+
+                        pipelineBus.emit(.decoderInputQueued(
+                            context: context.make(),
+                            ptsUs: ptsUs
+                        ))
                         let pcm = try decoder.decode(payload: frame.payload)
-                        renderer.enqueue(pcm: pcm, timestampUs: frame.timestampUs)
+                        pipelineBus.emit(.decoderOutputReady(
+                            context: context.make(),
+                            ptsUs: ptsUs
+                        ))
+                        let write = renderer.enqueue(
+                            pcm: pcm,
+                            timestampUs: frame.timestampUs
+                        )
+                        let depth = renderer.diagnosticDepth
+                        let decodedFrameSize = max(Int(pcm.frameLength), 1)
+                        let droppedFrames =
+                            (write.rejectedOldFrames + write.evictedFrames)
+                            / decodedFrameSize
+                        if droppedFrames > 0 {
+                            pipelineBus.emit(.frameDropped(
+                                context: context.make(),
+                                stage: .buffer,
+                                reason: write.evictedFrames > 0
+                                    ? .backlogOverflow
+                                    : .staleVsPlayback,
+                                ptsUs: ptsUs,
+                                count: droppedFrames
+                            ))
+                        }
+                        if write.acceptedFrames > 0 {
+                            pipelineBus.emit(.frameAdmitted(
+                                context: context.make(),
+                                ptsUs: ptsUs,
+                                bufferDepth: depth
+                            ))
+                        }
+                        pipelineBus.emit(.bufferDepthChanged(
+                            context: context.make(),
+                            depth: depth
+                        ))
 
-                        if firstFrame {
+                        if firstFrame, write.acceptedFrames > 0 {
                             firstFrame = false
                             KitLogger.player.debug(
                                 "First audio frame decoded track=\(trackName), timestampUs=\(frame.timestampUs), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
@@ -624,16 +796,62 @@ extension PlaybackPipeline {
                         }
                     } catch {
                         KitLogger.player.error("Audio decode error: \(error)")
+                        pipelineBus.emit(.frameDropped(
+                            context: context.make(),
+                            stage: .decoder,
+                            reason: .invalidPayload,
+                            ptsUs: Int64(clamping: frame.timestampUs),
+                            bytes: UInt64(frame.payload.count)
+                        ))
                         tracker.emitDecodeError(
                             kind: .audio,
                             trackName: trackName,
                             message: error.localizedDescription
                         )
+                        let attempt = recovery.onFailure(
+                            trigger: error.localizedDescription
+                        )
+                        pipelineBus.emit(.decoderRecovery(
+                            context: context.make(),
+                            attempt: attempt.attempt,
+                            step: attempt.step,
+                            trigger: attempt.trigger
+                        ))
+                        guard attempt.step == .rebuild else {
+                            pipelineBus.emit(.transportClosed(
+                                context: context.make(),
+                                error: PipelineError(
+                                    code: "audio-decoder-failed",
+                                    message: error.localizedDescription
+                                )
+                            ))
+                            return
+                        }
+                        do {
+                            decoder = try AudioDecoder(config: config)
+                            renderer.flush()
+                            pipelineBus.emit(.decoderFlushed(
+                                context: context.make(),
+                                reason: .decoderRecovery,
+                                trigger: attempt.trigger,
+                                droppedFrames: 0
+                            ))
+                        } catch {
+                            pipelineBus.emit(.transportClosed(
+                                context: context.make(),
+                                error: PipelineError(
+                                    code: "audio-decoder-rebuild-failed",
+                                    message: error.localizedDescription
+                                )
+                            ))
+                            return
+                        }
                     }
                 }
                 if !Task.isCancelled {
                     KitLogger.player.debug("Audio track stream ended track=\(trackName)")
                     tracker.emitSubscribeEnd(kind: .audio, trackName: trackName, trackEpoch: trackEpoch)
+                    pipelineBus.emit(.transportClosed(context: context.make(), error: nil))
                 }
             } catch MoqError.Cancelled {
                 return
@@ -646,6 +864,13 @@ extension PlaybackPipeline {
                     message: error.localizedDescription,
                     trackEpoch: trackEpoch
                 )
+                pipelineBus.emit(.transportClosed(
+                    context: context.make(),
+                    error: PipelineError(
+                        code: String(describing: type(of: error)),
+                        message: error.localizedDescription
+                    )
+                ))
             }
         }
     }
@@ -668,15 +893,4 @@ extension PlaybackPipeline {
         }
     }
 
-    /// Detects a PTS discontinuity: keyframe with >500ms jump from the last seen timestamp.
-    /// Returns the gap in microseconds when one is detected, or `nil`.
-    fileprivate static func discontinuityGapUs(
-        frame: MediaFrame, lastPtsUs: UInt64?
-    ) -> UInt64? {
-        guard frame.keyframe, let lastPtsUs else { return nil }
-        let gap = frame.timestampUs > lastPtsUs
-            ? frame.timestampUs - lastPtsUs
-            : lastPtsUs - frame.timestampUs
-        return gap > 500_000 ? gap : nil
-    }
 }

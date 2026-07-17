@@ -1,5 +1,18 @@
 import Foundation
 
+typealias PlaybackLifecycleInstant = Int64
+
+private func playbackDuration(
+    from start: PlaybackLifecycleInstant,
+    to end: PlaybackLifecycleInstant
+) -> Duration {
+    let delta = end.subtractingReportingOverflow(start)
+    guard !delta.overflow else {
+        return end >= start ? .nanoseconds(Int64.max) : .zero
+    }
+    return .nanoseconds(max(0, delta.partialValue))
+}
+
 struct PlaybackLifecycleSnapshot: Sendable {
     let audioStalls: StallStats?
     let videoStalls: StallStats?
@@ -16,39 +29,39 @@ struct PlaybackStallChange: Sendable {
 
 struct PlaybackLifecycleState: Sendable {
     private struct TrackStallState: Sendable {
-        var readyAt: ContinuousClock.Instant?
-        var activeAt: ContinuousClock.Instant?
+        var readyAt: PlaybackLifecycleInstant?
+        var activeAt: PlaybackLifecycleInstant?
         var count: UInt64 = 0
         var duration: Duration = .zero
         var active: Bool = false
 
-        mutating func markReady(at instant: ContinuousClock.Instant) {
+        mutating func markReady(at instant: PlaybackLifecycleInstant) {
             if readyAt == nil {
                 readyAt = instant
             }
         }
 
-        mutating func start(at instant: ContinuousClock.Instant) {
+        mutating func start(at instant: PlaybackLifecycleInstant) {
             markReady(at: instant)
             guard activeAt == nil else { return }
             activeAt = instant
             count += 1
         }
 
-        mutating func end(at instant: ContinuousClock.Instant) {
+        mutating func end(at instant: PlaybackLifecycleInstant) {
             guard let startedAt = activeAt else { return }
-            duration += startedAt.duration(to: instant)
+            duration += playbackDuration(from: startedAt, to: instant)
             activeAt = nil
         }
 
-        func stats(at instant: ContinuousClock.Instant) -> StallStats? {
+        func stats(at instant: PlaybackLifecycleInstant) -> StallStats? {
             guard let readyAt else { return nil }
 
             var total = duration
             if let activeAt {
-                total += activeAt.duration(to: instant)
+                total += playbackDuration(from: activeAt, to: instant)
             }
-            let elapsed = readyAt.duration(to: instant)
+            let elapsed = playbackDuration(from: readyAt, to: instant)
             let elapsedMs = elapsed.milliseconds
             let totalMs = total.milliseconds
             let ratio = elapsedMs > 0 ? totalMs / elapsedMs : 0
@@ -63,10 +76,10 @@ struct PlaybackLifecycleState: Sendable {
     private struct TrackSwitchState: Sendable {
         private struct Attempt: Sendable {
             var trackName: String?
-            var startedAt: ContinuousClock.Instant
-            var readyAt: ContinuousClock.Instant?
-            var playingAt: ContinuousClock.Instant?
-            var activeAt: ContinuousClock.Instant?
+            var startedAt: PlaybackLifecycleInstant
+            var readyAt: PlaybackLifecycleInstant?
+            var playingAt: PlaybackLifecycleInstant?
+            var activeAt: PlaybackLifecycleInstant?
             var errorMessage: String?
         }
 
@@ -75,7 +88,7 @@ struct PlaybackLifecycleState: Sendable {
         var requestedCount: UInt64 = 0
         var completedCount: UInt64 = 0
 
-        mutating func start(trackName: String?, at instant: ContinuousClock.Instant) {
+        mutating func start(trackName: String?, at instant: PlaybackLifecycleInstant) {
             requestedCount += 1
             latestAttempt = Attempt(
                 trackName: trackName,
@@ -84,19 +97,19 @@ struct PlaybackLifecycleState: Sendable {
             didCountLatestCompletion = false
         }
 
-        mutating func markReady(at instant: ContinuousClock.Instant) {
+        mutating func markReady(at instant: PlaybackLifecycleInstant) {
             update { attempt in
                 attempt.readyAt = attempt.readyAt ?? instant
             }
         }
 
-        mutating func markPlaying(at instant: ContinuousClock.Instant) {
+        mutating func markPlaying(at instant: PlaybackLifecycleInstant) {
             update { attempt in
                 attempt.playingAt = attempt.playingAt ?? instant
             }
         }
 
-        mutating func markActive(at instant: ContinuousClock.Instant) {
+        mutating func markActive(at instant: PlaybackLifecycleInstant) {
             update { attempt in
                 attempt.activeAt = attempt.activeAt ?? instant
             }
@@ -138,11 +151,11 @@ struct PlaybackLifecycleState: Sendable {
         }
 
         private func elapsed(
-            from start: ContinuousClock.Instant?,
-            to end: ContinuousClock.Instant?
+            from start: PlaybackLifecycleInstant?,
+            to end: PlaybackLifecycleInstant?
         ) -> Duration? {
             guard let start, let end else { return nil }
-            return start.duration(to: end)
+            return playbackDuration(from: start, to: end)
         }
     }
 
@@ -165,14 +178,14 @@ struct PlaybackLifecycleState: Sendable {
     private var rebufferKind: MediaFrameKind?
     private var hasPlaybackStartEmitted = false
     private var isRebuffering = false
-    private var playbackRequestedAt: ContinuousClock.Instant?
+    private var playbackRequestedAt: PlaybackLifecycleInstant?
     private var timeToFirst = TimeToFirstPlaybackState()
     private var stalls = PerMediaKind { TrackStallState() }
     private var switches = PerMediaKind { TrackSwitchState() }
 
     mutating func beginSession(
         rebufferKind: MediaFrameKind,
-        at instant: ContinuousClock.Instant
+        at instant: PlaybackLifecycleInstant
     ) {
         self.rebufferKind = rebufferKind
         hasPlaybackStartEmitted = false
@@ -187,7 +200,7 @@ struct PlaybackLifecycleState: Sendable {
         self = PlaybackLifecycleState()
     }
 
-    mutating func closeOutInFlightStalls(at instant: ContinuousClock.Instant) {
+    mutating func closeOutInFlightStalls(at instant: PlaybackLifecycleInstant) {
         stalls.audio.end(at: instant)
         stalls.audio.active = false
         stalls.video.end(at: instant)
@@ -199,7 +212,7 @@ struct PlaybackLifecycleState: Sendable {
         kind: MediaFrameKind,
         trackName: String,
         trackEpoch: TrackEpoch,
-        at instant: ContinuousClock.Instant
+        at instant: PlaybackLifecycleInstant
     ) {
         guard trackEpoch > 1 else { return }
         switches.update(kind) { state in
@@ -221,10 +234,10 @@ struct PlaybackLifecycleState: Sendable {
     mutating func recordTrackReady(
         kind: MediaFrameKind,
         trackEpoch: TrackEpoch,
-        at instant: ContinuousClock.Instant
+        at instant: PlaybackLifecycleInstant
     ) {
         if trackEpoch == 1, let requestedAt = playbackRequestedAt {
-            let duration = requestedAt.duration(to: instant)
+            let duration = playbackDuration(from: requestedAt, to: instant)
             switch kind {
             case .audio:
                 if timeToFirst.audioFrame == nil { timeToFirst.audioFrame = duration }
@@ -241,7 +254,7 @@ struct PlaybackLifecycleState: Sendable {
 
     mutating func recordTrackSwitch(
         kind: MediaFrameKind,
-        at instant: ContinuousClock.Instant
+        at instant: PlaybackLifecycleInstant
     ) {
         switches.update(kind) { state in
             state.markActive(at: instant)
@@ -251,7 +264,7 @@ struct PlaybackLifecycleState: Sendable {
     mutating func recordStall(
         kind: MediaFrameKind,
         stalled: Bool,
-        at instant: ContinuousClock.Instant
+        at instant: PlaybackLifecycleInstant
     ) -> PlaybackStallChange? {
         guard stalls[kind].active != stalled else { return nil }
 
@@ -277,10 +290,10 @@ struct PlaybackLifecycleState: Sendable {
     /// Returns true iff the caller should emit `.playbackStart`.
     mutating func recordFirstPlay(
         context: PlaybackStartContext,
-        at instant: ContinuousClock.Instant
+        at instant: PlaybackLifecycleInstant
     ) -> Bool {
         if let requestedAt = playbackRequestedAt {
-            let duration = requestedAt.duration(to: instant)
+            let duration = playbackDuration(from: requestedAt, to: instant)
             switch context.kind {
             case .audio:
                 if timeToFirst.audioPlaying == nil { timeToFirst.audioPlaying = duration }
@@ -302,7 +315,7 @@ struct PlaybackLifecycleState: Sendable {
     /// and marks the in-flight switch as playing.
     mutating func recordSwitchPlaying(
         context: PlaybackStartContext,
-        at instant: ContinuousClock.Instant
+        at instant: PlaybackLifecycleInstant
     ) {
         stalls.update(context.kind) { state in
             state.markReady(at: instant)
@@ -312,7 +325,7 @@ struct PlaybackLifecycleState: Sendable {
         }
     }
 
-    func snapshot(at instant: ContinuousClock.Instant) -> PlaybackLifecycleSnapshot {
+    func snapshot(at instant: PlaybackLifecycleInstant) -> PlaybackLifecycleSnapshot {
         PlaybackLifecycleSnapshot(
             audioStalls: stalls.audio.stats(at: instant),
             videoStalls: stalls.video.stats(at: instant),
