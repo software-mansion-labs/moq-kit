@@ -26,37 +26,9 @@ extension PlaybackStatsTracker: AudioRendererDelegate {
             hostTime: hostTime
         )
     }
-
-    func audioRendererDidBeginStall(_ renderer: AudioRenderer) {
-        noteStall(kind: .audio, stalled: true)
-    }
-
-    func audioRendererDidEndStall(_ renderer: AudioRenderer) {
-        noteStall(kind: .audio, stalled: false)
-    }
-
-    func audioRenderer(_ renderer: AudioRenderer, didDropFrames count: Int) {
-        recordAudioFramesDropped(count)
-    }
 }
 
 extension PlaybackStatsTracker: VideoRendererDelegate {
-    func videoRendererDidBeginStall(_ renderer: VideoRenderer) {
-        noteStall(kind: .video, stalled: true)
-    }
-
-    func videoRendererDidEndStall(_ renderer: VideoRenderer) {
-        noteStall(kind: .video, stalled: false)
-    }
-
-    func videoRendererDidDisplayFrame(_ renderer: VideoRenderer) {
-        recordVideoFrameDisplayed()
-    }
-
-    func videoRendererDidDropFrame(_ renderer: VideoRenderer) {
-        recordVideoFrameDropped()
-    }
-
     func videoRenderer(
         _ renderer: VideoRenderer,
         didStartPlayback context: PlaybackStartContext,

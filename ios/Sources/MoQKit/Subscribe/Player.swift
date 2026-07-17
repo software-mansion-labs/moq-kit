@@ -193,6 +193,7 @@ public final class Player {
     private var targetBuffering: Duration
     private var storedAudioVolume: Float
     private let events: PlayerEventHub
+    private let pipelineBus: PipelineBus
     private let tracker: PlaybackStatsTracker
 
     private var playbackPipeline: PlaybackPipeline?
@@ -238,8 +239,10 @@ public final class Player {
         self.storedAudioVolume = Self.clampedVolume(volume)
         self.videoLayer = AVSampleBufferDisplayLayer()
         let events = PlayerEventHub()
+        let pipelineBus = PipelineBus()
         self.events = events
-        self.tracker = PlaybackStatsTracker(events: events)
+        self.pipelineBus = pipelineBus
+        self.tracker = PlaybackStatsTracker(events: events, pipelineBus: pipelineBus)
 
         events.emit(.playerInit(sessionEvent))
         emitSelectedTrackSelect()
@@ -306,6 +309,14 @@ public final class Player {
         _ listener: @escaping @MainActor @Sendable (PlaybackStats) -> Void
     ) -> PlayerEventSubscription {
         tracker.subscribeStats(listener)
+    }
+
+    /// Returns a non-replayed stream of detailed media-pipeline diagnostics.
+    ///
+    /// Each call creates an independent subscription that retains at most the newest
+    /// 256 events. A slow diagnostics consumer therefore cannot block playback.
+    public func diagnostics() -> AsyncStream<PipelineEvent> {
+        pipelineBus.events()
     }
 
     /// Subscribes to the selected tracks and begins decoding and rendering.
@@ -455,6 +466,7 @@ public final class Player {
         statsSamplingTask?.cancel()
         playbackPipeline?.stop(reason: "Player deinit")
         events.emit(.playerDestroy)
+        pipelineBus.finish()
     }
 
     // MARK: - Private: teardown
@@ -495,7 +507,13 @@ public final class Player {
             targetBuffering: targetBuffering,
             volume: storedAudioVolume,
             videoLayer: videoLayer,
-            tracker: tracker
+            tracker: tracker,
+            pipelineBus: pipelineBus,
+            onVideoSwitchAborted: { [weak self] activeTrackName in
+                self?.selectedVideoTrack = self?.catalog.videoTracks.first {
+                    $0.name == activeTrackName
+                }
+            }
         )
     }
 

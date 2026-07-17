@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#MISE description="Run MoQKit Swift unit tests on an available iOS simulator"
+set -euo pipefail
+
+ROOT_DIR="$MISE_PROJECT_ROOT"
+DERIVED_DATA_PATH="$ROOT_DIR/.build/DerivedData/MoQKitTests"
+PACKAGE_CACHE_DIR="$ROOT_DIR/.build/xcode-package-cache"
+CLONED_PACKAGES_DIR="$ROOT_DIR/.build/SourcePackages"
+CLANG_MODULE_CACHE_DIR="$ROOT_DIR/.build/clang-module-cache"
+XDG_CACHE_DIR="$ROOT_DIR/.build/xdg-cache"
+XCODE_HOME="$ROOT_DIR/.build/xcode-home"
+
+mkdir -p \
+  "$DERIVED_DATA_PATH" \
+  "$PACKAGE_CACHE_DIR" \
+  "$CLONED_PACKAGES_DIR" \
+  "$CLANG_MODULE_CACHE_DIR" \
+  "$XDG_CACHE_DIR" \
+  "$XCODE_HOME"
+
+export CLANG_MODULE_CACHE_PATH="$CLANG_MODULE_CACHE_DIR"
+export XDG_CACHE_HOME="$XDG_CACHE_DIR"
+
+SIMULATOR_UDID=$(
+  xcrun simctl list devices available -j |
+    python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+phones = [
+    device
+    for devices in data["devices"].values()
+    for device in devices
+    if device["isAvailable"] and device["name"].startswith("iPhone")
+]
+booted = next((device for device in phones if device["state"] == "Booted"), None)
+chosen = booted or (phones[0] if phones else None)
+if chosen is None:
+    sys.exit(1)
+print(chosen["udid"])
+'
+)
+
+echo "==> Running MoQKit tests on simulator $SIMULATOR_UDID..."
+HOME="$XCODE_HOME" \
+xcodebuild \
+  -scheme MoQKit \
+  -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+  -derivedDataPath "$DERIVED_DATA_PATH" \
+  -packageCachePath "$PACKAGE_CACHE_DIR" \
+  -clonedSourcePackagesDirPath "$CLONED_PACKAGES_DIR" \
+  -disableAutomaticPackageResolution \
+  -onlyUsePackageVersionsFromResolvedFile \
+  test
+
+echo ""
+echo "Done."

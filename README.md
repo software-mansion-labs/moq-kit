@@ -219,10 +219,23 @@ for await broadcast in subscription.broadcasts {
 
         try await player.play()
 
+        let diagnosticsTask = Task {
+            for await event in await player.diagnostics() {
+                // Detailed, non-replayed pipeline events for logging or telemetry.
+                print(event)
+            }
+        }
+
         // Keep a strong reference to the player for as long as playback should continue.
+        // Cancel diagnosticsTask when that observation is no longer needed.
     }
 }
 ```
+
+`Player.diagnostics()` creates a bounded stream per call. Slow consumers receive the
+newest events without blocking playback. Use it for typed drop, discontinuity, buffering,
+switch, recovery, clock, latency, and stall details; use `Player.stats` or
+`subscribeStats(_:)` for aggregate UI metrics.
 
 ### Publish camera and microphone in Swift
 
@@ -463,6 +476,7 @@ iOS resolves `moq-swift` through Swift Package Manager and compiles the Swift SD
 
 ```bash
 mise run ios:build
+mise run ios:test
 ```
 
 Android resolves the upstream `dev.moq:moq` Maven package and assembles the Kotlin SDK:

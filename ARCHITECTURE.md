@@ -58,6 +58,15 @@ playback/rendering helpers. The Android equivalents are under `subscribe/interna
 especially `playback`. These internals should stay behind the public `Player`, `Broadcast`,
 and `TrackSubscription` APIs.
 
+Both playback implementations follow the same ownership model: a typed pipeline event bus,
+one timeline authority per track, one bounded compressed-frame buffer before video decode,
+central policy values, explicit render/switch/recovery decisions, and statistics derived
+from typed events. Platform adapters remain deliberately different. Android owns
+`MediaCodec` sessions; iOS feeds AVFoundation and uses `AVSampleBufferVideoRenderer` on
+iOS 17+/macOS 14+ with the display-layer API retained for the older deployment baseline.
+iOS audio decoding is synchronous through `AVAudioConverter`, and its PCM ring stores
+non-interleaved Float32 samples.
+
 The demo apps in `examples/ios/demo/MoQDemo` and `examples/android/demo/MoQDemo` are
 integration references. They exercise player, publisher, and chat/data-track workflows and
 are usually the fastest manual validation path.
@@ -94,6 +103,17 @@ Public API shape should stay idiomatic per platform: Swift uses async/await, act
 `AsyncStream`, and AVFoundation; Kotlin uses coroutines, `Flow`, Android media APIs, and
 lifecycle-owned scopes.
 
+Every media discard must have one owning stage and one typed `DropReason`. The same
+`PipelineEvent` is the source for detailed diagnostics and aggregate drop/stall statistics;
+downstream layers must not count the same discard again.
+
+`Player.diagnostics()` is non-replayed and bounded independently for each subscriber.
+Diagnostics must never apply backpressure to ingest, decode, or rendering. On iOS,
+`frameRendered` means AVFoundation accepted a sample for visible scheduled output; it is
+not a hardware scanout acknowledgement. The current published `MoqFFI` bindings do not
+expose transport group ranges or bandwidth estimates, so iOS frame events leave group
+metadata empty and do not yet produce `bandwidthSample`.
+
 ## Cross-Cutting Concerns
 
 Latency is a first-class behavior. Playback code should preserve live-position behavior,
@@ -106,9 +126,10 @@ native and FFI resources deterministically.
 Codec support is platform-dependent. H.264/AAC/Opus are the best-tested paths; newer codecs
 may depend on platform decoder support and runtime availability.
 
-The repository has limited formal tests. Android has focused unit tests for playback helpers
-and selection behavior; the native demo apps act as integration tests for end-to-end relay,
-publish, playback, and data-track flows.
+Android and iOS have focused unit tests for playback policy, buffering, timeline, selection,
+and lifecycle behavior. Run the iOS package suite with `mise run ios:test`. The native demo
+apps remain the integration tests for end-to-end relay, publish, playback, and data-track
+flows.
 
 Release artifacts are platform-specific. iOS publishes a Swift package that depends on the
 published `moq-swift` package for the prebuilt `MoqFFI` XCFramework; moq-kit does not build

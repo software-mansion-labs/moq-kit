@@ -18,9 +18,9 @@ struct PlaybackStartContext: Sendable {
 final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private let lock = UnfairLock()
     private let wallClock: any PlaybackWallClock
-    private let clock: ContinuousClock
     private let events: PlayerEventHub
     private let audioStartHandoff = AudioPlaybackStartHandoff()
+    private var pipelineObservation: PipelineObservation?
 
     private var lifecycle = PlaybackLifecycleState()
     private var samples = PlaybackSampleStats()
@@ -28,12 +28,14 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     init(
         events: PlayerEventHub,
-        clock: ContinuousClock = ContinuousClock(),
-        wallClock: any PlaybackWallClock = HostPlaybackWallClock()
+        wallClock: any PlaybackWallClock = HostPlaybackWallClock(),
+        pipelineBus: PipelineBus? = nil
     ) {
         self.events = events
-        self.clock = clock
         self.wallClock = wallClock
+        self.pipelineObservation = pipelineBus?.observe { [weak self] event in
+            self?.consumePipelineEvent(event)
+        }
     }
 
     // MARK: - Session lifecycle
@@ -328,6 +330,33 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         }
     }
 
+    private func consumePipelineEvent(_ event: PipelineEvent) {
+        switch event {
+        case .frameRendered(let context, _, _):
+            if context.mediaKind == .video {
+                recordVideoFrameDisplayed()
+            }
+        case .frameDropped(let context, _, _, _, _, let count, _):
+            guard count > 0 else { return }
+            switch context.mediaKind {
+            case .audio:
+                recordAudioFramesDropped(count)
+            case .video:
+                lock.withLock {
+                    for _ in 0..<count {
+                        samples.recordVideoFrameDropped()
+                    }
+                }
+            }
+        case .stallStarted(let context, _):
+            noteStall(kind: context.mediaKind.mediaFrameKind, stalled: true)
+        case .stallEnded(let context, _, _):
+            noteStall(kind: context.mediaKind.mediaFrameKind, stalled: false)
+        default:
+            break
+        }
+    }
+
     // MARK: - MediaFrameObserver
 
     func onMediaTrackStarted(kind: MediaFrameKind) {
@@ -419,7 +448,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     private func makeStatsLocked(
         pipeline: PlaybackStats,
-        instant: ContinuousClock.Instant
+        instant: PlaybackLifecycleInstant
     ) -> PlaybackStats {
         makeStatsLocked(
             audioLatency: pipeline.audioLatency,
@@ -435,7 +464,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         videoLatency: Duration?,
         audioRingBuffer: Duration?,
         videoJitterBuffer: Duration?,
-        instant: ContinuousClock.Instant
+        instant: PlaybackLifecycleInstant
     ) -> PlaybackStats {
         let now = nowNs()
         let lifecycleStats = lifecycle.snapshot(at: instant)
@@ -477,8 +506,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         UInt64(max(0, wallClock.now(in: .ns)))
     }
 
-    private func nowInstant() -> ContinuousClock.Instant {
-        clock.now
+    private func nowInstant() -> PlaybackLifecycleInstant {
+        wallClock.now(in: .ns)
     }
 
     private func notify(

@@ -46,7 +46,8 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
                 ],
                 display: nil,
                 rotation: nil,
-                flip: nil
+                flip: nil,
+                extra: [:]
             ),
             mediaSource: BroadcastMediaSource(consumer: rawBroadcast)
         )
@@ -345,7 +346,8 @@ private func makeCatalog(path: String) -> Catalog {
             ],
             display: nil,
             rotation: nil,
-            flip: nil
+            flip: nil,
+            extra: [:]
         ),
         mediaSource: BroadcastMediaSource(consumer: FakeMoqBroadcastConsumer(consumers: []))
     )
