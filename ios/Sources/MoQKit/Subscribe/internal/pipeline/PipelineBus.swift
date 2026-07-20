@@ -1,6 +1,6 @@
 import Foundation
 
-final class PipelineObservation: @unchecked Sendable {
+final class PipelineObserverHandle: @unchecked Sendable {
     private let lock = UnfairLock()
     private var cancellation: (() -> Void)?
 
@@ -49,12 +49,14 @@ final class PipelineBus: @unchecked Sendable {
     }
 
     @discardableResult
-    func observe(_ observer: @escaping @Sendable (PipelineEvent) -> Void) -> PipelineObservation {
+    func observe(
+        _ observer: @escaping @Sendable (PipelineEvent) -> Void
+    ) -> PipelineObserverHandle {
         let id = UUID()
         lock.withLock {
             observers[id] = observer
         }
-        return PipelineObservation { [weak self] in
+        return PipelineObserverHandle { [weak self] in
             self?.removeObserver(id)
         }
     }

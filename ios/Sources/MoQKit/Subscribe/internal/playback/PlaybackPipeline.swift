@@ -18,23 +18,36 @@ enum PlaybackPipelineSwitchOutcome {
 ///
 /// The mode is determined by which of `audioRenderer` / `videoRenderer` is non-nil.
 /// Player resolves track selection up front, so the pipeline always has at least one half.
+@MainActor
 final class PlaybackPipeline {
+    // MARK: - Core dependencies
+
     private let mediaSource: BroadcastMediaSource
-    private var targetBuffering: Duration
     private let tracker: PlaybackStatsTracker
     private let pipelineBus: PipelineBus
+
+    // MARK: - Timing and diagnostics
+
+    private var targetBuffering: Duration
     private let audioTimeline: TrackTimeline?
     private let timestampMapper: TimestampDomainMapper
     private let stallAttributor: PipelineStallAttributor
     private let frameObserver: any MediaFrameObserver
     private let playbackClock: any MediaPlaybackClock
+
+    // MARK: - Renderers
+
     private let audioRenderer: AudioRenderer?
     private let videoRenderer: VideoRenderer?
-    private let onVideoSwitchAborted: @MainActor @Sendable (String?) -> Void
+
+    // MARK: - Track state
+
     private var videoTrackName: String?
     private var audioTrackName: String?
     private var videoEpoch: TrackEpoch = .zero
     private var audioEpoch: TrackEpoch = .zero
+
+    // MARK: - Subscriptions and ingest tasks
 
     private var audioSubscription: MediaTrack?
     private var videoSubscription: MediaTrack?
@@ -51,8 +64,7 @@ final class PlaybackPipeline {
         volume: Float,
         videoLayer: AVSampleBufferDisplayLayer,
         tracker: PlaybackStatsTracker,
-        pipelineBus: PipelineBus,
-        onVideoSwitchAborted: @escaping @MainActor @Sendable (String?) -> Void
+        pipelineBus: PipelineBus
     ) throws {
         precondition(
             videoTrack != nil || audioTrack != nil,
@@ -81,7 +93,6 @@ final class PlaybackPipeline {
         self.targetBuffering = targetBuffering
         self.tracker = tracker
         self.pipelineBus = pipelineBus
-        self.onVideoSwitchAborted = onVideoSwitchAborted
         self.frameObserver = frameObserver
         self.stallAttributor = stallAttributor
         self.audioTimeline = audioTimeline
@@ -244,7 +255,10 @@ final class PlaybackPipeline {
         videoRenderer?.updateTargetBuffering(latency)
     }
 
-    func switchVideo(to track: VideoTrackInfo) throws -> PlaybackPipelineSwitchOutcome {
+    func switchVideo(
+        to track: VideoTrackInfo,
+        onAborted: @escaping @MainActor @Sendable (String?) -> Void
+    ) throws -> PlaybackPipelineSwitchOutcome {
         guard let videoRenderer else { return .restartRequired }
         guard !videoRenderer.hasPendingTrack else { return .restartRequired }
 
@@ -284,26 +298,22 @@ final class PlaybackPipeline {
         pendingVideoCleanup?.close()
         pendingVideoCleanup = oldHandle
 
-        // pendingVideoCleanup is mutated only from the main actor (switchVideo / stop);
-        // marshal the clear back there to avoid a cross-thread mutation, and compare
-        // by identity so a concurrent switchVideo that already replaced the slot wins.
-        let clearCleanup = DispatchWorkItem { [weak self] in
-            guard let self, self.pendingVideoCleanup === oldHandle else { return }
-            self.pendingVideoCleanup = nil
-        }
         let trackerRef = self.tracker
         let switchedTrackName = track.name
         videoRenderer.setPendingTrack(
             newRendererTrack,
-            onActivated: {
+            onActivated: { [weak self] in
                 oldHandle.close()
-                DispatchQueue.main.async(execute: clearCleanup)
                 trackerRef.emitTrackSwitch(
                     kind: .video, trackName: switchedTrackName, trackEpoch: nextEpoch
                 )
+                Task { @MainActor [weak self] in
+                    guard let self, self.pendingVideoCleanup === oldHandle else { return }
+                    self.pendingVideoCleanup = nil
+                }
             },
             onAborted: { [weak self] in
-                DispatchQueue.main.async {
+                Task { @MainActor [weak self] in
                     guard let self, self.pendingVideoCleanup === oldHandle else { return }
                     self.videoTask?.cancel()
                     self.videoSubscription?.close()
@@ -319,7 +329,7 @@ final class PlaybackPipeline {
                         message: "Timed out waiting for a usable video keyframe",
                         trackEpoch: nextEpoch
                     )
-                    self.onVideoSwitchAborted(oldTrackName)
+                    onAborted(oldTrackName)
                     self.restartCoordinator()
                 }
             }
