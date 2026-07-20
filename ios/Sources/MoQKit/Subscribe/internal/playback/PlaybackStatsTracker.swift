@@ -20,7 +20,7 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
     private let wallClock: any PlaybackWallClock
     private let events: PlayerEventHub
     private let audioStartHandoff = AudioPlaybackStartHandoff()
-    private var pipelineObservation: PipelineObservation?
+    private var pipelineObservation: PipelineObserverHandle?
 
     private var lifecycle = PlaybackLifecycleState()
     private var samples = PlaybackSampleStats()

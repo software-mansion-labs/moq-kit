@@ -20,7 +20,7 @@ final class PipelineStallAttributor: @unchecked Sendable {
     private let lock = UnfairLock()
     private let policy: StallPolicy
     private var states: [Key: State] = [:]
-    private var observation: PipelineObservation?
+    private var observation: PipelineObserverHandle?
 
     init(bus: PipelineBus, policy: StallPolicy = PipelinePolicies.stall) {
         self.policy = policy

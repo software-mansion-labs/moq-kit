@@ -401,7 +401,15 @@ public final class Player {
         }
 
         if wasVideoEnabled, let newTrack {
-            switch try playbackPipeline.switchVideo(to: newTrack) {
+            let switchOutcome = try playbackPipeline.switchVideo(
+                to: newTrack,
+                onAborted: { [weak self] activeTrackName in
+                    self?.selectedVideoTrack = self?.catalog.videoTracks.first {
+                        $0.name == activeTrackName
+                    }
+                }
+            )
+            switch switchOutcome {
             case .handled:
                 selectedVideoTrack = newTrack
                 emitTrackSelect(kind: .video, trackName: newTrack.name)
@@ -461,7 +469,7 @@ public final class Player {
         try await restartPlaybackForSelectionChange()
     }
 
-    deinit {
+    isolated deinit {
         KitLogger.player.debug("Player deinit; stopping any active playback pipeline")
         statsSamplingTask?.cancel()
         playbackPipeline?.stop(reason: "Player deinit")
@@ -508,12 +516,7 @@ public final class Player {
             volume: storedAudioVolume,
             videoLayer: videoLayer,
             tracker: tracker,
-            pipelineBus: pipelineBus,
-            onVideoSwitchAborted: { [weak self] activeTrackName in
-                self?.selectedVideoTrack = self?.catalog.videoTracks.first {
-                    $0.name == activeTrackName
-                }
-            }
+            pipelineBus: pipelineBus
         )
     }
 

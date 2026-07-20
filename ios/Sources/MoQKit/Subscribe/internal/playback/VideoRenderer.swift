@@ -36,43 +36,63 @@ protocol VideoRendererDelegate: AnyObject, Sendable {
 final class VideoRenderer: @unchecked Sendable {
     private static let enqueueQueueKey = DispatchSpecificKey<Void>()
 
-    let layer: AVSampleBufferDisplayLayer
-    private let renderTarget: VideoRenderTarget
-
     private struct RenderDelay {
         let frontDisplayTimeUs: UInt64
         let playheadUs: UInt64
         let renderLeadUs: UInt64
     }
 
+    // MARK: - Rendering surface
+
+    let layer: AVSampleBufferDisplayLayer
+    private let renderTarget: VideoRenderTarget
+
+    // MARK: - Track-switch state
+
     private var activeTrack: VideoRendererTrack
     private var pendingTrack: VideoRendererTrack?
     private var onTrackActivated: (() -> Void)?
     private var onTrackAborted: (() -> Void)?
+
+    // MARK: - Queue and timing dependencies
 
     private let enqueueQueue: DispatchQueue
     private let timing: any MediaPlaybackClock
     private let timestampMapper: TimestampDomainMapper?
     private let pipelineBus: PipelineBus
     private let stallAttributor: PipelineStallAttributor
+
+    // MARK: - Pipeline policies and controllers
+
     private let feedScheduler = DisplayFeedScheduler()
     private let clockController = ClockRetargetController()
     private let switchController = RenditionSwitchController()
     private let recoveryController = VideoRecoveryController()
+    private let ptsCorrectionThresholdUs: Int64 = 2_000_000
+
+    // MARK: - Playback state
+
     private var timelineStarted: Bool
     private weak var delegate: (any VideoRendererDelegate)?
-    private var stallHorizon = VideoPresentationHorizon()
     private var lastKnownClockTimeUs: UInt64 = 0
+    private var isPlaybackStartEventArmed = true
+
+    // MARK: - Stall state
+
+    private var stallHorizon = VideoPresentationHorizon()
+    private var videoStallStartedNanos: UInt64?
+    private var videoStallCause: StallCause?
+
+    // MARK: - Scheduled work
+
     private var pendingStallCheck: DispatchWorkItem?
     private var pendingDrainWakeup: DispatchWorkItem?
     private var pendingSwitchTimeout: DispatchWorkItem?
-    private var videoStallStartedNanos: UInt64?
-    private var videoStallCause: StallCause?
-    private var isPlaybackStartEventArmed = true
+
+    // MARK: - Diagnostic state
+
     private var hasLoggedFirstEnqueue = false
     private var hasLoggedNoActiveFrame = false
-
-    private let ptsCorrectionThresholdUs: Int64 = 2_000_000
 
     init(
         timing: any MediaPlaybackClock,
