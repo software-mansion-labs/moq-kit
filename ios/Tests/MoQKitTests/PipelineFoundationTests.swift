@@ -83,7 +83,9 @@ final class PipelineFoundationTests: XCTestCase {
         XCTAssertEqual(PipelinePolicies.timeline.maxGapUs, 500_000)
         XCTAssertEqual(PipelinePolicies.admission.maxBytes, 64 * 1024 * 1024)
         XCTAssertEqual(PipelinePolicies.admission.maxFrames, 1_024)
-        XCTAssertEqual(PipelinePolicies.render.lateDropThresholdUs, 50_000)
+        XCTAssertEqual(PipelinePolicies.render.fallbackLeadUs, 50_000)
+        XCTAssertEqual(PipelinePolicies.render.maxLeadUs, 100_000)
+        XCTAssertEqual(PipelinePolicies.render.frameIntervalMultiplier, 3)
         XCTAssertEqual(PipelinePolicies.clock.retargetToleranceUs, 20_000)
         XCTAssertEqual(PipelinePolicies.switch.keyframeTimeoutUs, 5_000_000)
     }

@@ -64,7 +64,6 @@ final class VideoRenderer: @unchecked Sendable {
 
     // MARK: - Pipeline policies and controllers
 
-    private let feedScheduler = DisplayFeedScheduler()
     private let clockController = ClockRetargetController()
     private let switchController = RenditionSwitchController()
     private let recoveryController = VideoRecoveryController()
@@ -363,17 +362,18 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     private func renderDelay(forVideoTimestampUs timestampUs: UInt64) -> RenderDelay? {
+        guard timing.isVideoDriven else { return nil }
+
         let playheadUs = currentPlaybackTimeUs()
+        let leadUs = renderLeadUs()
+        let renderBoundUs = addClamping(playheadUs, leadUs)
         let frontDisplayTimeUs = displayTimeUs(forVideoTimeUs: timestampUs)
-        guard case .hold = feedScheduler.decision(
-            framePtsUs: frontDisplayTimeUs,
-            playheadUs: playheadUs,
-            isPlaybackCandidate: true
-        ) else { return nil }
+
+        guard frontDisplayTimeUs > renderBoundUs else { return nil }
         return RenderDelay(
             frontDisplayTimeUs: frontDisplayTimeUs,
             playheadUs: playheadUs,
-            renderLeadUs: UInt64(PipelinePolicies.render.maxAheadUs)
+            renderLeadUs: leadUs
         )
     }
 
@@ -387,18 +387,12 @@ final class VideoRenderer: @unchecked Sendable {
             for: entry.item.sampleBuffer,
             sourceTimestampUs: entry.timestampUs)
 
-        let feedDecision = feedScheduler.decision(
-            framePtsUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
-            playheadUs: currentPlaybackTimeUs(),
-            isPlaybackCandidate: playable
-        )
-        let visible = feedDecision == .visible
-        if !visible {
+        if !playable {
             doNotDisplaySample(displaySample.sampleBuffer)
             pipelineBus.emit(.frameDropped(
                 context: pipelineContext(for: activeTrack),
                 stage: .renderer,
-                reason: playable ? .lateRender : .staleVsPlayback,
+                reason: .staleVsPlayback,
                 ptsUs: Int64(clamping: entry.timestampUs),
                 count: 1
             ))
@@ -409,7 +403,7 @@ final class VideoRenderer: @unchecked Sendable {
             ptsUs: Int64(clamping: entry.timestampUs)
         ))
         renderTarget.enqueue(displaySample.sampleBuffer)
-        if visible {
+        if playable {
             pipelineBus.emit(.frameRendered(
                 context: pipelineContext(for: activeTrack),
                 ptsUs: Int64(clamping: entry.timestampUs),
@@ -425,7 +419,7 @@ final class VideoRenderer: @unchecked Sendable {
             }
         }
         hasLoggedNoActiveFrame = false
-        if visible {
+        if playable {
             emitPlaybackStartIfArmed(
                 sourceTimestampUs: entry.timestampUs,
                 presentationTimeUs: MediaClockTime.timestampUs(from: displaySample.presentationTime),
@@ -435,7 +429,7 @@ final class VideoRenderer: @unchecked Sendable {
         if !hasLoggedFirstEnqueue {
             hasLoggedFirstEnqueue = true
             KitLogger.player.debug(
-                "VideoRenderer enqueued first frame sourceTimestampUs=\(entry.timestampUs), presentationTimeUs=\(MediaClockTime.timestampUs(from: displaySample.presentationTime)), visible=\(visible), bufferFillMs=\(self.activeTrack.depthMs)"
+                "VideoRenderer enqueued first frame sourceTimestampUs=\(entry.timestampUs), presentationTimeUs=\(MediaClockTime.timestampUs(from: displaySample.presentationTime)), playable=\(playable), bufferFillMs=\(self.activeTrack.depthMs)"
             )
         }
         return true
@@ -657,6 +651,32 @@ final class VideoRenderer: @unchecked Sendable {
             videoTimeUs: timestampUs,
             thresholdUs: ptsCorrectionThresholdUs
         ) ?? timestampUs
+    }
+
+    private func renderLeadUs() -> UInt64 {
+        guard let frameIntervalUs = activeTrack.frontFrameIntervalUs,
+            frameIntervalUs > 0
+        else {
+            return PipelinePolicies.render.fallbackLeadUs
+        }
+
+        return min(
+            multiplyClamping(
+                frameIntervalUs,
+                by: PipelinePolicies.render.frameIntervalMultiplier
+            ),
+            PipelinePolicies.render.maxLeadUs
+        )
+    }
+
+    private func addClamping(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let result = lhs.addingReportingOverflow(rhs)
+        return result.overflow ? UInt64.max : result.partialValue
+    }
+
+    private func multiplyClamping(_ value: UInt64, by multiplier: UInt64) -> UInt64 {
+        let result = value.multipliedReportingOverflow(by: multiplier)
+        return result.overflow ? UInt64.max : result.partialValue
     }
 
     /// Atomically promotes `newTrack` to active, fires `onTrackActivated`, and re-registers
