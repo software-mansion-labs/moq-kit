@@ -7,17 +7,36 @@ struct VideoLayerView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> VideoContainerView {
         let view = VideoContainerView()
-        view.displayLayer = layer
-        view.layer.addSublayer(layer)
         view.backgroundColor = .black
+        view.setDisplayLayer(layer)
         return view
     }
 
-    func updateUIView(_ uiView: VideoContainerView, context: Context) {}
+    func updateUIView(_ uiView: VideoContainerView, context: Context) {
+        uiView.setDisplayLayer(layer)
+    }
+
+    static func dismantleUIView(_ uiView: VideoContainerView, coordinator: ()) {
+        uiView.setDisplayLayer(nil)
+    }
 }
 
 final class VideoContainerView: UIView {
-    var displayLayer: AVSampleBufferDisplayLayer?
+    private(set) var displayLayer: AVSampleBufferDisplayLayer?
+
+    func setDisplayLayer(_ newLayer: AVSampleBufferDisplayLayer?) {
+        guard displayLayer !== newLayer else { return }
+
+        if displayLayer?.superlayer === layer {
+            displayLayer?.removeFromSuperlayer()
+        }
+        displayLayer = newLayer
+
+        if let newLayer {
+            newLayer.frame = bounds
+            layer.addSublayer(newLayer)
+        }
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
