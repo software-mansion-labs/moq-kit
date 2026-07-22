@@ -129,7 +129,11 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             "Player event path=\(self.broadcastPath), event=\(event.name.rawValue)"
         )
 
-        startupDiagnostics.record(event)
+        startupDiagnostics.record(
+            event,
+            activeVideoTrackName: selectedVideoTrackName,
+            activeAudioTrackName: selectedAudioTrackName
+        )
 
         switch event.type {
         case .playbackStart(_):
@@ -192,7 +196,11 @@ struct PlayerStartupDiagnostics {
         tracks
     }
 
-    mutating func record(_ event: PlayerEvent) {
+    mutating func record(
+        _ event: PlayerEvent,
+        activeVideoTrackName: String?,
+        activeAudioTrackName: String?
+    ) {
         switch event.type {
         case .playerInit(_):
             playerInitAt = playerInitAt ?? event.timestamp
@@ -208,7 +216,13 @@ struct PlayerStartupDiagnostics {
         case .playbackEnd(_):
             playbackEndedAt = event.timestamp
         case .trackSubscribeStart(let track):
-            startTrack(event, track)
+            startTrack(
+                event,
+                track,
+                activeTrackName: track.kind == .video
+                    ? activeVideoTrackName
+                    : activeAudioTrackName
+            )
         case .trackReady(let ready):
             updateTrack(event, ready.track) { track in
                 track.trackName = ready.track.trackName ?? track.trackName
@@ -253,11 +267,19 @@ struct PlayerStartupDiagnostics {
         return start.duration(to: end)
     }
 
-    private mutating func startTrack(_ event: PlayerEvent, _ eventTrack: PlayerTrackEvent) {
+    private mutating func startTrack(
+        _ event: PlayerEvent,
+        _ eventTrack: PlayerTrackEvent,
+        activeTrackName: String?
+    ) {
         var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: eventTrack.kind)
         track.trackName = eventTrack.trackName
         track.subscribeStartedAt = event.timestamp
         track.epoch = eventTrack.epoch
+        if track.isTrackSwitch {
+            tracks.removeAll { $0.kind == eventTrack.kind && $0.isTrackSwitch }
+            track.sourceTrackName = activeTrackName
+        }
         tracks.append(track)
     }
 
@@ -294,6 +316,7 @@ struct PlayerStartupDiagnostics {
 struct TrackStartupDiagnostics: Identifiable {
     let id: String
     let kind: PlayerTrackKind
+    var sourceTrackName: String?
     var trackName: String?
     var subscribeStartedAt: ContinuousClock.Instant?
     var readyAt: ContinuousClock.Instant?
