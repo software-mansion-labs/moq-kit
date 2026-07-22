@@ -1,47 +1,6 @@
 @testable import MoQKit
 import XCTest
 
-final class DisplayFeedSchedulerTests: XCTestCase {
-    func testHoldsFrameBeyondFeedWindow() {
-        let scheduler = DisplayFeedScheduler(policy: RenderPolicy(maxAheadUs: 500_000))
-
-        XCTAssertEqual(
-            scheduler.decision(
-                framePtsUs: 1_000_001,
-                playheadUs: 0,
-                isPlaybackCandidate: true
-            ),
-            .hold(recheckAfterUs: 500_001)
-        )
-    }
-
-    func testLateFrameIsFedDecodeOnlyOnIOS() {
-        let scheduler = DisplayFeedScheduler(policy: RenderPolicy(lateDropThresholdUs: 50_000))
-
-        XCTAssertEqual(
-            scheduler.decision(
-                framePtsUs: 100,
-                playheadUs: 50_101,
-                isPlaybackCandidate: true
-            ),
-            .decodeOnly
-        )
-    }
-
-    func testFrameInsideWindowIsVisible() {
-        let scheduler = DisplayFeedScheduler(policy: RenderPolicy())
-
-        XCTAssertEqual(
-            scheduler.decision(
-                framePtsUs: 200_000,
-                playheadUs: 100_000,
-                isPlaybackCandidate: true
-            ),
-            .visible
-        )
-    }
-}
-
 final class RenditionSwitchControllerTests: XCTestCase {
     func testRecentKeyframeCutsInWhenActiveReachesIt() {
         let controller = RenditionSwitchController(policy: SwitchPolicy())

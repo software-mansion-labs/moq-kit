@@ -20,8 +20,9 @@ struct RecoveryPolicy: Sendable {
 }
 
 struct RenderPolicy: Sendable {
-    var maxAheadUs: Int64 = 500_000
-    var lateDropThresholdUs: Int64 = 50_000
+    var fallbackLeadUs: UInt64 = 50_000
+    var maxLeadUs: UInt64 = 100_000
+    var frameIntervalMultiplier: UInt64 = 3
 }
 
 struct ClockPolicy: Sendable {
