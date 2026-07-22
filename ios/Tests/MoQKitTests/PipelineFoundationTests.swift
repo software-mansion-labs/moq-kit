@@ -79,6 +79,42 @@ final class PipelineFoundationTests: XCTestCase {
         XCTAssertEqual(secondPts, 3)
     }
 
+    func testFrameDropLogIncludesDiagnosticReasonAndContext() throws {
+        let event = PipelineEvent.frameDropped(
+            context: PipelineContext(
+                trackId: "video-1080p",
+                mediaKind: .video,
+                timestampNanos: 42
+            ),
+            stage: .buffer,
+            reason: .backlogOverflow,
+            ptsUs: 1_234,
+            groupSequence: 7,
+            count: 3,
+            bytes: 4_096
+        )
+
+        XCTAssertEqual(
+            try XCTUnwrap(event.frameDropLogDescription),
+            "Frame dropped track=video-1080p, media=video, stage=buffer, "
+                + "reason=backlogOverflow, ptsUs=1234, groupSequence=7, "
+                + "count=3, bytes=4096, timestampNanos=42"
+        )
+    }
+
+    func testNonDropEventHasNoFrameDropLog() {
+        let event = PipelineEvent.transportClosed(
+            context: PipelineContext(
+                trackId: "audio",
+                mediaKind: .audio,
+                timestampNanos: 1
+            ),
+            error: nil
+        )
+
+        XCTAssertNil(event.frameDropLogDescription)
+    }
+
     func testPolicyDefaultsMatchPlaybackBaseline() {
         XCTAssertEqual(PipelinePolicies.timeline.maxGapUs, 500_000)
         XCTAssertEqual(PipelinePolicies.admission.maxBytes, 64 * 1024 * 1024)
