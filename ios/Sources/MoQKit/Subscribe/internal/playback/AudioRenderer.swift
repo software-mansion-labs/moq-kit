@@ -69,6 +69,7 @@ final class AudioRenderer: @unchecked Sendable {
 
         let eventBridge = AudioRenderEventBridge(
             delegate: delegate,
+            timeline: timeline,
             pipelineBus: pipelineBus,
             stallAttributor: stallAttributor
         )
@@ -106,7 +107,6 @@ final class AudioRenderer: @unchecked Sendable {
 
             if framesRead > 0 {
                 clock.setTimeUs(ts)
-                timeline.onPlaybackPosition(Int64(clamping: ts))
                 let hostTime =
                     timestamp.pointee.mHostTime > 0 ? timestamp.pointee.mHostTime : nil
                 eventBridge.recordRenderedAudio(
@@ -213,11 +213,14 @@ final class AudioRenderer: @unchecked Sendable {
 
 /// Moves render event emission out of the AVAudioSourceNode render callback.
 ///
-/// The render callback only claims a pending first-audio-start context or reports a stall
-/// transition. Delegate callbacks, listener fan-out, and AVAudio property reads run
-/// on `queue`.
+/// The render callback only publishes the latest timestamp through atomics or reports a
+/// stall transition. Timeline locking, delegate callbacks, and listener fan-out run on
+/// `queue` at a bounded cadence.
 private final class AudioRenderEventBridge: @unchecked Sendable {
+    private static let renderEventInterval: DispatchTimeInterval = .milliseconds(50)
+
     private weak var delegate: (any AudioRendererDelegate)?
+    private let timeline: TrackTimeline
     private let pipelineBus: PipelineBus
     private let stallAttributor: PipelineStallAttributor
     weak var renderer: AudioRenderer?
@@ -228,18 +231,35 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
     )
 
     private let isClosed = ManagedAtomic<Bool>(false)
+    private let latestTimestampUs = ManagedAtomic<UInt64>(.max)
+    private let latestHostTime = ManagedAtomic<UInt64>(0)
+    private let renderEventTimer: DispatchSourceTimer
     private var trackName = "audio"
     private var stallStartedNanos: UInt64?
     private var stallCause: StallCause?
 
     init(
         delegate: any AudioRendererDelegate,
+        timeline: TrackTimeline,
         pipelineBus: PipelineBus,
         stallAttributor: PipelineStallAttributor
     ) {
         self.delegate = delegate
+        self.timeline = timeline
         self.pipelineBus = pipelineBus
         self.stallAttributor = stallAttributor
+
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        self.renderEventTimer = timer
+        timer.schedule(
+            deadline: .now() + Self.renderEventInterval,
+            repeating: Self.renderEventInterval,
+            leeway: .milliseconds(10)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.emitLatestRenderedAudio()
+        }
+        timer.resume()
     }
 
     deinit {
@@ -265,25 +285,8 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         timestampUs: UInt64,
         hostTime: UInt64?
     ) {
-        queue.async { [weak self] in
-            guard let self,
-                  let renderer = self.renderer,
-                  !self.isClosed.load(ordering: .relaxed)
-            else { return }
-            let context = self.pipelineContext()
-            self.pipelineBus.emit(.frameRendered(
-                context: context,
-                ptsUs: Int64(clamping: timestampUs),
-                renderNanos: context.timestampNanos
-            ))
-            if self.delegate?.audioRendererHasPendingPlaybackStart(renderer) == true {
-                self.delegate?.audioRenderer(
-                    renderer,
-                    didRenderAudioAt: timestampUs,
-                    hostTime: hostTime
-                )
-            }
-        }
+        latestHostTime.store(hostTime ?? 0, ordering: .relaxed)
+        latestTimestampUs.store(timestampUs, ordering: .releasing)
     }
 
     func recordStall(stalled: Bool) {
@@ -323,7 +326,39 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
 
     func close() {
         guard !isClosed.exchange(true, ordering: .relaxed) else { return }
+        renderEventTimer.cancel()
         clearExpectedPlaybackStart()
+    }
+
+    private func emitLatestRenderedAudio() {
+        guard !isClosed.load(ordering: .relaxed),
+              let renderer,
+              let timestampUs = pendingTimestampUs()
+        else { return }
+
+        timeline.onPlaybackPosition(Int64(clamping: timestampUs))
+        let context = pipelineContext()
+        pipelineBus.emit(.frameRendered(
+            context: context,
+            ptsUs: Int64(clamping: timestampUs),
+            renderNanos: context.timestampNanos
+        ))
+        if delegate?.audioRendererHasPendingPlaybackStart(renderer) == true {
+            let hostTime = latestHostTime.load(ordering: .relaxed)
+            delegate?.audioRenderer(
+                renderer,
+                didRenderAudioAt: timestampUs,
+                hostTime: hostTime > 0 ? hostTime : nil
+            )
+        }
+    }
+
+    private func pendingTimestampUs() -> UInt64? {
+        let timestampUs = latestTimestampUs.exchange(
+            .max,
+            ordering: .acquiringAndReleasing
+        )
+        return timestampUs == .max ? nil : timestampUs
     }
 
     private func pipelineContext() -> PipelineContext {
