@@ -1,4 +1,32 @@
 import Foundation
+import os
+
+extension PipelineEvent {
+    var frameDropLogDescription: String? {
+        guard case .frameDropped(
+            let context,
+            let stage,
+            let reason,
+            let ptsUs,
+            let groupSequence,
+            let count,
+            let bytes
+        ) = self else {
+            return nil
+        }
+
+        return "Frame dropped "
+            + "track=\(context.trackId), "
+            + "media=\(context.mediaKind), "
+            + "stage=\(stage), "
+            + "reason=\(reason), "
+            + "ptsUs=\(ptsUs.map(String.init) ?? "nil"), "
+            + "groupSequence=\(groupSequence.map(String.init) ?? "nil"), "
+            + "count=\(count), "
+            + "bytes=\(bytes), "
+            + "timestampNanos=\(context.timestampNanos)"
+    }
+}
 
 final class PipelineObserverHandle: @unchecked Sendable {
     private let lock = UnfairLock()
@@ -62,6 +90,10 @@ final class PipelineBus: @unchecked Sendable {
     }
 
     func emit(_ event: PipelineEvent) {
+        if let dropDescription = event.frameDropLogDescription {
+            KitLogger.player.debug("\(dropDescription, privacy: .public)")
+        }
+
         let targets = lock.withLock {
             (Array(continuations.values), Array(observers.values))
         }
