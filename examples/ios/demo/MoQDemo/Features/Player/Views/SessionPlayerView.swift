@@ -536,8 +536,8 @@ private struct TrackStartupView: View {
                     .foregroundStyle(status.color)
                 Spacer()
             }
-            if let trackName = track.trackName {
-                StatRow(label: "Track", value: trackName)
+            if let trackDescription {
+                StatRow(label: "Track", value: trackDescription)
             }
             if track.isTrackSwitch {
                 if let duration = track.operationToReady(playRequestedAt: playRequestedAt) {
@@ -569,6 +569,14 @@ private struct TrackStartupView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var trackDescription: String? {
+        guard track.isTrackSwitch,
+              let sourceTrackName = track.sourceTrackName,
+              let trackName = track.trackName
+        else { return track.trackName }
+        return "\(sourceTrackName) → \(trackName)"
     }
 }
 
