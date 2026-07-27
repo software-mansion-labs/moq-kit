@@ -40,7 +40,8 @@ publishers, and tears down active work when the connection closes.
 
 Publishing is centered on `Publisher`. A publisher collects track descriptors before start,
 then connects frame sources to encoders and writes encoded frames or data objects to FFI
-producers. Camera, multi-camera capture, microphone, screen capture, and raw data emitters
+producers. Registering a publisher with `Session.publish` creates the FFI broadcast
+producer at the chosen path, so registration must happen before `Publisher.start`. Camera, multi-camera capture, microphone, screen capture, and raw data emitters
 are platform-specific sources feeding the same publish shape.
 
 Subscription and discovery are centered on `BroadcastSubscription`, `Broadcast`, `Catalog`,
