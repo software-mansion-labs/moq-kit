@@ -26,7 +26,7 @@ final class VideoCodecSupportTests: XCTestCase {
                 codec: codec,
                 description: nil,
                 coded: nil,
-                displayRatio: nil,
+                displayAspect: nil,
                 bitrate: nil,
                 framerate: nil,
                 container: .legacy

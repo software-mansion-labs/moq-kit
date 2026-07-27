@@ -16,7 +16,7 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
         XCTAssertEqual(MediaContainer.cmaf(initializationData: initData).rawContainer, .cmaf(init: initData))
     }
 
-    func testCatalogMediaSourceUsesCatalogTrackMetadata() throws {
+    func testCatalogMediaSourceUsesCatalogTrackMetadata() async throws {
         let audioConsumer = FakeMoqMediaConsumer()
         let videoConsumer = FakeMoqMediaConsumer()
         let rawBroadcast = FakeMoqBroadcastConsumer(consumers: [audioConsumer, videoConsumer])
@@ -28,7 +28,7 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
                         codec: "avc1",
                         description: nil,
                         coded: nil,
-                        displayRatio: nil,
+                        displayAspect: nil,
                         bitrate: nil,
                         framerate: nil,
                         container: .loc
@@ -47,7 +47,7 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
                 display: nil,
                 rotation: nil,
                 flip: nil,
-                extra: [:]
+                sections: [:]
             ),
             mediaSource: BroadcastMediaSource(consumer: rawBroadcast)
         )
@@ -67,9 +67,15 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(rawBroadcast.requestNames, ["audio", "video"])
-        XCTAssertEqual(rawBroadcast.requestContainers, [.legacy, .loc])
-        XCTAssertEqual(rawBroadcast.maxLatencyMsValues, [125, 250])
+        // Each upstream subscribe runs on its hub's read task; the order across
+        // tracks is not defined, so match requests by name.
+        try await waitUntil { rawBroadcast.subscribeMediaCallCount == 2 }
+        let audioRequest = try XCTUnwrap(rawBroadcast.request(named: "audio"))
+        XCTAssertEqual(audioRequest.container, .legacy)
+        XCTAssertEqual(audioRequest.maxLatencyMs, 125)
+        let videoRequest = try XCTUnwrap(rawBroadcast.request(named: "video"))
+        XCTAssertEqual(videoRequest.container, .loc)
+        XCTAssertEqual(videoRequest.maxLatencyMs, 250)
 
         audioSubscription.close()
         videoSubscription.close()
@@ -185,7 +191,7 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
         XCTAssertEqual(consumer.cancelCallCount, 1)
     }
 
-    func testLastSubscriberCloseCancelsAndEvictsUpstream() throws {
+    func testLastSubscriberCloseCancelsAndEvictsUpstream() async throws {
         let firstConsumer = FakeMoqMediaConsumer()
         let secondConsumer = FakeMoqMediaConsumer()
         let broadcast = FakeMoqBroadcastConsumer(consumers: [firstConsumer, secondConsumer])
@@ -198,10 +204,12 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
                 targetBuffering: .milliseconds(100)
             )
         )
+        // The upstream subscribe runs on the hub's read task; wait for it so the
+        // close below observably cancels it.
+        try await waitUntil { broadcast.subscribeMediaCallCount == 1 }
         first.close()
 
-        XCTAssertEqual(firstConsumer.cancelCallCount, 1)
-        XCTAssertEqual(broadcast.subscribeMediaCallCount, 1)
+        try await waitUntil { firstConsumer.cancelCallCount == 1 }
         XCTAssertEqual(registry.activeSubscriptionCount, 0)
 
         let second = try registry.subscribeMedia(
@@ -211,11 +219,25 @@ final class MediaSubscriptionRegistryTests: XCTestCase {
                 targetBuffering: .milliseconds(100)
             )
         )
+        try await waitUntil { broadcast.subscribeMediaCallCount == 2 }
         second.close()
 
-        XCTAssertEqual(secondConsumer.cancelCallCount, 1)
-        XCTAssertEqual(broadcast.subscribeMediaCallCount, 2)
+        try await waitUntil { secondConsumer.cancelCallCount == 1 }
         XCTAssertEqual(registry.activeSubscriptionCount, 0)
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 2,
+        _ condition: @escaping () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("Timed out waiting for condition")
+                return
+            }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 
     func testUpstreamEndFinishesAllSubscribersAndEvictsUpstream() async throws {
@@ -347,7 +369,7 @@ private func makeCatalog(path: String) -> Catalog {
             display: nil,
             rotation: nil,
             flip: nil,
-            extra: [:]
+            sections: [:]
         ),
         mediaSource: BroadcastMediaSource(consumer: FakeMoqBroadcastConsumer(consumers: []))
     )
@@ -368,7 +390,7 @@ private final class MediaFrameIterator: @unchecked Sendable {
 private final class FakeMoqBroadcastConsumer: MoqBroadcastConsumer, @unchecked Sendable {
     private struct Request {
         let name: String
-        let container: Container
+        let container: MoqContainer
         let maxLatencyMs: UInt64
     }
 
@@ -398,21 +420,27 @@ private final class FakeMoqBroadcastConsumer: MoqBroadcastConsumer, @unchecked S
         lock.withLock { requests.map(\.name) }
     }
 
-    var requestContainers: [Container] {
+    func request(named name: String) -> (container: MoqContainer, maxLatencyMs: UInt64)? {
+        lock.withLock {
+            requests.first { $0.name == name }.map { ($0.container, $0.maxLatencyMs) }
+        }
+    }
+
+    var requestContainers: [MoqContainer] {
         lock.withLock { requests.map(\.container) }
     }
 
     override func subscribeMedia(
         name: String,
-        container: Container,
-        maxLatencyMs: UInt64
-    ) throws -> MoqMediaConsumer {
+        container: MoqContainer,
+        subscription: MoqSubscription?
+    ) async throws -> MoqMediaConsumer {
         lock.withLock {
             requests.append(
                 Request(
                     name: name,
                     container: container,
-                    maxLatencyMs: maxLatencyMs
+                    maxLatencyMs: subscription?.latencyMaxMs ?? 0
                 )
             )
             return consumers.removeFirst()
@@ -421,10 +449,10 @@ private final class FakeMoqBroadcastConsumer: MoqBroadcastConsumer, @unchecked S
 }
 
 private final class FakeMoqMediaConsumer: MoqMediaConsumer, @unchecked Sendable {
-    private typealias Continuation = CheckedContinuation<MoqFrame?, Error>
+    private typealias Continuation = CheckedContinuation<MoqMediaFrame?, Error>
 
     private let lock = NSLock()
-    private var queuedResults: [Result<MoqFrame?, Error>] = []
+    private var queuedResults: [Result<MoqMediaFrame?, Error>] = []
     private var continuations: [Continuation] = []
     private var cancelCount = 0
 
@@ -451,9 +479,9 @@ private final class FakeMoqMediaConsumer: MoqMediaConsumer, @unchecked Sendable 
         continuations.forEach { $0.resume(returning: nil) }
     }
 
-    override func next() async throws -> MoqFrame? {
+    override func next() async throws -> MoqMediaFrame? {
         try await withCheckedThrowingContinuation { continuation in
-            let result = lock.withLock { () -> Result<MoqFrame?, Error>? in
+            let result = lock.withLock { () -> Result<MoqMediaFrame?, Error>? in
                 guard !queuedResults.isEmpty else {
                     continuations.append(continuation)
                     return nil
@@ -466,7 +494,7 @@ private final class FakeMoqMediaConsumer: MoqMediaConsumer, @unchecked Sendable 
         }
     }
 
-    func yield(_ frame: MoqFrame) {
+    func yield(_ frame: MoqMediaFrame) {
         send(.success(frame))
     }
 
@@ -478,7 +506,7 @@ private final class FakeMoqMediaConsumer: MoqMediaConsumer, @unchecked Sendable 
         send(.success(nil))
     }
 
-    private func send(_ result: Result<MoqFrame?, Error>) {
+    private func send(_ result: Result<MoqMediaFrame?, Error>) {
         let continuation = lock.withLock { () -> Continuation? in
             guard !continuations.isEmpty else {
                 queuedResults.append(result)
@@ -491,7 +519,7 @@ private final class FakeMoqMediaConsumer: MoqMediaConsumer, @unchecked Sendable 
         resume(continuation, with: result)
     }
 
-    private func resume(_ continuation: Continuation, with result: Result<MoqFrame?, Error>) {
+    private func resume(_ continuation: Continuation, with result: Result<MoqMediaFrame?, Error>) {
         switch result {
         case .success(let frame):
             continuation.resume(returning: frame)
@@ -506,8 +534,8 @@ private enum MediaSubscriptionTestError: Error, Equatable {
     case upstreamFailed
 }
 
-private func makeMoqFrame(timestampUs: UInt64) -> MoqFrame {
-    MoqFrame(
+private func makeMoqFrame(timestampUs: UInt64) -> MoqMediaFrame {
+    MoqMediaFrame(
         payload: Data([0x01, 0x02, 0x03]),
         timestampUs: timestampUs,
         keyframe: true

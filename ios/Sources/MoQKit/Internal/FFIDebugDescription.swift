@@ -13,7 +13,7 @@ extension MoqAudio {
     }
 }
 
-extension Container {
+extension MoqContainer {
     var moqKitDescription: String {
         switch self {
         case .legacy:

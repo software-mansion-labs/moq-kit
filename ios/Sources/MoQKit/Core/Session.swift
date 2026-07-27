@@ -154,10 +154,10 @@ public actor Session {
 
         do {
             // 1. Create separate origins for consuming and publishing
-            let consumeOrigin = MoqOriginProducer()
+            let consumeOrigin = MoqOriginProducer(options: MoqOriginOptions())
             self.consumeOrigin = consumeOrigin
 
-            let publishOrigin = MoqOriginProducer()
+            let publishOrigin = MoqOriginProducer(options: MoqOriginOptions())
             self.publishOrigin = publishOrigin
 
             let client = MoqClient()
@@ -263,7 +263,14 @@ public actor Session {
             throw SessionError.invalidConfiguration("Publish origin not available")
         }
         KitLogger.publish.debug("Publishing broadcast at path: \(path)")
-        try publishOrigin.publish(path: path, broadcast: publisher.broadcast)
+        let broadcast = try publishOrigin.createBroadcast(path: path)
+        do {
+            try publisher.attachBroadcast(broadcast)
+        } catch {
+            // Unpublish the path we just created; the publisher never owned it.
+            try? broadcast.finish()
+            throw error
+        }
         activePublishers[path] = publisher
     }
 

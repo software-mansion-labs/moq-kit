@@ -1,9 +1,9 @@
 import Foundation
 import MoqFFI
 
-// MARK: - Media Container
+// MARK: - Media MoqContainer
 
-/// Container format used by a MoQ media track.
+/// MoqContainer format used by a MoQ media track.
 ///
 /// Catalog-advertised tracks provide this automatically via ``AudioTrackInfo`` and
 /// ``VideoTrackInfo``. Advanced callers can provide it directly when subscribing to a known
@@ -16,7 +16,7 @@ public enum MediaContainer: Sendable, Equatable, Hashable {
     /// LOC media container.
     case loc
 
-    init(_ raw: Container) {
+    init(_ raw: MoqContainer) {
         switch raw {
         case .legacy:
             self = .legacy
@@ -27,7 +27,7 @@ public enum MediaContainer: Sendable, Equatable, Hashable {
         }
     }
 
-    var rawContainer: Container {
+    var rawContainer: MoqContainer {
         switch self {
         case .legacy:
             return .legacy
@@ -96,7 +96,7 @@ public struct MediaFrame: Sendable {
     /// without prior frames.
     public let keyframe: Bool
 
-    init(_ raw: MoqFrame) {
+    init(_ raw: MoqMediaFrame) {
         self.payload = raw.payload
         self.timestampUs = raw.timestampUs
         self.keyframe = raw.keyframe

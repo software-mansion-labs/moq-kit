@@ -29,7 +29,7 @@ public struct VideoTrackConfig: Sendable {
     init(_ raw: MoqVideo) {
         self.codec = raw.codec
         self.coded = raw.coded.map { VideoSize(width: $0.width, height: $0.height) }
-        self.displayRatio = raw.displayRatio.map { VideoSize(width: $0.width, height: $0.height) }
+        self.displayRatio = raw.displayAspect.map { VideoSize(width: $0.width, height: $0.height) }
         self.bitrate = raw.bitrate
         self.framerate = raw.framerate
     }
@@ -192,17 +192,19 @@ public struct Broadcast: Sendable {
     /// underlying subscription is cancelled.
     public func catalogs() -> AsyncStream<Catalog> {
         AsyncStream { continuation in
-            let catalogConsumer: MoqCatalogConsumer
-            do {
-                catalogConsumer = try consumer.subscribeCatalog()
-            } catch {
-                KitLogger.session.error("Failed to subscribe to catalog for \(self.path): \(error)")
-                continuation.finish()
-                return
-            }
-
+            let consumerBox = CatalogConsumerBox()
             let task = Task.detached {
                 defer { continuation.finish() }
+
+                let catalogConsumer: MoqCatalogConsumer
+                do {
+                    catalogConsumer = try await self.consumer.subscribeCatalog()
+                } catch {
+                    KitLogger.session.error(
+                        "Failed to subscribe to catalog for \(self.path): \(error)")
+                    return
+                }
+                guard consumerBox.set(catalogConsumer) else { return }
 
                 while !Task.isCancelled {
                     do {
@@ -227,10 +229,42 @@ public struct Broadcast: Sendable {
             }
 
             continuation.onTermination = { _ in
-                catalogConsumer.cancel()
+                consumerBox.cancel()
                 task.cancel()
             }
         }
+    }
+}
+
+/// Hands the catalog consumer created inside the read task to `onTermination`,
+/// so cancellation works whichever side wins the race.
+private final class CatalogConsumerBox: @unchecked Sendable {
+    private let lock = UnfairLock()
+    private var consumer: MoqCatalogConsumer?
+    private var cancelled = false
+
+    /// Returns false when the stream was already cancelled; the consumer is cancelled in place.
+    func set(_ consumer: MoqCatalogConsumer) -> Bool {
+        let shouldCancel = lock.withLock {
+            if cancelled {
+                return true
+            }
+            self.consumer = consumer
+            return false
+        }
+        if shouldCancel {
+            consumer.cancel()
+            return false
+        }
+        return true
+    }
+
+    func cancel() {
+        let consumer = lock.withLock {
+            cancelled = true
+            return self.consumer
+        }
+        consumer?.cancel()
     }
 }
 

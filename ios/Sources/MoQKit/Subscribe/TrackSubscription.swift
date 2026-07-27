@@ -35,6 +35,24 @@ private final class TrackSubscriptionState: @unchecked Sendable {
     private var closed = false
     private var readTask: Task<Void, Never>?
     private var currentGroup: MoqGroupConsumer?
+    private var track: MoqTrackConsumer?
+
+    func setTrack(_ track: MoqTrackConsumer) -> Bool {
+        let shouldCancel = lock.withLock {
+            if closed {
+                return true
+            }
+            self.track = track
+            return false
+        }
+
+        if shouldCancel {
+            track.cancel()
+            return false
+        }
+
+        return true
+    }
 
     func setReadTask(_ task: Task<Void, Never>) {
         let shouldCancel = lock.withLock {
@@ -50,15 +68,17 @@ private final class TrackSubscriptionState: @unchecked Sendable {
         }
     }
 
-    func close() -> (task: Task<Void, Never>?, group: MoqGroupConsumer?)? {
+    func close() -> (task: Task<Void, Never>?, group: MoqGroupConsumer?, track: MoqTrackConsumer?)? {
         lock.withLock {
             guard !closed else { return nil }
             closed = true
             let task = readTask
             let group = currentGroup
+            let track = self.track
             readTask = nil
             currentGroup = nil
-            return (task, group)
+            self.track = nil
+            return (task, group, track)
         }
     }
 
@@ -98,13 +118,11 @@ public final class TrackSubscription: @unchecked Sendable {
     public let objects: AsyncThrowingStream<TrackObject, Error>
 
     private let retainedBroadcast: MoqBroadcastConsumer
-    private let track: MoqTrackConsumer
     private let continuation: AsyncThrowingStream<TrackObject, Error>.Continuation
     private let state = TrackSubscriptionState()
 
     init(broadcast: MoqBroadcastConsumer, name: String, delivery: TrackDelivery) throws {
         self.retainedBroadcast = broadcast
-        self.track = try broadcast.subscribeTrack(name: name)
 
         var pendingContinuation: AsyncThrowingStream<TrackObject, Error>.Continuation?
         self.objects = AsyncThrowingStream { pendingContinuation = $0 }
@@ -118,9 +136,10 @@ public final class TrackSubscription: @unchecked Sendable {
         }
 
         let state = self.state
-        let readTask = Task.detached { [track = self.track, continuation, state] in
+        let readTask = Task.detached { [broadcast, continuation, state] in
             await Self.readObjects(
-                from: track,
+                from: broadcast,
+                name: name,
                 delivery: delivery,
                 state: state,
                 continuation: continuation
@@ -135,7 +154,7 @@ public final class TrackSubscription: @unchecked Sendable {
     public func close() {
         guard let resources = state.close() else { return }
 
-        track.cancel()
+        resources.track?.cancel()
         resources.group?.cancel()
         resources.task?.cancel()
         continuation.finish()
@@ -146,12 +165,19 @@ public final class TrackSubscription: @unchecked Sendable {
     }
 
     private static func readObjects(
-        from track: MoqTrackConsumer,
+        from broadcast: MoqBroadcastConsumer,
+        name: String,
         delivery: TrackDelivery,
         state: TrackSubscriptionState,
         continuation: AsyncThrowingStream<TrackObject, Error>.Continuation
     ) async {
         do {
+            let track = try await broadcast.subscribeTrack(name: name, subscription: nil)
+            guard state.setTrack(track) else {
+                continuation.finish()
+                return
+            }
+
             while !Task.isCancelled {
                 let group: MoqGroupConsumer?
                 switch delivery {
@@ -179,12 +205,12 @@ public final class TrackSubscription: @unchecked Sendable {
                 var objectIndex: UInt64 = 0
 
                 while !Task.isCancelled {
-                    guard let payload = try await group.readFrame() else {
+                    guard let frame = try await group.readFrame() else {
                         break
                     }
                     continuation.yield(
                         TrackObject(
-                            payload: payload,
+                            payload: frame.payload,
                             groupSequence: sequence,
                             objectIndex: objectIndex
                         )

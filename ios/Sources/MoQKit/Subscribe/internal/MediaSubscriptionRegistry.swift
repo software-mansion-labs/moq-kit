@@ -38,7 +38,7 @@ final class MediaFrameStream: @unchecked Sendable {
 
 struct MediaSubscriptionKey: Hashable, Sendable {
     let name: String
-    let container: Container
+    let container: MoqContainer
 
     init(_ request: MediaTrackRequest) {
         self.name = request.name
@@ -78,18 +78,16 @@ final class MediaSubscriptionRegistry: @unchecked Sendable {
                 hubs[key] = nil
             }
 
-            let consumer: any MoqMediaConsumerProtocol
-            do {
-                consumer = try broadcast.subscribeMedia(
-                    name: request.name,
-                    container: request.container.rawContainer,
-                    maxLatencyMs: request.targetBuffering.millisecondsUInt64Clamped
-                )
-            } catch {
-                return .failure(error)
-            }
-
-            let created = MediaFrameHub(consumer: consumer) { [weak self] hub in
+            let created = MediaFrameHub(
+                subscribe: { [broadcast] in
+                    try await broadcast.subscribeMedia(
+                        name: request.name,
+                        container: request.container.rawContainer,
+                        subscription: MoqSubscription(
+                            latencyMaxMs: request.targetBuffering.millisecondsUInt64Clamped)
+                    )
+                }
+            ) { [weak self] hub in
                 self?.removeHub(key, matching: hub)
             }
             hubs[key] = created
@@ -116,20 +114,24 @@ final class MediaSubscriptionRegistry: @unchecked Sendable {
 fileprivate final class MediaFrameHub: @unchecked Sendable {
     private typealias Continuation = AsyncThrowingStream<MediaFrame, Error>.Continuation
     fileprivate typealias FinishHandler = @Sendable (MediaFrameHub) -> Void
+    fileprivate typealias Subscribe = @Sendable () async throws -> any MoqMediaConsumerProtocol
 
-    private let consumer: any MoqMediaConsumerProtocol
+    // The (async) upstream subscribe runs on the shared read task; subscribers are
+    // created from non-async contexts.
+    private let subscribe: Subscribe
     private let onFinished: FinishHandler
     private let lock = UnfairLock()
 
+    private var consumer: (any MoqMediaConsumerProtocol)?
     private var continuations: [UUID: Continuation] = [:]
     private var readTask: Task<Void, Never>?
     private var finished = false
 
     fileprivate init(
-        consumer: any MoqMediaConsumerProtocol,
+        subscribe: @escaping Subscribe,
         onFinished: @escaping FinishHandler
     ) {
-        self.consumer = consumer
+        self.subscribe = subscribe
         self.onFinished = onFinished
     }
 
@@ -182,6 +184,17 @@ fileprivate final class MediaFrameHub: @unchecked Sendable {
 
     private func readFrames() async {
         do {
+            let consumer = try await subscribe()
+            let alreadyFinished = lock.withLock { () -> Bool in
+                guard !finished else { return true }
+                self.consumer = consumer
+                return false
+            }
+            if alreadyFinished {
+                consumer.cancel()
+                return
+            }
+
             while !Task.isCancelled {
                 guard let frame = try await consumer.next() else {
                     finishAll(throwing: nil, cancelUpstream: false)
@@ -197,6 +210,10 @@ fileprivate final class MediaFrameHub: @unchecked Sendable {
         } catch {
             finishAll(throwing: error, cancelUpstream: true)
         }
+    }
+
+    private func currentConsumer() -> (any MoqMediaConsumerProtocol)? {
+        lock.withLock { consumer }
     }
 
     private func yield(_ frame: MediaFrame) {
@@ -226,7 +243,7 @@ fileprivate final class MediaFrameHub: @unchecked Sendable {
         result.continuation?.finish()
         guard result.shouldStop else { return }
 
-        consumer.cancel()
+        currentConsumer()?.cancel()
         result.task?.cancel()
         onFinished(self)
     }
@@ -252,7 +269,7 @@ fileprivate final class MediaFrameHub: @unchecked Sendable {
         guard result.didFinish else { return }
 
         if cancelUpstream {
-            consumer.cancel()
+            currentConsumer()?.cancel()
         }
         result.task?.cancel()
 

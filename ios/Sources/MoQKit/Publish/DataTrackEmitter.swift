@@ -1,3 +1,4 @@
+import CoreMedia
 import Foundation
 import MoqFFI
 
@@ -7,18 +8,21 @@ import MoqFFI
 /// then keep a reference and call ``send(_:)`` whenever your app has a new payload.
 public final class DataTrackEmitter: @unchecked Sendable {
     private var producer: MoqTrackProducer?
+    private var clock: PublisherClock?
     private var stopped = false
 
     /// Creates an emitter that can be attached to a published data track.
     public init() {}
 
-    internal func attach(_ producer: MoqTrackProducer) {
+    internal func attach(_ producer: MoqTrackProducer, clock: PublisherClock) {
+        self.clock = clock
         self.producer = producer
     }
 
     internal func detach() {
         stopped = true
         producer = nil
+        clock = nil
     }
 
     /// Publishes one object on the track.
@@ -26,6 +30,10 @@ public final class DataTrackEmitter: @unchecked Sendable {
     /// If the track has not started yet, or has already stopped, this is a no-op.
     public func send(_ data: Data) throws {
         guard !stopped, let producer else { return }
-        try producer.writeFrame(payload: data)
+        // Stamp against the publisher clock so data frames share the epoch of the
+        // broadcast's media tracks.
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        let timestampUs = clock?.timestampUs(from: now) ?? 0
+        try producer.writeFrame(frame: MoqFrame(payload: data, timestampUs: timestampUs))
     }
 }
