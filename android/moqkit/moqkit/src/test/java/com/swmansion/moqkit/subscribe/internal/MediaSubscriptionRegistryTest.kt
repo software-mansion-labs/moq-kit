@@ -11,8 +11,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
-import uniffi.moq.Container
-import uniffi.moq.MoqFrame
+import uniffi.moq.MoqContainer
+import uniffi.moq.MoqMediaFrame
 import java.time.Duration
 
 class MediaSubscriptionRegistryTest {
@@ -135,8 +135,8 @@ class MediaSubscriptionRegistryTest {
             targetBuffering = Duration.ofMillis(targetBufferingMs),
         )
 
-    private fun frame(timestampUs: ULong): MoqFrame =
-        MoqFrame(
+    private fun frame(timestampUs: ULong): MoqMediaFrame =
+        MoqMediaFrame(
             payload = byteArrayOf(0x01, 0x02, 0x03),
             timestampUs = timestampUs,
             keyframe = true,
@@ -156,7 +156,7 @@ private class FakeMediaSubscriptionSource(
 ) : MediaSubscriptionSource {
     data class Request(
         val name: String,
-        val container: Container,
+        val container: MoqContainer,
         val maxLatencyMs: ULong,
     )
 
@@ -165,7 +165,7 @@ private class FakeMediaSubscriptionSource(
 
     override fun subscribeMedia(
         name: String,
-        container: Container,
+        container: MoqContainer,
         maxLatencyMs: ULong,
     ): MediaConsumerHandle {
         requests += Request(name, container, maxLatencyMs)
@@ -174,13 +174,13 @@ private class FakeMediaSubscriptionSource(
 }
 
 private class FakeMediaConsumer : MediaConsumerHandle {
-    private val results = Channel<Result<MoqFrame?>>(Channel.UNLIMITED)
+    private val results = Channel<Result<MoqMediaFrame?>>(Channel.UNLIMITED)
     var cancelCallCount = 0
         private set
     var closeCallCount = 0
         private set
 
-    override suspend fun next(): MoqFrame? =
+    override suspend fun next(): MoqMediaFrame? =
         results.receive().getOrThrow()
 
     override fun cancel() {
@@ -192,7 +192,7 @@ private class FakeMediaConsumer : MediaConsumerHandle {
         closeCallCount += 1
     }
 
-    fun yield(frame: MoqFrame) {
+    fun yield(frame: MoqMediaFrame) {
         results.trySend(Result.success(frame))
     }
 

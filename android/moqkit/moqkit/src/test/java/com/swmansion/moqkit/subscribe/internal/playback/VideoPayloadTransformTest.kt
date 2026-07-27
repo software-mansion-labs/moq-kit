@@ -4,7 +4,7 @@ import com.swmansion.moqkit.subscribe.internal.codec.H264SpsParser
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
-import uniffi.moq.Container
+import uniffi.moq.MoqContainer
 import uniffi.moq.MoqDimensions
 import uniffi.moq.MoqVideo
 
@@ -63,10 +63,10 @@ class VideoPayloadTransformTest {
         codec = codec,
         description = description,
         coded = MoqDimensions(1920u, 1080u),
-        displayRatio = null,
+        displayAspect = null,
         bitrate = null,
         framerate = null,
-        container = Container.Legacy,
+        container = MoqContainer.Legacy,
     )
 
     private fun lengthPrefixed(nal: ByteArray): ByteArray =

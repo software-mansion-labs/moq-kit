@@ -6,7 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
-import uniffi.moq.Container
+import uniffi.moq.MoqContainer
 import uniffi.moq.MoqAudio
 import uniffi.moq.MoqDimensions
 import uniffi.moq.MoqVideo
@@ -173,10 +173,10 @@ class MediaFormatFactoryTest {
         codec = codec,
         description = description,
         coded = MoqDimensions(width.toUInt(), height.toUInt()),
-        displayRatio = null,
+        displayAspect = null,
         bitrate = null,
         framerate = null,
-        container = Container.Legacy,
+        container = MoqContainer.Legacy,
     )
 
     private fun audioConfig(codec: String, description: ByteArray?): MoqAudio = MoqAudio(
@@ -185,7 +185,7 @@ class MediaFormatFactoryTest {
         sampleRate = 48_000u,
         channelCount = 2u,
         bitrate = null,
-        container = Container.Legacy,
+        container = MoqContainer.Legacy,
     )
 
     private fun buildAvcc(sps: ByteArray, pps: ByteArray): ByteArray {

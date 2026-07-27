@@ -180,18 +180,12 @@ class Broadcast internal constructor(
         delivery: TrackDelivery = TrackDelivery.Monotonic,
     ): TrackSubscription {
         val retainedOwner = owner.retain()
-        return try {
-            val track = retainedOwner.consumer().subscribeTrack(name)
-            TrackSubscription(
-                name = name,
-                owner = retainedOwner,
-                track = track,
-                delivery = delivery,
-            )
-        } catch (t: Throwable) {
-            retainedOwner.release()
-            throw t
-        }
+        return TrackSubscription(
+            name = name,
+            owner = retainedOwner,
+            subscribe = { retainedOwner.consumer().subscribeTrack(name, null) },
+            delivery = delivery,
+        )
     }
 
     /**
@@ -467,7 +461,7 @@ internal fun Throwable.isCatalogNotFoundError(): Boolean {
 private fun MoqVideo.toTrackConfig(): VideoTrackConfig = VideoTrackConfig(
     codec = codec,
     coded = coded?.let { VideoSize(width = it.width, height = it.height) },
-    displayRatio = displayRatio?.let { VideoSize(width = it.width, height = it.height) },
+    displayRatio = displayAspect?.let { VideoSize(width = it.width, height = it.height) },
     bitrate = bitrate,
     framerate = framerate,
 )

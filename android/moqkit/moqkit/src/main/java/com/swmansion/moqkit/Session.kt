@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import uniffi.moq.MoqClient
+import uniffi.moq.MoqOriginOptions
 import uniffi.moq.MoqOriginProducer
 import uniffi.moq.MoqSession as UniMoqSession
 
@@ -92,11 +93,11 @@ class Session(
         _state.value = State.Connecting
         Log.d(TAG, "Connecting to $url")
         try {
-            val newConsumeOrigin = MoqOriginProducer()
+            val newConsumeOrigin = MoqOriginProducer(MoqOriginOptions())
             consumeOrigin = newConsumeOrigin
             Log.d(TAG, "Consume origin created")
 
-            val newPublishOrigin = MoqOriginProducer()
+            val newPublishOrigin = MoqOriginProducer(MoqOriginOptions())
             publishOrigin = newPublishOrigin
             Log.d(TAG, "Publish origin created")
 
@@ -209,7 +210,14 @@ class Session(
         }
         val origin = publishOrigin ?: error("Publish origin not available")
         Log.d(TAG, "Publishing broadcast at '$path'")
-        origin.publish(path, publisher.broadcast)
+        val broadcast = origin.createBroadcast(path)
+        try {
+            publisher.attachBroadcast(broadcast)
+        } catch (t: Throwable) {
+            // Unpublish the path we just created; the publisher never owned it.
+            try { broadcast.finish() } catch (_: Exception) {}
+            throw t
+        }
         activePublishers[path] = publisher
     }
 

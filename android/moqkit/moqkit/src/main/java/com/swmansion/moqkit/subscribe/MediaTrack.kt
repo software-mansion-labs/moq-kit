@@ -6,8 +6,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.asStateFlow
-import uniffi.moq.Container
-import uniffi.moq.MoqFrame
+import uniffi.moq.MoqContainer
+import uniffi.moq.MoqMediaFrame
 import java.time.Duration
 
 /**
@@ -39,17 +39,17 @@ sealed class MediaContainer {
             "Cmaf(initializationData=${initializationData.contentToString()})"
     }
 
-    internal fun toRawContainer(): Container = when (this) {
-        Legacy -> Container.Legacy
-        Loc -> Container.Loc
-        is Cmaf -> Container.Cmaf(initializationData.copyOf())
+    internal fun toRawContainer(): MoqContainer = when (this) {
+        Legacy -> MoqContainer.Legacy
+        Loc -> MoqContainer.Loc
+        is Cmaf -> MoqContainer.Cmaf(initializationData.copyOf())
     }
 
     internal companion object {
-        fun fromRaw(container: Container): MediaContainer = when (container) {
-            Container.Legacy -> Legacy
-            Container.Loc -> Loc
-            is Container.Cmaf -> Cmaf(container.init)
+        fun fromRaw(container: MoqContainer): MediaContainer = when (container) {
+            MoqContainer.Legacy -> Legacy
+            MoqContainer.Loc -> Loc
+            is MoqContainer.Cmaf -> Cmaf(container.init)
         }
     }
 }
@@ -115,7 +115,7 @@ class MediaFrame(
     /** Whether this frame is a keyframe or sync point. */
     val keyframe: Boolean,
 ) {
-    internal constructor(raw: MoqFrame) : this(
+    internal constructor(raw: MoqMediaFrame) : this(
         payload = raw.payload,
         timestampUs = raw.timestampUs.toLong(),
         keyframe = raw.keyframe,

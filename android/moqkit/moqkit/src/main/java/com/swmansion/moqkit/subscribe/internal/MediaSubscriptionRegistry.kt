@@ -16,21 +16,22 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
-import uniffi.moq.Container
 import uniffi.moq.MoqBroadcastConsumer
-import uniffi.moq.MoqFrame
+import uniffi.moq.MoqContainer
 import uniffi.moq.MoqMediaConsumer
+import uniffi.moq.MoqMediaFrame
+import uniffi.moq.MoqSubscription
 
 internal interface MediaSubscriptionSource {
     fun subscribeMedia(
         name: String,
-        container: Container,
+        container: MoqContainer,
         maxLatencyMs: ULong,
     ): MediaConsumerHandle
 }
 
 internal interface MediaConsumerHandle : AutoCloseable {
-    suspend fun next(): MoqFrame?
+    suspend fun next(): MoqMediaFrame?
     fun cancel()
 }
 
@@ -39,29 +40,82 @@ internal class UniFFIMediaSubscriptionSource(
 ) : MediaSubscriptionSource {
     override fun subscribeMedia(
         name: String,
-        container: Container,
+        container: MoqContainer,
         maxLatencyMs: ULong,
     ): MediaConsumerHandle =
         UniFFIMediaConsumerHandle(
-            consumerProvider().subscribeMedia(
-                name = name,
-                container = container,
-                maxLatencyMs = maxLatencyMs,
-            ),
+            subscribe = {
+                consumerProvider().subscribeMedia(
+                    name = name,
+                    container = container,
+                    subscription = MoqSubscription(latencyMaxMs = maxLatencyMs),
+                )
+            },
         )
 }
 
+/**
+ * Defers the (suspending) native subscribe to the first [next] call, which runs on the
+ * shared reader coroutine. Callers create handles from non-suspending contexts.
+ */
 private class UniFFIMediaConsumerHandle(
-    private val consumer: MoqMediaConsumer,
+    private val subscribe: suspend () -> MoqMediaConsumer,
 ) : MediaConsumerHandle {
-    override suspend fun next(): MoqFrame? = consumer.next()
+    private val lock = Any()
+    private var consumer: MoqMediaConsumer? = null
+    private var closed = false
+
+    override suspend fun next(): MoqMediaFrame? {
+        val current = synchronized(lock) {
+            if (closed) return null
+            consumer
+        }
+        if (current != null) return current.next()
+
+        val opened = subscribe()
+        val ready = synchronized(lock) {
+            if (closed) {
+                null
+            } else {
+                consumer = opened
+                opened
+            }
+        }
+        if (ready == null) {
+            release(opened)
+            return null
+        }
+        return ready.next()
+    }
 
     override fun cancel() {
-        consumer.cancel()
+        val current = synchronized(lock) {
+            closed = true
+            consumer
+        }
+        try {
+            current?.cancel()
+        } catch (_: Exception) {
+        }
     }
 
     override fun close() {
-        consumer.close()
+        val current = synchronized(lock) {
+            closed = true
+            consumer.also { consumer = null }
+        }
+        current?.close()
+    }
+
+    private fun release(consumer: MoqMediaConsumer) {
+        try {
+            consumer.cancel()
+        } catch (_: Exception) {
+        }
+        try {
+            consumer.close()
+        } catch (_: Exception) {
+        }
     }
 }
 

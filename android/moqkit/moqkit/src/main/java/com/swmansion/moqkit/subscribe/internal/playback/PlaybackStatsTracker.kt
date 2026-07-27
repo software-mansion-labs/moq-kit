@@ -19,8 +19,8 @@ import com.swmansion.moqkit.subscribe.StallCause
 import com.swmansion.moqkit.subscribe.TimeToFirstPlaybackStats
 import com.swmansion.moqkit.subscribe.TrackSwitch
 import com.swmansion.moqkit.subscribe.TrackSwitchStats
+import com.swmansion.moqkit.subscribe.MediaFrame
 import com.swmansion.moqkit.subscribe.VideoDecodeStats
-import uniffi.moq.MoqFrame
 import java.time.Duration
 
 internal data class PlaybackStartContext(
@@ -589,9 +589,9 @@ internal class PlaybackStatsTracker(
         }
     }
 
-    fun onMediaFrame(frame: MoqFrame, kind: MediaFrameKind) {
+    fun onMediaFrame(frame: MediaFrame, kind: MediaFrameKind) {
         val now = clock()
-        val timestampUs = frame.timestampUs.toLong()
+        val timestampUs = frame.timestampUs
         val payloadSize = frame.payload.size
         synchronized(lock) {
             when (kind) {

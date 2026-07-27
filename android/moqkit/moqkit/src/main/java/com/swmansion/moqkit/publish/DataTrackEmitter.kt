@@ -1,5 +1,7 @@
 package com.swmansion.moqkit.publish
 
+import android.os.SystemClock
+import uniffi.moq.MoqFrame
 import uniffi.moq.MoqTrackProducer
 
 /**
@@ -10,16 +12,19 @@ import uniffi.moq.MoqTrackProducer
  */
 class DataTrackEmitter {
     @Volatile private var producer: MoqTrackProducer? = null
+    @Volatile private var clock: Clock? = null
     @Volatile private var stopped = false
 
-    internal fun attach(producer: MoqTrackProducer) {
+    internal fun attach(producer: MoqTrackProducer, clock: Clock) {
         stopped = false
+        this.clock = clock
         this.producer = producer
     }
 
     internal fun detach() {
         stopped = true
         producer = null
+        clock = null
     }
 
     /**
@@ -30,6 +35,11 @@ class DataTrackEmitter {
      */
     fun send(data: ByteArray) {
         if (stopped) return
-        producer?.writeFrame(data)
+        val producer = producer ?: return
+        // Stamp against the publisher clock so data frames share the epoch of the
+        // broadcast's media tracks.
+        val nowUs = SystemClock.elapsedRealtimeNanos() / 1_000
+        val timestampUs = clock?.timestampUs(nowUs) ?: 0L
+        producer.writeFrame(MoqFrame(payload = data, timestampUs = timestampUs.toULong()))
     }
 }

@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import uniffi.moq.Container
+import uniffi.moq.MoqContainer
 import uniffi.moq.MoqAudio
 import uniffi.moq.MoqDimensions
 import uniffi.moq.MoqVideo
@@ -46,10 +46,10 @@ class PlaybackCodecSupportTest {
         codec = codec,
         description = null,
         coded = MoqDimensions(1920u, 1080u),
-        displayRatio = null,
+        displayAspect = null,
         bitrate = null,
         framerate = null,
-        container = Container.Legacy,
+        container = MoqContainer.Legacy,
     )
 
     private fun audioConfig(codec: String): MoqAudio = MoqAudio(
@@ -58,6 +58,6 @@ class PlaybackCodecSupportTest {
         sampleRate = 48_000u,
         channelCount = 2u,
         bitrate = null,
-        container = Container.Legacy,
+        container = MoqContainer.Legacy,
     )
 }

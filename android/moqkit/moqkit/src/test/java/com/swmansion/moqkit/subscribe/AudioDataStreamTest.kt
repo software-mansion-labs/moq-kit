@@ -6,7 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
-import uniffi.moq.Container
+import uniffi.moq.MoqContainer
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.time.Duration
@@ -36,8 +36,8 @@ class AudioDataStreamTest {
         assertEquals(48_000u, raw.sampleRate)
         assertEquals(2u, raw.channelCount)
         assertEquals(96_000uL, raw.bitrate)
-        assertTrue(raw.container is Container.Cmaf)
-        assertArrayEquals(initializationData, (raw.container as Container.Cmaf).init)
+        assertTrue(raw.container is MoqContainer.Cmaf)
+        assertArrayEquals(initializationData, (raw.container as MoqContainer.Cmaf).init)
     }
 
     @Test

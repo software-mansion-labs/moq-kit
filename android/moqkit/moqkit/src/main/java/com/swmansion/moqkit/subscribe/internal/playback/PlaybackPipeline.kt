@@ -35,7 +35,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import uniffi.moq.MoqFrame
 import java.time.Duration
 
 private const val TAG = "PlaybackPipeline"
@@ -352,7 +351,7 @@ internal class PlaybackPipeline(
                             bytes = frame.payload.size,
                         ),
                     )
-                    statsTracker.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.AUDIO)
+                    statsTracker.onMediaFrame(frame, MediaFrameKind.AUDIO)
                     clock.nowMediaUs()?.takeIf { it > 0L }?.let(timeline::onPlaybackPosition)
                     when (val decision = timeline.onIngest(frame.toIngestEvent(trackEpoch, eventContext.timestampNanos))) {
                         is TimelineDecision.Admit -> submit(decision.frame.mediaFrame)
@@ -476,7 +475,7 @@ internal class PlaybackPipeline(
                             bytes = frame.payload.size,
                         ),
                     )
-                    statsTracker.onMediaFrame(frame.toMoqFrame(), MediaFrameKind.VIDEO)
+                    statsTracker.onMediaFrame(frame, MediaFrameKind.VIDEO)
                     videoPlaybackPositionUs()?.let(timeline::onPlaybackPosition)
                     when (val decision = timeline.onIngest(frame.toIngestEvent(trackEpoch, eventContext.timestampNanos))) {
                         is TimelineDecision.Admit -> submit(decision.frame.mediaFrame, eventContext)
@@ -758,13 +757,6 @@ internal class PlaybackPipeline(
         )
     }
 }
-
-private fun MediaFrame.toMoqFrame(): MoqFrame =
-    MoqFrame(
-        payload = payload,
-        timestampUs = timestampUs.coerceAtLeast(0L).toULong(),
-        keyframe = keyframe,
-    )
 
 private fun MediaFrame.toIngestEvent(epoch: Long, arrivalNanos: Long): IngestEvent.Frame =
     IngestEvent.Frame(

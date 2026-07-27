@@ -69,25 +69,27 @@ data class TrackObject(
 class TrackSubscription internal constructor(
     private val name: String,
     private val owner: BroadcastOwner,
-    private val track: MoqTrackConsumer,
+    private val subscribe: suspend () -> MoqTrackConsumer,
     private val delivery: TrackDelivery,
 ) : AutoCloseable {
     private val lock = Any()
     private var closed = false
     private var collectionStarted = false
+    private var track: MoqTrackConsumer? = null
 
     /**
      * Emits raw objects from the track until the track ends or [close] is called.
      *
-     * A subscription supports a single active collector because it is backed by one UniFFI
-     * track stream.
+     * The native track subscription is created when collection starts. A subscription
+     * supports a single active collector because it is backed by one UniFFI track stream.
      */
     val objects: Flow<TrackObject> = flow {
         markCollectionStarted()
 
         try {
+            val track = openTrack()
             while (true) {
-                val group = nextGroup() ?: break
+                val group = nextGroup(track) ?: break
                 try {
                     emitGroupObjects(group)
                 } finally {
@@ -132,14 +134,7 @@ class TrackSubscription internal constructor(
         }
 
         if (shouldRelease) {
-            try {
-                track.cancel()
-            } catch (_: Exception) {
-            }
-            try {
-                track.close()
-            } catch (_: Exception) {
-            }
+            releaseTrack(synchronized(lock) { track.also { track = null } })
             owner.release()
         }
     }
@@ -154,7 +149,36 @@ class TrackSubscription internal constructor(
         }
     }
 
-    private suspend fun nextGroup(): MoqGroupConsumer? = when (delivery) {
+    private suspend fun openTrack(): MoqTrackConsumer {
+        val opened = subscribe()
+        val alreadyClosed = synchronized(lock) {
+            if (closed) {
+                true
+            } else {
+                track = opened
+                false
+            }
+        }
+        if (alreadyClosed) {
+            releaseTrack(opened)
+            throw IllegalStateException("Track subscription '$name' is closed")
+        }
+        return opened
+    }
+
+    private fun releaseTrack(track: MoqTrackConsumer?) {
+        if (track == null) return
+        try {
+            track.cancel()
+        } catch (_: Exception) {
+        }
+        try {
+            track.close()
+        } catch (_: Exception) {
+        }
+    }
+
+    private suspend fun nextGroup(track: MoqTrackConsumer): MoqGroupConsumer? = when (delivery) {
         TrackDelivery.Monotonic -> track.nextGroup()
         TrackDelivery.Arrival -> track.recvGroup()
     }
@@ -166,10 +190,10 @@ class TrackSubscription internal constructor(
         var objectIndex = 0uL
 
         while (true) {
-            val payload = group.readFrame() ?: break
+            val frame = group.readFrame() ?: break
             emit(
                 TrackObject(
-                    payload = payload,
+                    payload = frame.payload,
                     groupSequence = sequence,
                     objectIndex = objectIndex,
                 ),

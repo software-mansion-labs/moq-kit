@@ -8,7 +8,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import uniffi.moq.Container
+import uniffi.moq.MoqContainer
 import uniffi.moq.MoqAudio
 import uniffi.moq.MoqBroadcastConsumer
 import uniffi.moq.MoqDimensions
@@ -139,10 +139,10 @@ class PlayerTest {
             codec = "avc1",
             description = null,
             coded = MoqDimensions(1920u, 1080u),
-            displayRatio = null,
+            displayAspect = null,
             bitrate = 3_000_000uL,
             framerate = 30.0,
-            container = Container.Legacy,
+            container = MoqContainer.Legacy,
         )
         val audioRawConfig = MoqAudio(
             codec = "opus",
@@ -150,7 +150,7 @@ class PlayerTest {
             sampleRate = 48_000u,
             channelCount = 2u,
             bitrate = 128_000uL,
-            container = Container.Legacy,
+            container = MoqContainer.Legacy,
         )
         val catalog = Catalog(
             path = "live/test",

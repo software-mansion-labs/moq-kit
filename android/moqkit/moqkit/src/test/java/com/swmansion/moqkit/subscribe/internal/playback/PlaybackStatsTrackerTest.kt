@@ -11,7 +11,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import uniffi.moq.MoqFrame
+import com.swmansion.moqkit.subscribe.MediaFrame
 import java.time.Duration
 
 class PlaybackStatsTrackerTest {
@@ -388,9 +388,9 @@ private fun testFrame(
     payloadSize: Int = 1,
     timestampUs: ULong,
     keyframe: Boolean = false,
-): MoqFrame =
-    MoqFrame(
+): MediaFrame =
+    MediaFrame(
         payload = ByteArray(payloadSize),
-        timestampUs = timestampUs,
+        timestampUs = timestampUs.toLong(),
         keyframe = keyframe,
     )
