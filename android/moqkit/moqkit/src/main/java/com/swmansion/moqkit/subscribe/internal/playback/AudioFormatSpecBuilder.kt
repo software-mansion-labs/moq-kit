@@ -1,9 +1,9 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
-import uniffi.moq.MoqAudio
+import dev.moq.Audio
 
 internal object AudioFormatSpecBuilder {
-    fun from(config: MoqAudio): AudioFormatSpec? {
+    fun from(config: Audio): AudioFormatSpec? {
         val mime = audioMime(config.codec) ?: return null
         val sampleRate = config.sampleRate.toInt()
         val channelCount = config.channelCount.toInt()

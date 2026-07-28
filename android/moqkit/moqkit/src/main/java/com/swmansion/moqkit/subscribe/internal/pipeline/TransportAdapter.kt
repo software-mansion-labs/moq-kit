@@ -13,7 +13,7 @@ internal interface TransportAdapter {
 
 /**
  * Compatibility adapter for the published FFI API, which currently exposes frames only.
- * Nullable group metadata is filled once `MoqMediaConsumer.next_event()` is available.
+ * Nullable group metadata is filled once `MediaConsumer.next_event()` is available.
  */
 internal class FlowTransportAdapter(
     private val frames: Flow<MediaFrame>,

@@ -15,11 +15,12 @@ from upstream packages. See `ARCHITECTURE.md` for the durable generated-artifact
 
 - iOS generated Swift bindings and XCFramework come from the `moq-dev/moq-swift` Swift
   package dependency, not from local moq-kit build scripts.
-- Android generated Kotlin bindings and JNI libraries come from the `dev.moq:moq` Maven
-  dependency, not from local moq-kit build scripts.
+- Android production code uses the `dev.moq:moq` Kotlin wrapper. Generated Kotlin bindings
+  and JNI libraries come from its transitive `dev.moq:moq-ffi` Maven dependency, not from
+  local moq-kit build scripts.
 
 When unsure about generated FFI types or fields, inspect the resolved generated bindings
-(`MoqFFI` from `moq-swift` for iOS, `uniffi.moq` from `dev.moq:moq` for Android), then
+(`MoqFFI` from `moq-swift` for iOS, `uniffi.moq` from `dev.moq:moq-ffi` for Android), then
 make the durable change in Rust `moq-ffi` upstream or the platform wrapper layer.
 
 ## Command Surface
@@ -79,8 +80,10 @@ local path dependencies, generated UniFFI bindings, XCFrameworks, JNI libraries,
 Android local FFI testing uses Maven local plus an intentionally uncommitted
 `settings.gradle.kts` edit.
 
-- `mise run android:ffi-local` builds local arm64 `moq-ffi`, publishes `dev.moq:moq` to
-  Maven local.
+- `mise run android:ffi-local` builds local arm64 `moq-ffi` and publishes
+  `dev.moq:moq-ffi` to Maven local. The committed `dev.moq:moq` wrapper dependency remains
+  resolved from Maven Central and picks up the local bindings through its compatible
+  transitive version range.
 - To make Gradle or Android Studio resolve that local artifact, temporarily add
   `mavenLocal()` before `mavenCentral()` in the relevant `dependencyResolutionManagement`
   repositories block.

@@ -7,14 +7,14 @@ import com.swmansion.moqkit.subscribe.internal.playback.PlaybackCodecSupport
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import uniffi.moq.MoqAnnounced
-import uniffi.moq.MoqAudio
-import uniffi.moq.MoqBroadcastConsumer
-import uniffi.moq.MoqCatalog
-import uniffi.moq.MoqCatalogConsumer
+import dev.moq.Announced
+import dev.moq.Audio
+import dev.moq.BroadcastConsumer
+import dev.moq.Catalog as NativeCatalog
+import dev.moq.CatalogConsumer
 import uniffi.moq.MoqException
-import uniffi.moq.MoqOriginConsumer
-import uniffi.moq.MoqVideo
+import dev.moq.OriginConsumer
+import dev.moq.Video
 
 private const val TAG = "Broadcast"
 private const val REMOTE_NOT_FOUND_MESSAGE = "remote error: code=13"
@@ -78,7 +78,7 @@ interface TrackInfo {
 data class VideoTrackInfo internal constructor(
     override val name: String,
     val config: VideoTrackConfig,
-    internal val rawConfig: MoqVideo,
+    internal val rawConfig: Video,
 ) : TrackInfo {
     /** Whether this track can be decoded on the current device. */
     val isPlayable: Boolean
@@ -99,7 +99,7 @@ data class VideoTrackInfo internal constructor(
 data class AudioTrackInfo internal constructor(
     override val name: String,
     val config: AudioTrackConfig,
-    internal val rawConfig: MoqAudio,
+    internal val rawConfig: Audio,
 ) : TrackInfo {
     /** Whether this track can be decoded on the current device. */
     val isPlayable: Boolean
@@ -135,7 +135,7 @@ class Catalog internal constructor(
     val playableAudioTracks: List<AudioTrackInfo>
         get() = audioTracks.filter { it.isPlayable }
 
-    internal constructor(path: String, catalog: MoqCatalog, owner: BroadcastOwner) : this(
+    internal constructor(path: String, catalog: NativeCatalog, owner: BroadcastOwner) : this(
         path = path,
         videoTracks = catalog.video.map { (name, rendition) ->
             VideoTrackInfo(name = name, config = rendition.toTrackConfig(), rawConfig = rendition)
@@ -220,7 +220,7 @@ class Broadcast internal constructor(
      */
     fun catalogs(): Flow<Catalog> = flow {
         val broadcast = owner.consumer()
-        var catalogConsumer: MoqCatalogConsumer? = null
+        var catalogConsumer: CatalogConsumer? = null
         try {
             catalogConsumer = broadcast.subscribeCatalog()
             while (true) {
@@ -276,8 +276,8 @@ class Broadcast internal constructor(
  */
 class BroadcastSubscription internal constructor(
     val prefix: String,
-    private var originConsumer: MoqOriginConsumer?,
-    private var announced: MoqAnnounced?,
+    private var originConsumer: OriginConsumer?,
+    private var announced: Announced?,
     private val onClosed: () -> Unit,
 ) : AutoCloseable {
     private val lock = Any()
@@ -309,7 +309,7 @@ class BroadcastSubscription internal constructor(
                     throw e
                 } ?: break
                 val path: String
-                val consumer: MoqBroadcastConsumer
+                val consumer: BroadcastConsumer
                 try {
                     path = announcement.path()
                     consumer = announcement.broadcast()
@@ -392,11 +392,11 @@ class BroadcastSubscription internal constructor(
 
 internal class BroadcastOwner(
     private val path: String,
-    consumer: MoqBroadcastConsumer,
+    consumer: BroadcastConsumer,
 ) {
     private val lock = Any()
     private var refCount = 1
-    private var consumer: MoqBroadcastConsumer? = consumer
+    private var consumer: BroadcastConsumer? = consumer
     private val mediaSubscriptions = MediaSubscriptionRegistry(
         UniFFIMediaSubscriptionSource { consumer() },
     )
@@ -407,7 +407,7 @@ internal class BroadcastOwner(
         this
     }
 
-    fun consumer(): MoqBroadcastConsumer = synchronized(lock) {
+    fun consumer(): BroadcastConsumer = synchronized(lock) {
         consumer ?: throw IllegalStateException("Broadcast '$path' is already closed")
     }
 
@@ -458,7 +458,7 @@ internal fun Throwable.isCatalogNotFoundError(): Boolean {
     }
 }
 
-private fun MoqVideo.toTrackConfig(): VideoTrackConfig = VideoTrackConfig(
+private fun Video.toTrackConfig(): VideoTrackConfig = VideoTrackConfig(
     codec = codec,
     coded = coded?.let { VideoSize(width = it.width, height = it.height) },
     displayRatio = displayAspect?.let { VideoSize(width = it.width, height = it.height) },
@@ -466,7 +466,7 @@ private fun MoqVideo.toTrackConfig(): VideoTrackConfig = VideoTrackConfig(
     framerate = framerate,
 )
 
-private fun MoqAudio.toTrackConfig(): AudioTrackConfig = AudioTrackConfig(
+private fun Audio.toTrackConfig(): AudioTrackConfig = AudioTrackConfig(
     codec = codec,
     sampleRate = sampleRate,
     channelCount = channelCount,

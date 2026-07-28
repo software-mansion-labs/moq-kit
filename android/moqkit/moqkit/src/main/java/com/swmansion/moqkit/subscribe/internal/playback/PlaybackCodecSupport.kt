@@ -1,8 +1,8 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaCodecList
-import uniffi.moq.MoqAudio
-import uniffi.moq.MoqVideo
+import dev.moq.Audio
+import dev.moq.Video
 
 internal data class PlaybackSupportResult(
     val isSupported: Boolean,
@@ -10,13 +10,13 @@ internal data class PlaybackSupportResult(
 )
 
 internal object PlaybackCodecSupport {
-    fun video(config: MoqVideo): PlaybackSupportResult {
+    fun video(config: Video): PlaybackSupportResult {
         val mime = videoMime(config.codec)
             ?: return PlaybackSupportResult(false, "Unsupported video codec: ${config.codec}")
         return decoderSupport(mime, "${config.codec} video decoder")
     }
 
-    fun audio(config: MoqAudio): PlaybackSupportResult {
+    fun audio(config: Audio): PlaybackSupportResult {
         val mime = audioMime(config.codec)
             ?: return PlaybackSupportResult(false, "Unsupported audio codec: ${config.codec}")
         return decoderSupport(mime, "${config.codec} audio decoder")

@@ -7,9 +7,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 import uniffi.moq.MoqContainer
-import uniffi.moq.MoqAudio
-import uniffi.moq.MoqDimensions
-import uniffi.moq.MoqVideo
+import dev.moq.Audio
+import dev.moq.Dimensions
+import dev.moq.Video
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -169,17 +169,17 @@ class MediaFormatFactoryTest {
         description: ByteArray?,
         width: Int = 1920,
         height: Int = 1080,
-    ): MoqVideo = MoqVideo(
+    ): Video = Video(
         codec = codec,
         description = description,
-        coded = MoqDimensions(width.toUInt(), height.toUInt()),
+        coded = Dimensions(width.toUInt(), height.toUInt()),
         displayAspect = null,
         bitrate = null,
         framerate = null,
         container = MoqContainer.Legacy,
     )
 
-    private fun audioConfig(codec: String, description: ByteArray?): MoqAudio = MoqAudio(
+    private fun audioConfig(codec: String, description: ByteArray?): Audio = Audio(
         codec = codec,
         description = description,
         sampleRate = 48_000u,

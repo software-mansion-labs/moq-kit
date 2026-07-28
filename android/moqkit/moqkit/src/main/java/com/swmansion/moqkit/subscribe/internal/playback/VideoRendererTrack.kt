@@ -8,7 +8,7 @@ import com.swmansion.moqkit.subscribe.internal.pipeline.FrameBuffer
 import com.swmansion.moqkit.subscribe.internal.pipeline.PipelinePolicies
 import com.swmansion.moqkit.subscribe.internal.pipeline.TimedFrame
 import com.swmansion.moqkit.subscribe.internal.pipeline.TrackTimeline
-import uniffi.moq.MoqVideo
+import dev.moq.Video
 import java.time.Duration
 
 /** Processed Annex B video frame ready for MediaCodec input. */
@@ -44,7 +44,7 @@ internal class VideoRendererTrack(
     constructor(
         trackName: String,
         trackEpoch: Long,
-        config: MoqVideo,
+        config: Video,
         targetBuffering: Duration,
         timeline: TrackTimeline,
     ) : this(

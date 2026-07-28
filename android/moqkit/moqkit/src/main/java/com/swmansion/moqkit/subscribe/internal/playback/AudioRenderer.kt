@@ -35,7 +35,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import uniffi.moq.MoqAudio
+import dev.moq.Audio
 import java.time.Duration
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -53,7 +53,7 @@ private const val EMPTY_PCM_RING_POLL_DELAY_MILLIS = 5L
 internal class AudioRenderer(
     private val trackName: String,
     private val trackEpoch: Long,
-    private val config: MoqAudio,
+    private val config: Audio,
     private val targetBuffering: Duration,
     private val timeline: TrackTimeline,
     private val metrics: PlaybackStatsTracker? = null,
@@ -327,7 +327,7 @@ internal class AudioRenderer(
         Log.d(TAG, "AudioRenderer stopped")
     }
 
-    fun canAcceptConfig(newConfig: MoqAudio): Boolean =
+    fun canAcceptConfig(newConfig: Audio): Boolean =
         config.codec == newConfig.codec &&
             config.sampleRate == newConfig.sampleRate &&
             config.channelCount == newConfig.channelCount &&

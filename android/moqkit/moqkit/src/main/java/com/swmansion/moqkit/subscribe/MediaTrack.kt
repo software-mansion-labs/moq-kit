@@ -7,7 +7,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.asStateFlow
 import uniffi.moq.MoqContainer
-import uniffi.moq.MoqMediaFrame
+import dev.moq.MediaFrame as NativeMediaFrame
 import java.time.Duration
 
 /**
@@ -115,7 +115,7 @@ class MediaFrame(
     /** Whether this frame is a keyframe or sync point. */
     val keyframe: Boolean,
 ) {
-    internal constructor(raw: MoqMediaFrame) : this(
+    internal constructor(raw: NativeMediaFrame) : this(
         payload = raw.payload,
         timestampUs = raw.timestampUs.toLong(),
         keyframe = raw.keyframe,

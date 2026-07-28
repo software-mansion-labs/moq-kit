@@ -178,7 +178,8 @@ dependencies {
 ```
 
 The Android SDK includes Kotlin APIs backed by the upstream `dev.moq:moq` Maven package,
-which provides the UniFFI-generated Kotlin bindings and JNI libraries.
+using its idiomatic Kotlin facade and aliases. That package resolves `dev.moq:moq-ffi`
+transitively for the generated UniFFI bindings and JNI libraries.
 
 Android apps must declare the permissions they use. Typical integrations need `INTERNET`.
 Camera publishing needs `CAMERA`, microphone publishing needs `RECORD_AUDIO`, and screen
@@ -486,9 +487,10 @@ mise run android:build
 ```
 
 The task scripts in [mise-tasks](mise-tasks) are the source of truth for exact build
-outputs. Android generated bindings and JNI libraries come from the resolved `dev.moq:moq`
-package. iOS generated bindings come from the resolved `moq-swift` package. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for binding boundaries and invariants.
+outputs. Android generated bindings and JNI libraries come from the transitive
+`dev.moq:moq-ffi` package beneath `dev.moq:moq`. iOS generated bindings come from the
+resolved `moq-swift` package. See [ARCHITECTURE.md](ARCHITECTURE.md) for binding boundaries
+and invariants.
 
 For local SDK development, the demo apps are usually the fastest feedback loop. Prefer
 wiring demos to local Swift and Android modules instead of published package versions when

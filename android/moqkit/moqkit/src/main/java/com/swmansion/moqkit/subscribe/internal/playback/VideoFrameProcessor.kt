@@ -2,7 +2,7 @@ package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaFormat
 import android.util.Log
-import uniffi.moq.MoqVideo
+import dev.moq.Video
 
 private const val TAG = "VideoFrameProcessor"
 
@@ -20,7 +20,7 @@ internal interface VideoPayloadProcessor {
  *
  * Consumers call [processPayload] and get back ready-to-decode Annex B bytes.
  */
-internal class VideoFrameProcessor(private val config: MoqVideo) : VideoPayloadProcessor {
+internal class VideoFrameProcessor(private val config: Video) : VideoPayloadProcessor {
 
     private val transform = VideoPayloadTransformBuilder.from(config)
 

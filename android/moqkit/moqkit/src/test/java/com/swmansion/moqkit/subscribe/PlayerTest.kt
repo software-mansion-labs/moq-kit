@@ -9,10 +9,10 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.moq.MoqContainer
-import uniffi.moq.MoqAudio
-import uniffi.moq.MoqBroadcastConsumer
-import uniffi.moq.MoqDimensions
-import uniffi.moq.MoqVideo
+import dev.moq.Audio
+import dev.moq.BroadcastConsumer
+import dev.moq.Dimensions
+import dev.moq.Video
 import uniffi.moq.NoHandle
 
 class PlayerTest {
@@ -133,18 +133,18 @@ class PlayerTest {
     private fun createFixture(): Fixture {
         val owner = BroadcastOwner(
             path = "live/test",
-            consumer = MoqBroadcastConsumer(NoHandle),
+            consumer = BroadcastConsumer(NoHandle),
         )
-        val videoRawConfig = MoqVideo(
+        val videoRawConfig = Video(
             codec = "avc1",
             description = null,
-            coded = MoqDimensions(1920u, 1080u),
+            coded = Dimensions(1920u, 1080u),
             displayAspect = null,
             bitrate = 3_000_000uL,
             framerate = 30.0,
             container = MoqContainer.Legacy,
         )
-        val audioRawConfig = MoqAudio(
+        val audioRawConfig = Audio(
             codec = "opus",
             description = null,
             sampleRate = 48_000u,

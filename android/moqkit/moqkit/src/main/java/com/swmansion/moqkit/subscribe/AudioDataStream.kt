@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
-import uniffi.moq.MoqAudio
+import dev.moq.Audio
 import java.time.Duration
 
 /**
@@ -83,8 +83,8 @@ class AudioTrackRequest(
         targetBuffering = targetBuffering,
     )
 
-    internal val rawConfig: MoqAudio
-        get() = MoqAudio(
+    internal val rawConfig: Audio
+        get() = Audio(
             codec = codec,
             description = codecDescription?.copyOf(),
             sampleRate = sampleRate,

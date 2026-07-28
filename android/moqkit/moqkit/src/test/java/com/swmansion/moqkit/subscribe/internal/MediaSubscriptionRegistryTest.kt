@@ -12,7 +12,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
 import uniffi.moq.MoqContainer
-import uniffi.moq.MoqMediaFrame
+import dev.moq.MediaFrame as NativeMediaFrame
 import java.time.Duration
 
 class MediaSubscriptionRegistryTest {
@@ -135,8 +135,8 @@ class MediaSubscriptionRegistryTest {
             targetBuffering = Duration.ofMillis(targetBufferingMs),
         )
 
-    private fun frame(timestampUs: ULong): MoqMediaFrame =
-        MoqMediaFrame(
+    private fun frame(timestampUs: ULong): NativeMediaFrame =
+        NativeMediaFrame(
             payload = byteArrayOf(0x01, 0x02, 0x03),
             timestampUs = timestampUs,
             keyframe = true,
@@ -174,13 +174,13 @@ private class FakeMediaSubscriptionSource(
 }
 
 private class FakeMediaConsumer : MediaConsumerHandle {
-    private val results = Channel<Result<MoqMediaFrame?>>(Channel.UNLIMITED)
+    private val results = Channel<Result<NativeMediaFrame?>>(Channel.UNLIMITED)
     var cancelCallCount = 0
         private set
     var closeCallCount = 0
         private set
 
-    override suspend fun next(): MoqMediaFrame? =
+    override suspend fun next(): NativeMediaFrame? =
         results.receive().getOrThrow()
 
     override fun cancel() {
@@ -192,7 +192,7 @@ private class FakeMediaConsumer : MediaConsumerHandle {
         closeCallCount += 1
     }
 
-    fun yield(frame: MoqMediaFrame) {
+    fun yield(frame: NativeMediaFrame) {
         results.trySend(Result.success(frame))
     }
 

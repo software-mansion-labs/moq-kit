@@ -12,10 +12,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import uniffi.moq.MoqClient
-import uniffi.moq.MoqOriginOptions
-import uniffi.moq.MoqOriginProducer
-import uniffi.moq.MoqSession as UniMoqSession
+import dev.moq.Moq
+import dev.moq.OriginOptions
+import dev.moq.OriginProducer
 
 /**
  * A connection to one MoQ relay.
@@ -68,10 +67,7 @@ class Session(
      */
     val state: StateFlow<State> = _state.asStateFlow()
 
-    private var session: UniMoqSession? = null
-    private var client: MoqClient? = null
-    private var consumeOrigin: MoqOriginProducer? = null
-    private var publishOrigin: MoqOriginProducer? = null
+    private var connection: Moq? = null
     private var monitorJob: Job? = null
 
     private val activeSubscriptions = mutableMapOf<String, BroadcastSubscription>()
@@ -93,22 +89,20 @@ class Session(
         _state.value = State.Connecting
         Log.d(TAG, "Connecting to $url")
         try {
-            val newConsumeOrigin = MoqOriginProducer(MoqOriginOptions())
-            consumeOrigin = newConsumeOrigin
+            val newConsumeOrigin = OriginProducer(OriginOptions())
             Log.d(TAG, "Consume origin created")
 
-            val newPublishOrigin = MoqOriginProducer(MoqOriginOptions())
-            publishOrigin = newPublishOrigin
+            val newPublishOrigin = OriginProducer(OriginOptions())
             Log.d(TAG, "Publish origin created")
 
-            val newClient = MoqClient()
-            newClient.setTlsSystemRoots(true)
-            client = newClient
-            newClient.setConsume(newConsumeOrigin)
-            newClient.setPublish(newPublishOrigin)
-
-            val newSession = newClient.connect(url)
-            session = newSession
+            val newConnection = Moq.connect(
+                url = url,
+                tlsSystemRoots = true,
+                publish = newPublishOrigin,
+                subscribe = newConsumeOrigin,
+            )
+            connection = newConnection
+            val newSession = newConnection.session
             _state.value = State.Connected
             Log.d(TAG, "Connected successfully")
 
@@ -160,9 +154,8 @@ class Session(
                 "Already subscribed to prefix '$prefix'"
             }
 
-            val sessionConsumeOrigin = consumeOrigin
-                ?: error("Consume origin not available")
-            val originConsumer = sessionConsumeOrigin.consume()
+            val currentConnection = connection ?: error("MoQ connection not available")
+            val originConsumer = currentConnection.session.consumer()
             try {
                 val announced = originConsumer.announced(prefix)
                 var subscriptionRef: BroadcastSubscription? = null
@@ -208,9 +201,9 @@ class Session(
         check(!activePublishers.containsKey(path)) {
             "Already publishing at '$path'. Call unpublish() first."
         }
-        val origin = publishOrigin ?: error("Publish origin not available")
+        val currentConnection = connection ?: error("MoQ connection not available")
         Log.d(TAG, "Publishing broadcast at '$path'")
-        val broadcast = origin.createBroadcast(path)
+        val broadcast = currentConnection.createBroadcast(path)
         try {
             publisher.attachBroadcast(broadcast)
         } catch (t: Throwable) {
@@ -296,35 +289,12 @@ class Session(
         monitorJob?.cancel()
         monitorJob = null
 
-        session?.cancel(0u)
         try {
-            session?.close()
+            connection?.close()
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to close session", e)
+            Log.w(TAG, "Failed to close MoQ connection", e)
         }
-        session = null
-
-        client?.cancel()
-        try {
-            client?.close()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to close client", e)
-        }
-        client = null
-
-        try {
-            publishOrigin?.close()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to close publish origin", e)
-        }
-        publishOrigin = null
-
-        try {
-            consumeOrigin?.close()
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to close consume origin", e)
-        }
-        consumeOrigin = null
+        connection = null
 
         scope.cancel()
         Log.d(TAG, "Teardown complete")

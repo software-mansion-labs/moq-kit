@@ -16,11 +16,11 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
-import uniffi.moq.MoqBroadcastConsumer
+import dev.moq.BroadcastConsumer
 import uniffi.moq.MoqContainer
-import uniffi.moq.MoqMediaConsumer
-import uniffi.moq.MoqMediaFrame
-import uniffi.moq.MoqSubscription
+import dev.moq.MediaConsumer
+import dev.moq.MediaFrame as NativeMediaFrame
+import dev.moq.Subscription
 
 internal interface MediaSubscriptionSource {
     fun subscribeMedia(
@@ -31,12 +31,12 @@ internal interface MediaSubscriptionSource {
 }
 
 internal interface MediaConsumerHandle : AutoCloseable {
-    suspend fun next(): MoqMediaFrame?
+    suspend fun next(): NativeMediaFrame?
     fun cancel()
 }
 
 internal class UniFFIMediaSubscriptionSource(
-    private val consumerProvider: () -> MoqBroadcastConsumer,
+    private val consumerProvider: () -> BroadcastConsumer,
 ) : MediaSubscriptionSource {
     override fun subscribeMedia(
         name: String,
@@ -48,7 +48,7 @@ internal class UniFFIMediaSubscriptionSource(
                 consumerProvider().subscribeMedia(
                     name = name,
                     container = container,
-                    subscription = MoqSubscription(latencyMaxMs = maxLatencyMs),
+                    subscription = Subscription(latencyMaxMs = maxLatencyMs),
                 )
             },
         )
@@ -59,13 +59,13 @@ internal class UniFFIMediaSubscriptionSource(
  * shared reader coroutine. Callers create handles from non-suspending contexts.
  */
 private class UniFFIMediaConsumerHandle(
-    private val subscribe: suspend () -> MoqMediaConsumer,
+    private val subscribe: suspend () -> MediaConsumer,
 ) : MediaConsumerHandle {
     private val lock = Any()
-    private var consumer: MoqMediaConsumer? = null
+    private var consumer: MediaConsumer? = null
     private var closed = false
 
-    override suspend fun next(): MoqMediaFrame? {
+    override suspend fun next(): NativeMediaFrame? {
         val current = synchronized(lock) {
             if (closed) return null
             consumer
@@ -107,7 +107,7 @@ private class UniFFIMediaConsumerHandle(
         current?.close()
     }
 
-    private fun release(consumer: MoqMediaConsumer) {
+    private fun release(consumer: MediaConsumer) {
         try {
             consumer.cancel()
         } catch (_: Exception) {

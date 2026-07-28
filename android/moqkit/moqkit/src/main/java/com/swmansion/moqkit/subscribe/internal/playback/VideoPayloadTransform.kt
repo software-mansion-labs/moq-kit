@@ -1,14 +1,14 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
 import com.swmansion.moqkit.subscribe.internal.codec.prefixLengthToAnnexB
-import uniffi.moq.MoqVideo
+import dev.moq.Video
 
 internal fun interface VideoPayloadTransform {
     fun apply(payload: ByteArray): ByteArray
 }
 
 internal object VideoPayloadTransformBuilder {
-    fun from(config: MoqVideo): VideoPayloadTransform {
+    fun from(config: Video): VideoPayloadTransform {
         val codec = VideoCodec.from(config.codec)
         val convertToAnnexB = config.description != null && codec.usesLengthPrefixedSamples
 

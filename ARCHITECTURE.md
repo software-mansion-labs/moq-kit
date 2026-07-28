@@ -9,7 +9,7 @@ The stack is:
 
 ```text
 moq-kit Swift / Kotlin APIs
-moq-swift wrappers (iOS)
+moq-swift wrappers (iOS) / dev.moq Kotlin wrappers (Android)
 moq-ffi UniFFI bindings
 hang media and catalog layer
 moq-lite transport
@@ -28,14 +28,15 @@ package supplies the generated UniFFI Swift bindings and binary artifacts undern
 wrappers.
 
 `android/moqkit` is the Android Gradle project. The publishable Kotlin SDK module is
-`android/moqkit/moqkit`. Public Kotlin APIs live under `com.swmansion.moqkit`; generated
-UniFFI Kotlin bindings and JNI libraries are resolved from the upstream `dev.moq:moq`
-Maven dependency.
+`android/moqkit/moqkit`. Public Kotlin APIs live under `com.swmansion.moqkit`; the upstream
+`dev.moq:moq` Maven dependency supplies the idiomatic `dev.moq` Kotlin facade, aliases, and
+Flow helpers. Its transitive `dev.moq:moq-ffi` dependency supplies the generated UniFFI
+bindings and JNI libraries.
 
 `vendor/moq` is a git submodule pointing at `moq-dev/moq`. The important crate for moq-kit
 is `moq-ffi`; iOS consumes the published `moq-swift` package, and Android consumes the
-published `dev.moq:moq` Maven package built from that crate. `libmoq` also exists in the
-submodule, but moq-kit does not use it for platform bindings.
+published `dev.moq:moq` wrapper with `dev.moq:moq-ffi` underneath it. `libmoq` also exists
+in the submodule, but moq-kit does not use it for platform bindings.
 
 `Session` is the main SDK entry point on both platforms. It owns one relay connection,
 creates separate consume and publish origins, starts broadcast discovery, registers
@@ -85,8 +86,12 @@ Generated UniFFI bindings are build artifacts. Do not manually edit generated Sw
 Kotlin bindings; change Rust `moq-ffi` upstream or the platform wrapper layer. iOS production
 code should import the public `Moq` module rather than `MoqFFI`, using its stateful wrappers
 and record aliases whenever available. Inspect the resolved `MoqFFI` sources only when an
-underlying generated type shape is unclear. For Android, inspect `uniffi.moq` from the
-resolved `dev.moq:moq` dependency.
+underlying generated type shape is unclear. Android production code should similarly import
+the public `dev.moq` facade, aliases, and Flow helpers instead of `uniffi.moq` whenever the
+wrapper exposes the needed shape. The generated sealed `MoqContainer` and `MoqException`
+types remain explicit exceptions because Kotlin cannot access their subtypes through an
+alias. Inspect `uniffi.moq` from the resolved transitive `dev.moq:moq-ffi` dependency only
+when an underlying generated type shape is unclear.
 
 The platform SDKs depend on bindings built from `moq-ffi`, not on `libmoq`. Public Swift
 and Kotlin APIs should hide generated UniFFI types unless there is a deliberate API reason
@@ -140,5 +145,5 @@ flows.
 Release artifacts are platform-specific. iOS publishes a Swift package that depends on the
 published `moq-swift` package for the prebuilt `MoqFFI` XCFramework; moq-kit does not build
 or upload its own iOS XCFramework. Android publishes an AAR containing Kotlin wrappers and
-declares `dev.moq:moq` as the transitive dependency that supplies generated UniFFI bindings
-and JNI libraries.
+declares `dev.moq:moq` as the transitive Kotlin wrapper dependency; that package resolves
+`dev.moq:moq-ffi` for the generated UniFFI bindings and JNI libraries.

@@ -1,8 +1,8 @@
 package com.swmansion.moqkit.publish
 
 import android.os.SystemClock
-import uniffi.moq.MoqFrame
-import uniffi.moq.MoqTrackProducer
+import dev.moq.Frame
+import dev.moq.TrackProducer
 
 /**
  * Sends raw binary payloads on a data track.
@@ -11,11 +11,11 @@ import uniffi.moq.MoqTrackProducer
  * [Publisher], then call [send] whenever the app has a payload to deliver.
  */
 class DataTrackEmitter {
-    @Volatile private var producer: MoqTrackProducer? = null
+    @Volatile private var producer: TrackProducer? = null
     @Volatile private var clock: Clock? = null
     @Volatile private var stopped = false
 
-    internal fun attach(producer: MoqTrackProducer, clock: Clock) {
+    internal fun attach(producer: TrackProducer, clock: Clock) {
         stopped = false
         this.clock = clock
         this.producer = producer
@@ -40,6 +40,6 @@ class DataTrackEmitter {
         // broadcast's media tracks.
         val nowUs = SystemClock.elapsedRealtimeNanos() / 1_000
         val timestampUs = clock?.timestampUs(nowUs) ?: 0L
-        producer.writeFrame(MoqFrame(payload = data, timestampUs = timestampUs.toULong()))
+        producer.writeFrame(Frame(payload = data, timestampUs = timestampUs.toULong()))
     }
 }

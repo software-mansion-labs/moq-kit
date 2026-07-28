@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Build local arm64 Android moq-ffi and publish dev.moq:moq to Maven local"
+#MISE description="Build local arm64 Android moq-ffi and publish dev.moq:moq-ffi to Maven local"
 #USAGE flag "--clean" help="Remove local Android moq-ffi artifacts from vendor/moq and exit"
 set -euo pipefail
 
@@ -15,8 +15,8 @@ CLEAN="${usage_clean:-false}"
 if [[ "$CLEAN" == true ]]; then
   rm -rf \
     "$OUTPUT_DIR" \
-    "$KT_DIR/moq/src/androidMain/jniLibs" \
-    "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi"
+    "$KT_DIR/moq-ffi/src/androidMain/jniLibs" \
+    "$KT_DIR/moq-ffi/src/jvmAndAndroidMain/kotlin/uniffi"
 
   echo "Removed local Android moq-ffi artifacts from vendor/moq."
   exit 0
@@ -28,7 +28,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 
 if [[ -z "$VERSION" ]]; then
-  echo "Failed to resolve dev.moq:moq version from vendor/moq/rs/moq-ffi/Cargo.toml" >&2
+  echo "Failed to resolve dev.moq:moq-ffi version from vendor/moq/rs/moq-ffi/Cargo.toml" >&2
   exit 1
 fi
 
@@ -100,29 +100,29 @@ install_rustls_platform_verifier
 
 echo "==> Staging Kotlin bindings and $ABI JNI library..."
 rm -rf \
-  "$KT_DIR/moq/src/androidMain/jniLibs" \
-  "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi" \
-  "$KT_DIR/moq/src/jvmMain/resources"
+  "$KT_DIR/moq-ffi/src/androidMain/jniLibs" \
+  "$KT_DIR/moq-ffi/src/jvmAndAndroidMain/kotlin/uniffi" \
+  "$KT_DIR/moq-ffi/src/jvmMain/resources"
 
 mkdir -p \
-  "$KT_DIR/moq/src/androidMain/jniLibs/$ABI" \
-  "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi/moq"
+  "$KT_DIR/moq-ffi/src/androidMain/jniLibs/$ABI" \
+  "$KT_DIR/moq-ffi/src/jvmAndAndroidMain/kotlin/uniffi/moq"
 
 cp \
   "$OUTPUT_DIR/moq-ffi-$VERSION-$TARGET/lib/libmoq_ffi.so" \
-  "$KT_DIR/moq/src/androidMain/jniLibs/$ABI/libmoq_ffi.so"
+  "$KT_DIR/moq-ffi/src/androidMain/jniLibs/$ABI/libmoq_ffi.so"
 
 cp \
   "$OUTPUT_DIR/bindings/kotlin/uniffi/moq/moq.kt" \
-  "$KT_DIR/moq/src/jvmAndAndroidMain/kotlin/uniffi/moq/moq.kt"
+  "$KT_DIR/moq-ffi/src/jvmAndAndroidMain/kotlin/uniffi/moq/moq.kt"
 
-echo "==> Publishing dev.moq:moq:$VERSION to Maven local..."
+echo "==> Publishing dev.moq:moq-ffi:$VERSION to Maven local..."
 "$GRADLE_WRAPPER" \
   -p "$KT_DIR" \
   -Pandroid.enabled=true \
   -Pmoqffi.version="$VERSION" \
   -Pmoqffi.skipSigning=true \
-  :moq:publishToMavenLocal
+  :moq-ffi:publishToMavenLocal
 
 echo ""
 echo "Done. To test with Gradle or Android Studio, make a temporary settings.gradle.kts mavenLocal() edit; see AGENTS.md."

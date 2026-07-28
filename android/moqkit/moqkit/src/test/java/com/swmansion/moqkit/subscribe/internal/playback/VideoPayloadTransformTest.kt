@@ -5,8 +5,8 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import uniffi.moq.MoqContainer
-import uniffi.moq.MoqDimensions
-import uniffi.moq.MoqVideo
+import dev.moq.Dimensions
+import dev.moq.Video
 
 class VideoPayloadTransformTest {
     @Test
@@ -59,10 +59,10 @@ class VideoPayloadTransformTest {
         assertArrayEquals(payload, transformed)
     }
 
-    private fun videoConfig(codec: String, description: ByteArray?): MoqVideo = MoqVideo(
+    private fun videoConfig(codec: String, description: ByteArray?): Video = Video(
         codec = codec,
         description = description,
-        coded = MoqDimensions(1920u, 1080u),
+        coded = Dimensions(1920u, 1080u),
         displayAspect = null,
         bitrate = null,
         framerate = null,

@@ -6,9 +6,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.moq.MoqContainer
-import uniffi.moq.MoqAudio
-import uniffi.moq.MoqDimensions
-import uniffi.moq.MoqVideo
+import dev.moq.Audio
+import dev.moq.Dimensions
+import dev.moq.Video
 
 class PlaybackCodecSupportTest {
     @Test
@@ -42,17 +42,17 @@ class PlaybackCodecSupportTest {
         assertNull(PlaybackCodecSupport.audioMime("flac"))
     }
 
-    private fun videoConfig(codec: String): MoqVideo = MoqVideo(
+    private fun videoConfig(codec: String): Video = Video(
         codec = codec,
         description = null,
-        coded = MoqDimensions(1920u, 1080u),
+        coded = Dimensions(1920u, 1080u),
         displayAspect = null,
         bitrate = null,
         framerate = null,
         container = MoqContainer.Legacy,
     )
 
-    private fun audioConfig(codec: String): MoqAudio = MoqAudio(
+    private fun audioConfig(codec: String): Audio = Audio(
         codec = codec,
         description = null,
         sampleRate = 48_000u,

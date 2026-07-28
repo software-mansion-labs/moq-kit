@@ -4,8 +4,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
-import uniffi.moq.MoqGroupConsumer
-import uniffi.moq.MoqTrackConsumer
+import dev.moq.GroupConsumer
+import dev.moq.TrackConsumer
 
 /**
  * How raw MoQ track groups should be delivered.
@@ -69,13 +69,13 @@ data class TrackObject(
 class TrackSubscription internal constructor(
     private val name: String,
     private val owner: BroadcastOwner,
-    private val subscribe: suspend () -> MoqTrackConsumer,
+    private val subscribe: suspend () -> TrackConsumer,
     private val delivery: TrackDelivery,
 ) : AutoCloseable {
     private val lock = Any()
     private var closed = false
     private var collectionStarted = false
-    private var track: MoqTrackConsumer? = null
+    private var track: TrackConsumer? = null
 
     /**
      * Emits raw objects from the track until the track ends or [close] is called.
@@ -149,7 +149,7 @@ class TrackSubscription internal constructor(
         }
     }
 
-    private suspend fun openTrack(): MoqTrackConsumer {
+    private suspend fun openTrack(): TrackConsumer {
         val opened = subscribe()
         val alreadyClosed = synchronized(lock) {
             if (closed) {
@@ -166,7 +166,7 @@ class TrackSubscription internal constructor(
         return opened
     }
 
-    private fun releaseTrack(track: MoqTrackConsumer?) {
+    private fun releaseTrack(track: TrackConsumer?) {
         if (track == null) return
         try {
             track.cancel()
@@ -178,13 +178,13 @@ class TrackSubscription internal constructor(
         }
     }
 
-    private suspend fun nextGroup(track: MoqTrackConsumer): MoqGroupConsumer? = when (delivery) {
+    private suspend fun nextGroup(track: TrackConsumer): GroupConsumer? = when (delivery) {
         TrackDelivery.Monotonic -> track.nextGroup()
         TrackDelivery.Arrival -> track.recvGroup()
     }
 
     private suspend fun FlowCollector<TrackObject>.emitGroupObjects(
-        group: MoqGroupConsumer,
+        group: GroupConsumer,
     ) {
         val sequence = group.sequence()
         var objectIndex = 0uL

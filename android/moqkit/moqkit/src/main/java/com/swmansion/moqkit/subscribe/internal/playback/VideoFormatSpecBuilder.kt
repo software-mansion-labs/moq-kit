@@ -1,9 +1,9 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
-import uniffi.moq.MoqVideo
+import dev.moq.Video
 
 internal object VideoFormatSpecBuilder {
-    fun fromDescription(config: MoqVideo): VideoFormatSpec? {
+    fun fromDescription(config: Video): VideoFormatSpec? {
         val description = config.description ?: return null
         val codec = VideoCodec.from(config.codec)
         val mime = codec.mime ?: return null
@@ -23,7 +23,7 @@ internal object VideoFormatSpecBuilder {
         )
     }
 
-    fun fromInBandKeyframe(config: MoqVideo, payload: ByteArray): VideoFormatSpec? {
+    fun fromInBandKeyframe(config: Video, payload: ByteArray): VideoFormatSpec? {
         val codec = VideoCodec.from(config.codec)
         val mime = codec.mime ?: return null
         val dimensions = config.dimensions()
@@ -42,7 +42,7 @@ internal object VideoFormatSpecBuilder {
         )
     }
 
-    private fun MoqVideo.dimensions(): VideoDimensions {
+    private fun Video.dimensions(): VideoDimensions {
         return VideoDimensions(
             width = coded?.width?.toInt() ?: 1920,
             height = coded?.height?.toInt() ?: 1080,

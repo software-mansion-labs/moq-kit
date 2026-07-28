@@ -1,9 +1,9 @@
 package com.swmansion.moqkit.subscribe.internal.playback
 
 import android.media.MediaFormat
-import uniffi.moq.MoqAudio
+import dev.moq.Audio
 
 internal object AudioMediaFormatFactory {
-    fun from(config: MoqAudio): MediaFormat? =
+    fun from(config: Audio): MediaFormat? =
         AudioFormatSpecBuilder.from(config)?.toMediaFormat()
 }

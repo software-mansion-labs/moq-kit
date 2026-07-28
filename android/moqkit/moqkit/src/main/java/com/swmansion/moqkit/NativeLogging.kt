@@ -1,7 +1,7 @@
 package com.swmansion.moqkit
 
 import android.util.Log
-import uniffi.moq.moqLogLevel
+import dev.moq.logLevel
 
 /**
  * Configures logs emitted by the native MoQ transport layer.
@@ -19,7 +19,7 @@ object NativeLogging {
      */
     fun setLogLevel(level: String) {
         try {
-            moqLogLevel(level)
+            logLevel(level)
         } catch (e: Exception) {
             Log.w("NativeLogging", "Failed to set log level '$level': $e")
         }

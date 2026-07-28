@@ -13,11 +13,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import uniffi.moq.MoqBroadcastProducer
-import uniffi.moq.MoqFrame
-import uniffi.moq.MoqInit
-import uniffi.moq.MoqMediaProducer
-import uniffi.moq.MoqTrackProducer
+import dev.moq.BroadcastProducer
+import dev.moq.Frame
+import dev.moq.Init
+import dev.moq.MediaProducer
+import dev.moq.TrackProducer
 
 private const val TAG = "Publisher"
 
@@ -52,11 +52,11 @@ class Publisher {
     val events: SharedFlow<PublisherEvent> = _events
 
     // Created by Session.publish() at the broadcast path; tracks cannot start without it.
-    internal var broadcast: MoqBroadcastProducer? = null
+    internal var broadcast: BroadcastProducer? = null
         private set
     internal val clock = Clock()
 
-    internal fun attachBroadcast(broadcast: MoqBroadcastProducer) {
+    internal fun attachBroadcast(broadcast: BroadcastProducer) {
         check(this.broadcast == null) { "Publisher is already registered with a session" }
         this.broadcast = broadcast
     }
@@ -227,7 +227,7 @@ class Publisher {
         }
     }
 
-    private fun startVideoTrack(desc: VideoTrackDescriptor, broadcast: MoqBroadcastProducer) {
+    private fun startVideoTrack(desc: VideoTrackDescriptor, broadcast: BroadcastProducer) {
         val active = ActiveVideoTrack()
         val encoder = VideoEncoder(desc.config)
         active.encoder = encoder
@@ -240,7 +240,7 @@ class Publisher {
                 val initData = frame.initData ?: return@start
                 try {
                     active.mediaProducer = broadcast.publishMedia(
-                        MoqInit(format = desc.config.format, data = initData, video = null),
+                        Init(format = desc.config.format, data = initData, video = null),
                     )
                     Log.d(TAG, "Video track '${trackHandle.name}' active")
                     trackHandle.transition(PublishedTrackState.Active)
@@ -254,7 +254,7 @@ class Publisher {
             }
             try {
                 active.mediaProducer?.writeFrame(
-                    MoqFrame(payload = frame.data, timestampUs = clock.timestampUs(frame.timestampUs).toULong()),
+                    Frame(payload = frame.data, timestampUs = clock.timestampUs(frame.timestampUs).toULong()),
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "writeFrame error: $e")
@@ -287,7 +287,7 @@ class Publisher {
 
     // MARK: - Audio
 
-    private fun startAudioTrack(desc: AudioTrackDescriptor, broadcast: MoqBroadcastProducer) {
+    private fun startAudioTrack(desc: AudioTrackDescriptor, broadcast: BroadcastProducer) {
         val active = ActiveAudioTrack()
         val encoder = AudioEncoder(desc.config)
         active.encoder = encoder
@@ -300,7 +300,7 @@ class Publisher {
                 val initData = frame.initData ?: return@start
                 try {
                     active.mediaProducer = broadcast.publishMedia(
-                        MoqInit(format = desc.config.format, data = initData, video = null),
+                        Init(format = desc.config.format, data = initData, video = null),
                     )
                     Log.d(TAG, "Audio track '${trackHandle.name}' active")
                     trackHandle.transition(PublishedTrackState.Active)
@@ -314,7 +314,7 @@ class Publisher {
             }
             try {
                 active.mediaProducer?.writeFrame(
-                    MoqFrame(payload = frame.data, timestampUs = clock.timestampUs(frame.timestampUs).toULong()),
+                    Frame(payload = frame.data, timestampUs = clock.timestampUs(frame.timestampUs).toULong()),
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "writeFrame error: $e")
@@ -342,7 +342,7 @@ class Publisher {
 
     // MARK: - Data
 
-    private fun startDataTrack(desc: DataTrackDescriptor, broadcast: MoqBroadcastProducer) {
+    private fun startDataTrack(desc: DataTrackDescriptor, broadcast: BroadcastProducer) {
         val producer = broadcast.publishTrack(desc.track.name, null)
         val active = ActiveDataTrack(desc.emitter, producer)
         desc.emitter.attach(producer, clock)
@@ -404,17 +404,17 @@ class Publisher {
     private class ActiveVideoTrack {
         var source: VideoFrameSource? = null
         var encoder: VideoEncoder? = null
-        var mediaProducer: MoqMediaProducer? = null
+        var mediaProducer: MediaProducer? = null
     }
 
     private class ActiveAudioTrack {
         var source: AudioFrameSource? = null
         var encoder: AudioEncoder? = null
-        var mediaProducer: MoqMediaProducer? = null
+        var mediaProducer: MediaProducer? = null
     }
 
     private data class ActiveDataTrack(
         val emitter: DataTrackEmitter?,
-        val producer: MoqTrackProducer?,
+        val producer: TrackProducer?,
     )
 }
