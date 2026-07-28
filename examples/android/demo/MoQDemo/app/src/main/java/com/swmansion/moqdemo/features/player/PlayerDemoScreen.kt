@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -56,6 +55,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -165,13 +165,30 @@ fun PlayerDemoScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(vm.broadcasts, key = { it.id }) { entry ->
-                    BroadcastCard(
-                        entry = entry,
-                        vm = vm,
-                        isFullscreen = fullscreenEntry?.id == entry.id,
-                        onFullscreen = { fullscreenEntry = entry },
-                    )
+                if (vm.broadcasts.isEmpty()) {
+                    item {
+                        BroadcastPlaceholder("No Broadcasts")
+                    }
+                } else {
+                    item {
+                        BroadcastListCard(vm)
+                    }
+
+                    val selectedBroadcast = vm.selectedBroadcast
+                    if (selectedBroadcast == null) {
+                        item {
+                            BroadcastPlaceholder("Select a Broadcast")
+                        }
+                    } else {
+                        item(key = selectedBroadcast.id) {
+                            BroadcastCard(
+                                entry = selectedBroadcast,
+                                vm = vm,
+                                isFullscreen = fullscreenEntry?.id == selectedBroadcast.id,
+                                onFullscreen = { fullscreenEntry = selectedBroadcast },
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -184,6 +201,109 @@ fun PlayerDemoScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .zIndex(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun BroadcastListCard(vm: PlayerDemoViewModel) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "Broadcasts",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+
+            vm.broadcasts.forEach { entry ->
+                val isSelected = vm.selectedBroadcastPath == entry.id
+                val status = when {
+                    entry.offline -> "offline" to Color.Red
+                    entry.isPaused -> "paused" to Color(0xFFFFA500)
+                    entry.isPlaying -> "playing" to Color.Green
+                    isSelected -> "loading" to Color(0xFFFFA500)
+                    else -> "available" to MaterialTheme.colorScheme.onSurfaceVariant
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (isSelected) {
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                            } else {
+                                Color.Transparent
+                            },
+                        )
+                        .clickable(enabled = !entry.offline) { vm.selectBroadcast(entry.id) }
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = "Play ${entry.id}",
+                        tint = if (isSelected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = entry.id,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .background(status.second, RoundedCornerShape(3.dp)),
+                            )
+                            Text(
+                                text = status.first,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (isSelected) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = "Selected",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BroadcastPlaceholder(label: String) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label,
+                color = Color.Gray,
+                style = MaterialTheme.typography.bodyMedium,
             )
         }
     }
@@ -209,8 +329,8 @@ private fun BroadcastCard(
             ) {
                 val color = when {
                     entry.offline -> Color.Red
-                    entry.isPlaying -> Color.Green
                     entry.isPaused -> Color(0xFFFFA500)
+                    entry.isPlaying -> Color.Green
                     else -> Color.Gray
                 }
                 Box(
@@ -224,8 +344,8 @@ private fun BroadcastCard(
                 )
                 val statusLabel = when {
                     entry.offline -> "offline"
-                    entry.isPlaying -> "playing"
                     entry.isPaused -> "paused"
+                    entry.isPlaying -> "playing"
                     else -> "loading"
                 }
                 Text(

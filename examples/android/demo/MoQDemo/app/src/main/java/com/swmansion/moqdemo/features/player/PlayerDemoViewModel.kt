@@ -54,6 +54,11 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
+    var selectedBroadcastPath by mutableStateOf<String?>(null)
+        private set
+
+    val selectedBroadcast: BroadcastEntry?
+        get() = selectedBroadcastPath?.let { path -> broadcasts.find { it.id == path } }
 
     private var session: Session? = null
     private var sessionJobs: List<Job> = emptyList()
@@ -142,6 +147,17 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun selectBroadcast(path: String) {
+        val entry = broadcasts.find { it.id == path } ?: return
+        if (entry.offline) return
+        if (selectedBroadcastPath == path && entry.player != null) return
+
+        broadcasts.filter { it.player != null }.forEach(::stopEntry)
+        selectedBroadcastPath = path
+        entry.offline = false
+        startPlayer(entry)
+    }
+
     private fun observeCatalogs(broadcast: Broadcast) {
         catalogJobs.remove(broadcast.path)?.cancel()
         catalogJobs[broadcast.path] = viewModelScope.launch {
@@ -172,25 +188,37 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         val existing = broadcasts.find { it.id == catalog.path }
         val preferredVideoName = existing?.selectedVideoTrack?.name
         val preferredAudioName = existing?.selectedAudioTrack?.name
+        val selectedVideoTrack = preferredVideoTrack(catalog, preferredVideoName)
+        val selectedAudioTrack = preferredAudioTrack(catalog, preferredAudioName)
 
-        if (existing == null) {
-            val entry = BroadcastEntry(catalog)
-            broadcasts.add(entry)
-            if (hasPlayableTracks(catalog)) {
-                startPlayer(entry, preferredVideoName = null)
+        if (selectedVideoTrack == null && selectedAudioTrack == null) {
+            existing?.let {
+                stopEntry(it)
+                broadcasts.remove(it)
             }
             return
         }
 
+        if (existing == null) {
+            val entry = BroadcastEntry(catalog)
+            entry.selectedVideoTrack = selectedVideoTrack
+            entry.selectedAudioTrack = selectedAudioTrack
+            broadcasts.add(entry)
+            broadcasts.sortBy { it.id.lowercase() }
+            if (selectedBroadcastPath == catalog.path) {
+                startPlayer(entry)
+            }
+            return
+        }
+
+        val wasSelected = selectedBroadcastPath == catalog.path
         stopEntry(existing)
         existing.catalog = catalog
         existing.offline = false
-        if (hasPlayableTracks(catalog)) {
-            startPlayer(
-                existing,
-                preferredVideoName = preferredVideoName,
-                preferredAudioName = preferredAudioName,
-            )
+        existing.selectedVideoTrack = selectedVideoTrack
+        existing.selectedAudioTrack = selectedAudioTrack
+        if (wasSelected) {
+            startPlayer(existing)
         }
     }
 
@@ -213,23 +241,13 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         entry.startupDiagnostics = PlayerStartupDiagnostics()
         entry.isPlaying = false
         entry.isPaused = false
-        entry.selectedVideoTrack = null
-        entry.selectedAudioTrack = null
         entry.pendingVideoTrack = null
     }
 
-    private fun hasPlayableTracks(catalog: Catalog): Boolean {
-        return catalog.playableVideoTracks.isNotEmpty() || catalog.playableAudioTracks.isNotEmpty()
-    }
-
-    private fun startPlayer(
-        entry: BroadcastEntry,
-        preferredVideoName: String?,
-        preferredAudioName: String? = null,
-    ) {
+    private fun startPlayer(entry: BroadcastEntry) {
         val catalog = entry.catalog
-        val initialVideo = preferredVideoTrack(catalog, preferredVideoName)
-        val initialAudio = preferredAudioTrack(catalog, preferredAudioName)
+        val initialVideo = preferredVideoTrack(catalog, entry.selectedVideoTrack?.name)
+        val initialAudio = preferredAudioTrack(catalog, entry.selectedAudioTrack?.name)
         if (initialVideo == null && initialAudio == null) {
             return
         }
@@ -244,6 +262,9 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
                 volume = entry.volume,
             )
         } catch (_: IllegalArgumentException) {
+            return
+        } catch (_: IllegalStateException) {
+            entry.offline = true
             return
         }
         entry.player = player
@@ -357,6 +378,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         cancelCatalogJobs()
         subscription?.close()
         subscription = null
+        selectedBroadcastPath = null
         for (entry in broadcasts) {
             stopEntry(entry)
         }
