@@ -1,14 +1,15 @@
 # Architecture
 
 moq-kit provides native Swift and Kotlin SDKs for publishing and playing low-latency media
-streams over QUIC. The repository does not implement the MoQ protocol itself; it wraps the
-published UniFFI bindings built from the Rust `moq-ffi` crate and adds platform-native
+streams over QUIC. The repository does not implement the MoQ protocol itself; it builds on
+the published platform packages backed by the Rust `moq-ffi` crate and adds platform-native
 capture, encoding, playback, lifecycle, and demo-app integrations.
 
 The stack is:
 
 ```text
 moq-kit Swift / Kotlin APIs
+moq-swift wrappers (iOS)
 moq-ffi UniFFI bindings
 hang media and catalog layer
 moq-lite transport
@@ -21,8 +22,10 @@ moq-kit currently targets `moq-lite`, not the fast-moving IETF `moq-transport` w
 
 `Package.swift` defines the Swift package. The public Swift SDK lives under
 `ios/Sources/MoQKit`. The Swift SDK depends on the upstream
-`https://github.com/moq-dev/moq-swift` package, using its `MoqFFI` module for generated
-UniFFI Swift bindings and binary artifacts.
+`https://github.com/moq-dev/moq-swift` package, using its `Moq` module for stateful client,
+session, origin, broadcast, track, and media wrappers plus its public record aliases. The
+package supplies the generated UniFFI Swift bindings and binary artifacts underneath those
+wrappers.
 
 `android/moqkit` is the Android Gradle project. The publishable Kotlin SDK module is
 `android/moqkit/moqkit`. Public Kotlin APIs live under `com.swmansion.moqkit`; generated
@@ -39,8 +42,8 @@ creates separate consume and publish origins, starts broadcast discovery, regist
 publishers, and tears down active work when the connection closes.
 
 Publishing is centered on `Publisher`. A publisher collects track descriptors before start,
-then connects frame sources to encoders and writes encoded frames or data objects to FFI
-producers. Registering a publisher with `Session.publish` creates the FFI broadcast
+then connects frame sources to encoders and writes encoded frames or data objects to Moq
+producers. Registering a publisher with `Session.publish` creates the Moq broadcast
 producer at the chosen path, so registration must happen before `Publisher.start`. Camera, multi-camera capture, microphone, screen capture, and raw data emitters
 are platform-specific sources feeding the same publish shape.
 
@@ -79,9 +82,11 @@ builds resolve `dev.moq:moq` through Gradle/Maven Central, and iOS package build
 ## Architectural Invariants
 
 Generated UniFFI bindings are build artifacts. Do not manually edit generated Swift or
-Kotlin bindings; change Rust `moq-ffi` upstream or the platform wrapper layer. For iOS,
-inspect `MoqFFI` in the resolved `moq-swift` checkout when generated type shapes are
-unclear. For Android, inspect `uniffi.moq` from the resolved `dev.moq:moq` dependency.
+Kotlin bindings; change Rust `moq-ffi` upstream or the platform wrapper layer. iOS production
+code should import the public `Moq` module rather than `MoqFFI`, using its stateful wrappers
+and record aliases whenever available. Inspect the resolved `MoqFFI` sources only when an
+underlying generated type shape is unclear. For Android, inspect `uniffi.moq` from the
+resolved `dev.moq:moq` dependency.
 
 The platform SDKs depend on bindings built from `moq-ffi`, not on `libmoq`. Public Swift
 and Kotlin APIs should hide generated UniFFI types unless there is a deliberate API reason

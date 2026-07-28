@@ -1,7 +1,6 @@
 import AVFoundation
 import CoreMedia
 import QuartzCore
-import MoqFFI
 
 // MARK: - VideoRenderer
 

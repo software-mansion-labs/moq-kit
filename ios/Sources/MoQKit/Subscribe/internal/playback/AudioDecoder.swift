@@ -1,4 +1,4 @@
-import MoqFFI
+import Moq
 import AVFoundation
 
 // MARK: - AudioDecoder
@@ -11,7 +11,7 @@ final class AudioDecoder: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let inputFormat: AVAudioFormat
 
-    init(config: MoqAudio) throws {
+    init(config: Moq.Audio) throws {
         let codec = config.codec.lowercased()
 
         let formatID: AudioFormatID

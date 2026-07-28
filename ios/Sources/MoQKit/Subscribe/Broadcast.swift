@@ -1,5 +1,5 @@
 import Foundation
-import MoqFFI
+import Moq
 
 // MARK: - VideoSize
 
@@ -26,7 +26,7 @@ public struct VideoTrackConfig: Sendable {
     /// Frame rate in frames per second. `nil` when not specified.
     public let framerate: Double?
 
-    init(_ raw: MoqVideo) {
+    init(_ raw: Moq.Video) {
         self.codec = raw.codec
         self.coded = raw.coded.map { VideoSize(width: $0.width, height: $0.height) }
         self.displayRatio = raw.displayAspect.map { VideoSize(width: $0.width, height: $0.height) }
@@ -54,7 +54,7 @@ public struct AudioTrackConfig: Sendable {
     /// Target bitrate in bits per second. `nil` when not specified.
     public let bitrate: UInt64?
 
-    init(_ raw: MoqAudio) {
+    init(_ raw: Moq.Audio) {
         self.codec = raw.codec
         self.sampleRate = raw.sampleRate
         self.channelCount = raw.channelCount
@@ -85,9 +85,9 @@ public struct VideoTrackInfo: TrackInfo, Sendable {
     /// Codec, resolution, and format parameters for this video rendition.
     public let config: VideoTrackConfig
 
-    let rawConfig: MoqVideo
+    let rawConfig: Moq.Video
 
-    init(name: String, config: MoqVideo) {
+    init(name: String, config: Moq.Video) {
         self.name = name
         self.rawConfig = config
         self.config = VideoTrackConfig(config)
@@ -101,9 +101,9 @@ public struct AudioTrackInfo: TrackInfo, Sendable {
     /// Codec, sample rate, and channel configuration for this audio rendition.
     public let config: AudioTrackConfig
 
-    let rawConfig: MoqAudio
+    let rawConfig: Moq.Audio
 
-    init(name: String, config: MoqAudio) {
+    init(name: String, config: Moq.Audio) {
         self.name = name
         self.rawConfig = config
         self.config = AudioTrackConfig(config)
@@ -127,7 +127,7 @@ public struct Catalog: Sendable {
 
     init(
         path: String,
-        catalog: MoqCatalog,
+        catalog: Moq.Catalog,
         mediaSource: BroadcastMediaSource
     ) {
         self.path = path
@@ -151,9 +151,9 @@ public struct Broadcast: Sendable {
     public let path: String
 
     let mediaSource: BroadcastMediaSource
-    var consumer: MoqBroadcastConsumer { mediaSource.consumer }
+    var consumer: Moq.BroadcastConsumer { mediaSource.consumer }
 
-    init(path: String, consumer: MoqBroadcastConsumer) {
+    init(path: String, consumer: Moq.BroadcastConsumer) {
         self.path = path
         self.mediaSource = BroadcastMediaSource(consumer: consumer)
     }
@@ -196,7 +196,7 @@ public struct Broadcast: Sendable {
             let task = Task.detached {
                 defer { continuation.finish() }
 
-                let catalogConsumer: MoqCatalogConsumer
+                let catalogConsumer: Moq.CatalogConsumer
                 do {
                     catalogConsumer = try await self.consumer.subscribeCatalog()
                 } catch {
@@ -240,11 +240,11 @@ public struct Broadcast: Sendable {
 /// so cancellation works whichever side wins the race.
 private final class CatalogConsumerBox: @unchecked Sendable {
     private let lock = UnfairLock()
-    private var consumer: MoqCatalogConsumer?
+    private var consumer: Moq.CatalogConsumer?
     private var cancelled = false
 
     /// Returns false when the stream was already cancelled; the consumer is cancelled in place.
-    func set(_ consumer: MoqCatalogConsumer) -> Bool {
+    func set(_ consumer: Moq.CatalogConsumer) -> Bool {
         let shouldCancel = lock.withLock {
             if cancelled {
                 return true
@@ -271,11 +271,11 @@ private final class CatalogConsumerBox: @unchecked Sendable {
 // MARK: - Broadcast Media Source
 
 final class BroadcastMediaSource: @unchecked Sendable {
-    let consumer: MoqBroadcastConsumer
+    let consumer: Moq.BroadcastConsumer
 
     private let mediaSubscriptions: MediaSubscriptionRegistry
 
-    init(consumer: MoqBroadcastConsumer) {
+    init(consumer: Moq.BroadcastConsumer) {
         self.consumer = consumer
         self.mediaSubscriptions = MediaSubscriptionRegistry(broadcast: consumer)
     }
@@ -305,7 +305,7 @@ public final class BroadcastSubscription: @unchecked Sendable {
     private let lock = UnfairLock()
     private weak var session: Session?
     private let broadcastsContinuation: AsyncStream<Broadcast>.Continuation
-    private var announced: MoqAnnounced?
+    private var announced: Moq.Announced?
     private var observeTask: Task<Void, Never>?
     private var finished = false
 
@@ -313,7 +313,7 @@ public final class BroadcastSubscription: @unchecked Sendable {
         lock.withLock { finished }
     }
 
-    init(prefix: String, session: Session, announced: MoqAnnounced) {
+    init(prefix: String, session: Session, announced: Moq.Announced) {
         self.prefix = prefix
         self.session = session
         self.announced = announced
@@ -352,8 +352,8 @@ public final class BroadcastSubscription: @unchecked Sendable {
                 guard !Task.isCancelled else { break }
 
                 let broadcast = Broadcast(
-                    path: announcement.path(),
-                    consumer: announcement.broadcast()
+                    path: announcement.path,
+                    consumer: announcement.broadcast
                 )
                 yield(broadcast)
             } catch MoqError.Cancelled {
@@ -384,7 +384,7 @@ public final class BroadcastSubscription: @unchecked Sendable {
     }
 
     private func finish(cancelAnnounced: Bool, unregister: Bool) {
-        let state = lock.withLock { () -> (MoqAnnounced?, Task<Void, Never>?)? in
+        let state = lock.withLock { () -> (Moq.Announced?, Task<Void, Never>?)? in
             guard !finished else { return nil }
             finished = true
 

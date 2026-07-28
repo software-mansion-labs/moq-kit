@@ -12,7 +12,7 @@ moq-kit gives iOS and Android apps platform-native APIs for Media over QUIC-styl
 streaming: connect to a relay, discover broadcasts, publish camera/microphone/screen
 tracks, play catalog-described streams, and send or receive raw data tracks.
 
-It is built on top of the published UniFFI bindings generated from
+It is built on the published platform packages backed by UniFFI bindings generated from
 [`moq-ffi`](https://github.com/moq-dev/moq/tree/main/rs/moq-ffi), the Rust bindings from
 Luke Curley's [`moq-dev/moq`](https://github.com/moq-dev/moq) project.
 
@@ -152,8 +152,8 @@ Add the Swift package and depend on the `MoQKit` product:
 .product(name: "MoQKit", package: "moq-kit")
 ```
 
-The Swift package depends on `https://github.com/moq-dev/moq-swift` from `0.2.29` for the
-generated `MoqFFI` Swift bindings and prebuilt XCFramework.
+The Swift package depends on `https://github.com/moq-dev/moq-swift` from `0.4.1` for its
+Swift abstractions, generated UniFFI bindings, and prebuilt XCFramework.
 
 The iOS SDK does not add permissions, entitlements, or audio-session configuration for
 you. Camera publishing requires `NSCameraUsageDescription`. Microphone publishing requires

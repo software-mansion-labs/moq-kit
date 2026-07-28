@@ -1,4 +1,4 @@
-import MoqFFI
+import Moq
 import AVFoundation
 import Atomics
 import CoreMedia
@@ -37,7 +37,7 @@ final class AudioRenderer: @unchecked Sendable {
     private var volume: Float
 
     init(
-        config: MoqAudio,
+        config: Moq.Audio,
         clock: AudioDrivenClock,
         timeline: TrackTimeline,
         targetLatency: Duration,

@@ -1,6 +1,6 @@
 import AVFoundation
 import CoreMedia
-import MoqFFI
+import Moq
 
 // MARK: - CompressedVideoFrame
 
@@ -57,7 +57,7 @@ final class VideoRendererTrack: @unchecked Sendable {
     init(
         trackName: String,
         epoch: TrackEpoch,
-        config: MoqVideo,
+        config: Moq.Video,
         targetBuffering: Duration
     ) throws {
         self.trackName = trackName

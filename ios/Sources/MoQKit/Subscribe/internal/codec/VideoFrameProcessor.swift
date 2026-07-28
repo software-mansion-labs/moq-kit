@@ -1,6 +1,6 @@
 import CoreMedia
 import Foundation
-import MoqFFI
+import Moq
 
 /// Resolves video format descriptions and preprocesses payloads for AVSampleBufferDisplayLayer.
 ///
@@ -35,7 +35,7 @@ final class VideoFrameProcessor: @unchecked Sendable {
     private let codedHeight: Int32
     private var formatDescription: CMFormatDescription?
 
-    init(config: MoqVideo) throws {
+    init(config: Moq.Video) throws {
         guard let codec = FrameVideoCodec(string: config.codec) else {
             throw SessionError.unsupportedCodec(config.codec)
         }

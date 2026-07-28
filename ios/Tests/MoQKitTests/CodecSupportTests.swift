@@ -1,5 +1,5 @@
 @testable import MoQKit
-import MoqFFI
+import Moq
 import XCTest
 
 final class VideoCodecSupportTests: XCTestCase {
@@ -22,7 +22,7 @@ final class VideoCodecSupportTests: XCTestCase {
     private func makeVideoTrack(codec: String) -> VideoTrackInfo {
         VideoTrackInfo(
             name: "video-\(codec)",
-            config: MoqVideo(
+            config: Moq.Video(
                 codec: codec,
                 description: nil,
                 coded: nil,

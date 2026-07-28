@@ -1,5 +1,5 @@
 import Foundation
-import MoqFFI
+import Moq
 
 // MARK: - TrackDelivery
 
@@ -34,10 +34,10 @@ private final class TrackSubscriptionState: @unchecked Sendable {
     private let lock = UnfairLock()
     private var closed = false
     private var readTask: Task<Void, Never>?
-    private var currentGroup: MoqGroupConsumer?
-    private var track: MoqTrackConsumer?
+    private var currentGroup: Moq.GroupConsumer?
+    private var track: Moq.TrackConsumer?
 
-    func setTrack(_ track: MoqTrackConsumer) -> Bool {
+    func setTrack(_ track: Moq.TrackConsumer) -> Bool {
         let shouldCancel = lock.withLock {
             if closed {
                 return true
@@ -68,7 +68,7 @@ private final class TrackSubscriptionState: @unchecked Sendable {
         }
     }
 
-    func close() -> (task: Task<Void, Never>?, group: MoqGroupConsumer?, track: MoqTrackConsumer?)? {
+    func close() -> (task: Task<Void, Never>?, group: Moq.GroupConsumer?, track: Moq.TrackConsumer?)? {
         lock.withLock {
             guard !closed else { return nil }
             closed = true
@@ -82,7 +82,7 @@ private final class TrackSubscriptionState: @unchecked Sendable {
         }
     }
 
-    func setCurrentGroup(_ group: MoqGroupConsumer) -> Bool {
+    func setCurrentGroup(_ group: Moq.GroupConsumer) -> Bool {
         let shouldCancel = lock.withLock {
             if closed {
                 return true
@@ -99,7 +99,7 @@ private final class TrackSubscriptionState: @unchecked Sendable {
         return true
     }
 
-    func clearCurrentGroup(_ group: MoqGroupConsumer) {
+    func clearCurrentGroup(_ group: Moq.GroupConsumer) {
         lock.withLock {
             if currentGroup === group {
                 currentGroup = nil
@@ -117,11 +117,11 @@ public final class TrackSubscription: @unchecked Sendable {
     /// underlying subscription error occurs.
     public let objects: AsyncThrowingStream<TrackObject, Error>
 
-    private let retainedBroadcast: MoqBroadcastConsumer
+    private let retainedBroadcast: Moq.BroadcastConsumer
     private let continuation: AsyncThrowingStream<TrackObject, Error>.Continuation
     private let state = TrackSubscriptionState()
 
-    init(broadcast: MoqBroadcastConsumer, name: String, delivery: TrackDelivery) throws {
+    init(broadcast: Moq.BroadcastConsumer, name: String, delivery: TrackDelivery) throws {
         self.retainedBroadcast = broadcast
 
         var pendingContinuation: AsyncThrowingStream<TrackObject, Error>.Continuation?
@@ -165,7 +165,7 @@ public final class TrackSubscription: @unchecked Sendable {
     }
 
     private static func readObjects(
-        from broadcast: MoqBroadcastConsumer,
+        from broadcast: Moq.BroadcastConsumer,
         name: String,
         delivery: TrackDelivery,
         state: TrackSubscriptionState,
@@ -179,7 +179,7 @@ public final class TrackSubscription: @unchecked Sendable {
             }
 
             while !Task.isCancelled {
-                let group: MoqGroupConsumer?
+                let group: Moq.GroupConsumer?
                 switch delivery {
                 case .monotonic:
                     group = try await track.nextGroup()
@@ -201,7 +201,7 @@ public final class TrackSubscription: @unchecked Sendable {
                     group.cancel()
                 }
 
-                let sequence = group.sequence()
+                let sequence = group.sequence
                 var objectIndex: UInt64 = 0
 
                 while !Task.isCancelled {

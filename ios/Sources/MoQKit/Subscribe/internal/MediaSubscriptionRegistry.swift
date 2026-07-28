@@ -1,5 +1,5 @@
 import Foundation
-import MoqFFI
+import Moq
 
 // MARK: - Media Frame Stream
 
@@ -38,7 +38,7 @@ final class MediaFrameStream: @unchecked Sendable {
 
 struct MediaSubscriptionKey: Hashable, Sendable {
     let name: String
-    let container: MoqContainer
+    let container: Moq.Container
 
     init(_ request: MediaTrackRequest) {
         self.name = request.name
@@ -48,14 +48,14 @@ struct MediaSubscriptionKey: Hashable, Sendable {
 
 final class MediaSubscriptionRegistry: @unchecked Sendable {
     private let lock = UnfairLock()
-    private let broadcast: any MoqBroadcastConsumerProtocol
+    private let broadcast: Moq.BroadcastConsumer
     private var hubs: [MediaSubscriptionKey: MediaFrameHub] = [:]
 
     var activeSubscriptionCount: Int {
         lock.withLock { hubs.count }
     }
 
-    init(broadcast: any MoqBroadcastConsumerProtocol) {
+    init(broadcast: Moq.BroadcastConsumer) {
         self.broadcast = broadcast
     }
 
@@ -83,7 +83,7 @@ final class MediaSubscriptionRegistry: @unchecked Sendable {
                     try await broadcast.subscribeMedia(
                         name: request.name,
                         container: request.container.rawContainer,
-                        subscription: MoqSubscription(
+                        subscription: Moq.Subscription(
                             latencyMaxMs: request.targetBuffering.millisecondsUInt64Clamped)
                     )
                 }
@@ -114,7 +114,7 @@ final class MediaSubscriptionRegistry: @unchecked Sendable {
 fileprivate final class MediaFrameHub: @unchecked Sendable {
     private typealias Continuation = AsyncThrowingStream<MediaFrame, Error>.Continuation
     fileprivate typealias FinishHandler = @Sendable (MediaFrameHub) -> Void
-    fileprivate typealias Subscribe = @Sendable () async throws -> any MoqMediaConsumerProtocol
+    fileprivate typealias Subscribe = @Sendable () async throws -> Moq.MediaConsumer
 
     // The (async) upstream subscribe runs on the shared read task; subscribers are
     // created from non-async contexts.
@@ -122,7 +122,7 @@ fileprivate final class MediaFrameHub: @unchecked Sendable {
     private let onFinished: FinishHandler
     private let lock = UnfairLock()
 
-    private var consumer: (any MoqMediaConsumerProtocol)?
+    private var consumer: Moq.MediaConsumer?
     private var continuations: [UUID: Continuation] = [:]
     private var readTask: Task<Void, Never>?
     private var finished = false
@@ -212,7 +212,7 @@ fileprivate final class MediaFrameHub: @unchecked Sendable {
         }
     }
 
-    private func currentConsumer() -> (any MoqMediaConsumerProtocol)? {
+    private func currentConsumer() -> Moq.MediaConsumer? {
         lock.withLock { consumer }
     }
 

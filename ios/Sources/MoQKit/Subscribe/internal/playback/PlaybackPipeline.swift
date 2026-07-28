@@ -1,6 +1,6 @@
 import AVFoundation
 import Foundation
-import MoqFFI
+import Moq
 
 private let playbackStatsPTSCorrectionThreshold: Duration = .seconds(2)
 
@@ -650,7 +650,7 @@ extension PlaybackPipeline {
         trackName: String,
         subscription: MediaTrack,
         renderer: AudioRenderer,
-        config: MoqAudio,
+        config: Moq.Audio,
         frameObserver: any MediaFrameObserver,
         tracker: PlaybackStatsTracker,
         timeline: TrackTimeline,

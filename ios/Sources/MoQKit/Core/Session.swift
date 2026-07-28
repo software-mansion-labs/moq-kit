@@ -1,5 +1,5 @@
 import Foundation
-import MoqFFI
+import Moq
 
 // MARK: - SessionError (codec/format related)
 
@@ -106,10 +106,10 @@ public actor Session {
     private var currentState: SessionState = .idle
 
     // Pipeline objects
-    private var client: MoqClient?
-    private var consumeOrigin: MoqOriginProducer?
-    private var publishOrigin: MoqOriginProducer?
-    private var session: MoqSession?
+    private var client: Moq.Client?
+    private var consumeOrigin: Moq.OriginProducer?
+    private var publishOrigin: Moq.OriginProducer?
+    private var moqSession: Moq.Session?
 
     // Per-path publish state
     private var activePublishers: [String: Publisher] = [:]
@@ -122,9 +122,6 @@ public actor Session {
     ///
     /// - Parameter url: The WebTransport URL of the MoQ relay (e.g. `"https://relay.example.com/moq"`).
     public init(url: String) {
-        //        do {
-        //            try moqLogLevel(level: "TRACE")
-        //        } catch {}
         self.url = url
 
         var stateCont: AsyncStream<SessionState>.Continuation!
@@ -154,21 +151,21 @@ public actor Session {
 
         do {
             // 1. Create separate origins for consuming and publishing
-            let consumeOrigin = MoqOriginProducer(options: MoqOriginOptions())
+            let consumeOrigin = Moq.OriginProducer()
             self.consumeOrigin = consumeOrigin
 
-            let publishOrigin = MoqOriginProducer(options: MoqOriginOptions())
+            let publishOrigin = Moq.OriginProducer()
             self.publishOrigin = publishOrigin
 
-            let client = MoqClient()
-            client.setTlsSystemRoots(systemRoots: true)
-            client.setConsume(origin: consumeOrigin)
-            client.setPublish(origin: publishOrigin)
+            let client = Moq.Client()
+            client.setTlsSystemRoots(true)
+            client.setConsume(consumeOrigin)
+            client.setPublish(publishOrigin)
             self.client = client
 
             // 2. Connect session
-            let session = try await client.connect(url: url)
-            self.session = session
+            let session = try await client.connect(to: url)
+            self.moqSession = session
 
             // 3. Connection established
             transition(to: .connected)
@@ -310,7 +307,7 @@ public actor Session {
         }
         activePublishers.removeAll()
 
-        session?.cancel(code: 0)
+        moqSession?.shutdown()
         client?.cancel()
         stateContinuation.finish()
     }
@@ -360,8 +357,8 @@ public actor Session {
         for (_, publisher) in activePublishers { publisher.stop() }
         activePublishers.removeAll()
 
-        session?.cancel(code: 0)
-        session = nil
+        moqSession?.shutdown()
+        moqSession = nil
 
         client?.cancel()
         client = nil

@@ -1,20 +1,20 @@
 import CoreMedia
 import Foundation
-import MoqFFI
+import Moq
 
 /// Push-based source for publishing app-defined binary messages on an object track.
 ///
 /// Create one emitter per published data track, hand it to ``Publisher/addDataTrack(name:source:)``,
 /// then keep a reference and call ``send(_:)`` whenever your app has a new payload.
 public final class DataTrackEmitter: @unchecked Sendable {
-    private var producer: MoqTrackProducer?
+    private var producer: Moq.TrackProducer?
     private var clock: PublisherClock?
     private var stopped = false
 
     /// Creates an emitter that can be attached to a published data track.
     public init() {}
 
-    internal func attach(_ producer: MoqTrackProducer, clock: PublisherClock) {
+    internal func attach(_ producer: Moq.TrackProducer, clock: PublisherClock) {
         self.clock = clock
         self.producer = producer
     }
@@ -34,6 +34,6 @@ public final class DataTrackEmitter: @unchecked Sendable {
         // broadcast's media tracks.
         let now = CMClockGetTime(CMClockGetHostTimeClock())
         let timestampUs = clock?.timestampUs(from: now) ?? 0
-        try producer.writeFrame(frame: MoqFrame(payload: data, timestampUs: timestampUs))
+        try producer.writeFrame(data, timestampUs: timestampUs)
     }
 }

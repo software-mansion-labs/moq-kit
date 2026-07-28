@@ -1,4 +1,4 @@
-import MoqFFI
+import Moq
 import AVFoundation
 import CoreMedia
 
@@ -8,7 +8,7 @@ enum SampleBufferFactory {
 
     // MARK: - Video Format Descriptions
 
-    static func makeVideoFormatDescription(from config: MoqVideo) throws
+    static func makeVideoFormatDescription(from config: Moq.Video) throws
         -> CMFormatDescription
     {
         guard let descData = config.description else {
@@ -135,7 +135,7 @@ enum SampleBufferFactory {
 
     // MARK: - Audio Format Descriptions
 
-    static func makeAudioFormatDescription(from config: MoqAudio) throws
+    static func makeAudioFormatDescription(from config: Moq.Audio) throws
         -> CMFormatDescription
     {
         let codec = config.codec.lowercased()

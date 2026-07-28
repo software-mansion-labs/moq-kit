@@ -1,6 +1,6 @@
 import AVFoundation
 import Foundation
-import MoqFFI
+import Moq
 
 // MARK: - Audio Sample Format
 
@@ -87,8 +87,8 @@ public struct AudioTrackRequest: Sendable, Equatable {
         )
     }
 
-    var rawConfig: MoqAudio {
-        MoqAudio(
+    var rawConfig: Moq.Audio {
+        Moq.Audio(
             codec: codec,
             description: codecDescription,
             sampleRate: sampleRate,

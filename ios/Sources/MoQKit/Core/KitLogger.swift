@@ -1,5 +1,5 @@
 import os
-import MoqFFI
+import Moq
 
 /// Centralized logging for MoQKit.
 ///
@@ -29,7 +29,7 @@ public enum KitLogger {
         initLock.withLock { initialized in
             guard !initialized else { return }
             initialized = true
-            try? moqLogLevel(level: level)
+            try? Moq.logLevel(level)
         }
     }
 }

@@ -1,6 +1,6 @@
 import AVFoundation
 import CoreMedia
-import MoqFFI
+import Moq
 
 // MARK: - Publisher State & Events
 
@@ -129,20 +129,20 @@ private struct DataTrackDescriptor {
 private final class VideoTrack {
     var source: (any FrameSource)?
     var encoder: VideoEncoder?
-    var mediaProducer: MoqMediaProducer?
+    var mediaProducer: Moq.MediaProducer?
 }
 
 /// Holds the runtime objects for an active audio track.
 private final class AudioTrack {
     var source: (any FrameSource)?
     var encoder: AudioEncoder?
-    var mediaProducer: MoqMediaProducer?
+    var mediaProducer: Moq.MediaProducer?
 }
 
 /// Holds the runtime objects for an active object track.
 private final class DataTrack {
     var emitter: DataTrackEmitter?
-    var producer: MoqTrackProducer?
+    var producer: Moq.TrackProducer?
 }
 
 // MARK: - Publisher
@@ -175,13 +175,13 @@ public final class Publisher {
     /// Emits ``PublisherEvent`` values as tracks start, stop, or fail.
     public let events: AsyncStream<PublisherEvent>
 
-    /// The underlying FFI broadcast producer, created by ``Session/publish(path:publisher:)``
+    /// The underlying Moq broadcast producer, created by ``Session/publish(path:publisher:)``
     /// at the broadcast path. Tracks cannot start before it is attached.
-    internal private(set) var broadcast: MoqBroadcastProducer?
+    internal private(set) var broadcast: Moq.BroadcastProducer?
 
     internal let clock = PublisherClock()
 
-    internal func attachBroadcast(_ broadcast: MoqBroadcastProducer) throws {
+    internal func attachBroadcast(_ broadcast: Moq.BroadcastProducer) throws {
         guard self.broadcast == nil else {
             throw SessionError.invalidConfiguration("Publisher is already registered with a session")
         }
@@ -414,7 +414,7 @@ public final class Publisher {
         }
     }
 
-    private func startVideoTrack(_ desc: VideoTrackDescriptor, broadcast: MoqBroadcastProducer) throws {
+    private func startVideoTrack(_ desc: VideoTrackDescriptor, broadcast: Moq.BroadcastProducer) throws {
         let active = VideoTrack()
         let encoder = VideoEncoder(config: desc.config)
         active.encoder = encoder
@@ -434,7 +434,9 @@ public final class Publisher {
                 guard let initData = frame.initData else { return }
                 do {
                     let producer = try broadcast.publishMedia(
-                        init: MoqInit(format: formatString, data: initData, video: nil))
+                        format: formatString,
+                        initData: initData
+                    )
                     active.mediaProducer = producer
                     KitLogger.publish.debug(
                         "Video track '\(trackHandle.name)' media producer created")
@@ -455,8 +457,7 @@ public final class Publisher {
 
             let timestampUs = clock.timestampUs(from: frame.presentationTime)
             do {
-                try active.mediaProducer?.writeFrame(
-                    frame: MoqFrame(payload: frame.data, timestampUs: timestampUs))
+                try active.mediaProducer?.writeFrame(frame.data, timestampUs: timestampUs)
             } catch {
                 KitLogger.publish.error("Failed to write video frame: \(error)")
             }
@@ -488,7 +489,7 @@ public final class Publisher {
 
     // MARK: - Private: Audio Track Wiring
 
-    private func startAudioTrack(_ desc: AudioTrackDescriptor, broadcast: MoqBroadcastProducer) throws {
+    private func startAudioTrack(_ desc: AudioTrackDescriptor, broadcast: Moq.BroadcastProducer) throws {
         let active = AudioTrack()
         let encoder = AudioEncoder(config: desc.config)
         active.encoder = encoder
@@ -507,7 +508,9 @@ public final class Publisher {
                 guard let initData = frame.initData else { return }
                 do {
                     let producer = try broadcast.publishMedia(
-                        init: MoqInit(format: formatString, data: initData, video: nil))
+                        format: formatString,
+                        initData: initData
+                    )
                     active.mediaProducer = producer
                     KitLogger.publish.debug(
                         "Audio track '\(trackHandle.name)' media producer created")
@@ -528,8 +531,7 @@ public final class Publisher {
 
             let timestampUs = clock.timestampUs(from: frame.presentationTime)
             do {
-                try active.mediaProducer?.writeFrame(
-                    frame: MoqFrame(payload: frame.data, timestampUs: timestampUs))
+                try active.mediaProducer?.writeFrame(frame.data, timestampUs: timestampUs)
             } catch {
                 KitLogger.publish.error("Failed to write audio frame: \(error)")
             }
@@ -561,7 +563,7 @@ public final class Publisher {
 
     // MARK: - Private: Object Track Wiring
 
-    private func startObjectTrack(_ desc: DataTrackDescriptor, broadcast: MoqBroadcastProducer) throws {
+    private func startObjectTrack(_ desc: DataTrackDescriptor, broadcast: Moq.BroadcastProducer) throws {
         let active = DataTrack()
         let producer = try broadcast.publishTrack(name: desc.track.name, info: nil)
         active.producer = producer

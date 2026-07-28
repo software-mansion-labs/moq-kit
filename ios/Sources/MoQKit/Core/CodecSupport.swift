@@ -1,6 +1,6 @@
 import AVFoundation
 import CoreMedia
-import MoqFFI
+import Moq
 import VideoToolbox
 
 internal struct CodecSupportResult {
@@ -90,7 +90,7 @@ internal enum CodecSupport {
         return .supported
     }
 
-    static func videoPlayback(_ config: MoqVideo) -> CodecSupportResult {
+    static func videoPlayback(_ config: Moq.Video) -> CodecSupportResult {
         let codec = config.codec.lowercased()
         if codec.hasPrefix("avc") {
             return .supported
@@ -103,7 +103,7 @@ internal enum CodecSupport {
         }
     }
 
-    static func audioPlayback(_ config: MoqAudio) -> CodecSupportResult {
+    static func audioPlayback(_ config: Moq.Audio) -> CodecSupportResult {
         do {
             _ = try AudioDecoder(config: config)
             return .supported

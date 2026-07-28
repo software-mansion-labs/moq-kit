@@ -1,19 +1,19 @@
 import Foundation
-import MoqFFI
+import Moq
 
-extension MoqVideo {
+extension Moq.Video {
     var moqKitDebugDescription: String {
         "codec=\(codec), width=\(coded?.width ?? 0), height=\(coded?.height ?? 0)"
     }
 }
 
-extension MoqAudio {
+extension Moq.Audio {
     var moqKitDebugDescription: String {
         "codec=\(codec), sampleRate=\(sampleRate), channels=\(channelCount)"
     }
 }
 
-extension MoqContainer {
+extension Moq.Container {
     var moqKitDescription: String {
         switch self {
         case .legacy:
