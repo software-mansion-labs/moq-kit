@@ -318,12 +318,14 @@ internal class AudioRenderer(
         decoderRecovery = null
         decoderScope.cancel()
 
+        // Drain clock readers before release clears AudioTrack's native pointer.
+        clock.detachAudioDriver()
+
         try {
             audioTrack?.release()
         } catch (_: Exception) {}
         audioTrack = null
 
-        clock.detachAudioDriver()
         Log.d(TAG, "AudioRenderer stopped")
     }
 
