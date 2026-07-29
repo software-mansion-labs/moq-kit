@@ -24,10 +24,6 @@ struct SessionPlayerView: View {
                 Spacer()
             }
 
-            if let stats = viewModel.connectionStats {
-                ConnectionStatsCardView(stats: stats)
-            }
-
             if viewModel.broadcasts.isEmpty {
                 VideoCardView {
                     RoundedRectangle(cornerRadius: 12)
@@ -39,57 +35,105 @@ struct SessionPlayerView: View {
                         }
                 }
             } else {
-                ForEach(viewModel.broadcasts) { entry in
-                    BroadcastPlayerView(entry: entry)
+                BroadcastListView(viewModel: viewModel)
+
+                if let entry = viewModel.selectedBroadcast {
+                    BroadcastPlayerView(
+                        entry: entry,
+                        connectionStats: viewModel.connectionStats
+                    )
+                } else {
+                    VideoCardView {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.black)
+                            .aspectRatio(16 / 9, contentMode: .fit)
+                            .overlay {
+                                Text("Select a Broadcast")
+                                    .foregroundStyle(.white.opacity(0.5))
+                            }
+                    }
                 }
             }
         }
     }
 }
 
-// MARK: - Connection Stats
+// MARK: - Broadcast List
 
-private struct ConnectionStatsCardView: View {
-    let stats: ConnectionStats
+private struct BroadcastListView: View {
+    @ObservedObject var viewModel: PlayerDemoViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Connection", systemImage: "network")
-                .font(.subheadline)
-                .fontWeight(.medium)
-            StatsSection(title: "Transport") {
-                StatRow(
-                    label: "Smoothed RTT",
-                    value: stats.roundTripTime.map(formatMs) ?? "pending"
-                )
-                StatRow(
-                    label: "Estimated receive",
-                    value: stats.estimatedReceiveRateBps.map(formatBitsPerSecond) ?? "pending"
-                )
-                StatRow(
-                    label: "Estimated send",
-                    value: stats.estimatedSendRateBps.map(formatBitsPerSecond) ?? "pending"
+            Text("Broadcasts")
+                .font(.headline)
+
+            ForEach(viewModel.broadcasts) { entry in
+                BroadcastListRow(
+                    entry: entry,
+                    isSelected: viewModel.selectedBroadcastPath == entry.id,
+                    onSelect: { viewModel.selectBroadcast(path: entry.id) }
                 )
             }
         }
         .padding(12)
-        .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
+        .background(.background, in: RoundedRectangle(cornerRadius: 12))
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+    }
+}
+
+private struct BroadcastListRow: View {
+    @ObservedObject var entry: BroadcastEntry
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    private var status: (label: String, color: Color) {
+        if entry.offline { return ("offline", .red) }
+        if entry.isPaused { return ("paused", .orange) }
+        if entry.isPlaying { return ("playing", .green) }
+        if isSelected { return ("loading", .orange) }
+        return ("available", .secondary)
     }
 
-    private func formatMs(_ duration: Duration) -> String {
-        let milliseconds = duration.milliseconds
-        if milliseconds >= 1_000 {
-            return String(format: "%.2f s", milliseconds / 1_000)
-        }
-        return "\(Int(milliseconds.rounded())) ms"
-    }
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                Image(systemName: "play.fill")
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .frame(width: 20)
 
-    private func formatBitsPerSecond(_ bps: UInt64) -> String {
-        let kbps = Double(bps) / 1_000
-        if kbps >= 1_000 {
-            return String(format: "%.1f Mbps", kbps / 1_000)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(entry.id)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(status.color)
+                            .frame(width: 6, height: 6)
+                        Text(status.label)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Spacer()
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .fontWeight(.semibold)
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+            .padding(10)
+            .background(
+                isSelected ? Color.accentColor.opacity(0.1) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 10)
+            )
+            .contentShape(Rectangle())
         }
-        return "\(Int(kbps.rounded())) kbps"
+        .buttonStyle(.plain)
+        .disabled(entry.offline)
     }
 }
 
@@ -113,6 +157,7 @@ private struct VideoCardView<Content: View>: View {
 
 private struct BroadcastPlayerView: View {
     @ObservedObject var entry: BroadcastEntry
+    let connectionStats: ConnectionStats?
     @State private var latencyUpdateTask: Task<Void, Never>?
 
     private var statusColor: Color {
@@ -206,7 +251,7 @@ private struct BroadcastPlayerView: View {
                 }
 
                 if entry.player != nil {
-                    DiagnosticsCardView(entry: entry)
+                    DiagnosticsCardView(entry: entry, connectionStats: connectionStats)
                 }
             }
             .padding(12)
@@ -235,6 +280,7 @@ private struct InfoPill: View {
 
 private struct DiagnosticsCardView: View {
     @ObservedObject var entry: BroadcastEntry
+    let connectionStats: ConnectionStats?
     @State private var isExpanded = true
 
     var body: some View {
@@ -264,6 +310,7 @@ private struct DiagnosticsCardView: View {
                     .padding(.vertical, 8)
 
                 VStack(spacing: 12) {
+                    transportSection
                     startupSection
                     selectedTracksSection
                     if let stats = entry.playbackStats {
@@ -278,6 +325,29 @@ private struct DiagnosticsCardView: View {
         }
         .padding(12)
         .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private var transportSection: some View {
+        StatsSection(title: "Transport") {
+            StatRow(
+                label: "Smoothed RTT",
+                value: connectionStats?.roundTripTime.map(formatMs) ?? "pending",
+                color: connectionStats?.roundTripTime == nil ? .secondary : .primary
+            )
+            StatRow(
+                label: "Estimated receive",
+                value: connectionStats?.estimatedReceiveRateBps.map(formatBitsPerSecond)
+                    ?? "pending",
+                color: connectionStats?.estimatedReceiveRateBps == nil ? .secondary : .primary
+            )
+            StatRow(
+                label: "Estimated send",
+                value: connectionStats?.estimatedSendRateBps.map(formatBitsPerSecond)
+                    ?? "pending",
+                color: connectionStats?.estimatedSendRateBps == nil ? .secondary : .primary
+            )
+        }
     }
 
     // Compact summary shown in the collapsed header
@@ -750,15 +820,35 @@ private struct ArrivalStatsView: View {
 private struct StatsSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
+    @State private var isExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2)
-                .fontWeight(.semibold)
-                .foregroundStyle(.tertiary)
-                .textCase(.uppercase)
-            content
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Text(title)
+                        .font(.caption)
+                        .fontWeight(.bold)
+                        .foregroundStyle(Color.black)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundStyle(Color.black)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content
+                    .padding(.top, 2)
+            }
         }
     }
 }

@@ -133,7 +133,9 @@ a receive-rate estimate learned from the peer through MoQ PROBE, and cumulative 
 byte/packet counters. Every field remains optional because a backend may not report it or
 the estimate may not be ready yet; missing and zero are distinct. Callers choose their own
 polling cadence. The player demos poll once per second and display RTT plus estimated send
-and receive rates. These connection snapshots do not produce the track-level
+and receive rates in the selected player's collapsible Stats for Nerds transport section.
+Both demos discover all matching broadcasts but instantiate playback only for the broadcast
+the user selects. These connection snapshots do not produce the track-level
 `PipelineEvent.bandwidthSample` event.
 
 ## Cross-Cutting Concerns

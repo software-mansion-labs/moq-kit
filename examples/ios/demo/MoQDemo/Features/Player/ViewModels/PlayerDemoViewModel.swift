@@ -12,6 +12,7 @@ final class PlayerDemoViewModel: ObservableObject {
     @Published var sessionState: SessionState = .idle
     @Published var connectionStats: ConnectionStats?
     @Published var broadcasts: [BroadcastEntry] = []
+    @Published private(set) var selectedBroadcastPath: String?
 
     private var session: Session?
     private var subscription: BroadcastSubscription?
@@ -20,7 +21,13 @@ final class PlayerDemoViewModel: ObservableObject {
     private var connectionTask: Task<Void, Never>?
     private var connectionStatsTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
+    private var selectionTask: Task<Void, Never>?
     private var catalogObserverTasks: [String: Task<Void, Never>] = [:]
+
+    var selectedBroadcast: BroadcastEntry? {
+        guard let selectedBroadcastPath else { return nil }
+        return broadcasts.first(where: { $0.id == selectedBroadcastPath })
+    }
 
     var canConnect: Bool {
         switch sessionState {
@@ -127,12 +134,15 @@ final class PlayerDemoViewModel: ObservableObject {
         connectionStatsTask = nil
         broadcastObserverTask?.cancel()
         broadcastObserverTask = nil
+        selectionTask?.cancel()
+        selectionTask = nil
         for (_, task) in catalogObserverTasks {
             task.cancel()
         }
         catalogObserverTasks.removeAll()
         let entries = broadcasts
         broadcasts = []
+        selectedBroadcastPath = nil
         connectionStats = nil
         sessionState = .idle
         let s = session
@@ -145,6 +155,31 @@ final class PlayerDemoViewModel: ObservableObject {
             }
             subscription?.cancel()
             await s?.close()
+        }
+    }
+
+    func selectBroadcast(path: String) {
+        guard let entry = broadcasts.first(where: { $0.id == path }), !entry.offline else {
+            return
+        }
+        if selectedBroadcastPath == path, entry.player != nil {
+            return
+        }
+
+        selectionTask?.cancel()
+        selectedBroadcastPath = path
+        selectionTask = Task { [weak self] in
+            guard let self else { return }
+            for playingEntry in broadcasts where playingEntry.player != nil {
+                await playingEntry.stop(reason: "selected broadcast changed to \(path)")
+                guard !Task.isCancelled, selectedBroadcastPath == path else { return }
+            }
+            guard
+                !Task.isCancelled,
+                selectedBroadcastPath == path,
+                let selectedEntry = broadcasts.first(where: { $0.id == path })
+            else { return }
+            await startPlayer(selectedEntry)
         }
     }
 
@@ -169,52 +204,52 @@ final class PlayerDemoViewModel: ObservableObject {
     }
 
     private func replaceBroadcast(with catalog: Catalog) async {
-        let existingEntries = broadcasts.filter { $0.broadcastPath == catalog.path }
+        let existingEntry = broadcasts.first(where: { $0.broadcastPath == catalog.path })
         playerDemoLogger.debug(
-            "Replacing broadcast path=\(catalog.path), existingEntries=\(existingEntries.count), \(self.catalogLogDescription(catalog))"
+            "Replacing broadcast path=\(catalog.path), existing=\(existingEntry != nil), \(self.catalogLogDescription(catalog))"
         )
-        for entry in existingEntries {
-            await entry.stop(reason: "catalog update replaced broadcast \(catalog.path)")
-        }
-        broadcasts.removeAll { $0.broadcastPath == catalog.path }
 
-        let selectedTracks = preferredTracks(for: catalog)
+        let selectedTracks = preferredTracks(
+            for: catalog,
+            preferredVideoTrackName: existingEntry?.selectedVideoTrackName,
+            preferredAudioTrackName: existingEntry?.selectedAudioTrackName
+        )
         playerDemoLogger.debug(
             "Selected tracks for path=\(catalog.path): video=\(selectedTracks.videoTrackName ?? "none"), audio=\(selectedTracks.audioTrackName ?? "none")"
         )
         guard selectedTracks.videoTrackName != nil || selectedTracks.audioTrackName != nil else {
             playerDemoLogger.warning("No playable tracks for path=\(catalog.path)")
+            if let existingEntry {
+                await existingEntry.stop(reason: "catalog has no playable tracks for \(catalog.path)")
+                broadcasts.removeAll { $0.id == existingEntry.id }
+            }
             return
         }
 
-        let entry = BroadcastEntry(
+        if let existingEntry {
+            let wasSelected = selectedBroadcastPath == existingEntry.id
+            await existingEntry.stop(reason: "catalog update replaced broadcast \(catalog.path)")
+            existingEntry.catalog = catalog
+            existingEntry.selectedVideoTrackName = selectedTracks.videoTrackName
+            existingEntry.selectedAudioTrackName = selectedTracks.audioTrackName
+            existingEntry.offline = false
+            if wasSelected {
+                await startPlayer(existingEntry)
+            }
+            return
+        }
+
+        let newEntry = BroadcastEntry(
             catalog: catalog,
             initialVideoTrackName: selectedTracks.videoTrackName,
             initialAudioTrackName: selectedTracks.audioTrackName,
             initialLatencyMs: targetLatencyMs
         )
-        broadcasts.append(entry)
+        broadcasts.append(newEntry)
+        broadcasts.sort { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
 
-        guard
-            let player = try? Player(
-                catalog: catalog,
-                videoTrackName: selectedTracks.videoTrackName,
-                audioTrackName: selectedTracks.audioTrackName,
-                targetBuffering: .milliseconds(Int64(min(targetLatencyMs, UInt64(Int64.max)))),
-                volume: Float(entry.volume)
-            )
-        else {
-            playerDemoLogger.error("Failed to create Player for path=\(catalog.path)")
-            entry.offline = true
-            return
-        }
-
-        entry.attach(player: player)
-        do {
-            try await player.play()
-        } catch {
-            playerDemoLogger.error("Failed to start Player for path=\(catalog.path): \(error.localizedDescription)")
-            entry.offline = true
+        if selectedBroadcastPath == newEntry.id {
+            await startPlayer(newEntry)
         }
     }
 
@@ -229,13 +264,68 @@ final class PlayerDemoViewModel: ObservableObject {
         }
     }
 
+    private func startPlayer(_ entry: BroadcastEntry) async {
+        guard selectedBroadcastPath == entry.id, entry.player == nil, !entry.offline else { return }
+
+        let selectedTracks = preferredTracks(
+            for: entry.catalog,
+            preferredVideoTrackName: entry.selectedVideoTrackName,
+            preferredAudioTrackName: entry.selectedAudioTrackName
+        )
+        guard selectedTracks.videoTrackName != nil || selectedTracks.audioTrackName != nil else {
+            return
+        }
+
+        guard
+            let player = try? Player(
+                catalog: entry.catalog,
+                videoTrackName: selectedTracks.videoTrackName,
+                audioTrackName: selectedTracks.audioTrackName,
+                targetBuffering: .milliseconds(
+                    Int64(min(UInt64(entry.targetLatencyMs), UInt64(Int64.max)))
+                ),
+                volume: Float(entry.volume)
+            )
+        else {
+            playerDemoLogger.error("Failed to create Player for path=\(entry.id)")
+            entry.offline = true
+            return
+        }
+
+        entry.selectedVideoTrackName = selectedTracks.videoTrackName
+        entry.selectedAudioTrackName = selectedTracks.audioTrackName
+        entry.attach(player: player)
+        do {
+            try await player.play()
+            guard !Task.isCancelled, selectedBroadcastPath == entry.id else {
+                await entry.stop(reason: "broadcast selection changed while starting \(entry.id)")
+                return
+            }
+        } catch {
+            guard !Task.isCancelled, selectedBroadcastPath == entry.id else {
+                await entry.stop(reason: "broadcast selection changed while starting \(entry.id)")
+                return
+            }
+            playerDemoLogger.error(
+                "Failed to start Player for path=\(entry.id): \(error.localizedDescription)"
+            )
+            await entry.stop(reason: "player failed to start for \(entry.id)")
+            entry.offline = true
+        }
+    }
+
     private func preferredTracks(
-        for catalog: Catalog
+        for catalog: Catalog,
+        preferredVideoTrackName: String? = nil,
+        preferredAudioTrackName: String? = nil
     ) -> (videoTrackName: String?, audioTrackName: String?) {
-        let audioTrackName = catalog.playableAudioTracks.first?.name
-        let highestVideoTrackName = catalog.playableVideoTracks.max(by: isLowerQualityVideoTrack)?
-            .name
-        return (highestVideoTrackName, audioTrackName)
+        let audioTrackName = catalog.playableAudioTracks.first {
+            $0.name == preferredAudioTrackName
+        }?.name ?? catalog.playableAudioTracks.first?.name
+        let videoTrackName = catalog.playableVideoTracks.first {
+            $0.name == preferredVideoTrackName
+        }?.name ?? catalog.playableVideoTracks.max(by: isLowerQualityVideoTrack)?.name
+        return (videoTrackName, audioTrackName)
     }
 
     private func isLowerQualityVideoTrack(

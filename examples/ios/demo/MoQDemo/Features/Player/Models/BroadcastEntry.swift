@@ -122,6 +122,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         await player?.stopAll(reason: reason)
         player = nil
         isPlaying = false
+        isPaused = false
     }
 
     private func handleEvent(_ event: PlayerEvent) {

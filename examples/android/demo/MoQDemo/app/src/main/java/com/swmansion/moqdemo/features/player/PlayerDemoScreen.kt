@@ -166,12 +166,6 @@ fun PlayerDemoScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                vm.connectionStats?.let { stats ->
-                    item {
-                        ConnectionStatsCard(stats)
-                    }
-                }
-
                 if (vm.broadcasts.isEmpty()) {
                     item {
                         BroadcastPlaceholder("No Broadcasts")
@@ -209,41 +203,6 @@ fun PlayerDemoScreen(
                     .fillMaxSize()
                     .zIndex(1f),
             )
-        }
-    }
-}
-
-@Composable
-private fun ConnectionStatsCard(stats: ConnectionStats) {
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        ),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = "Connection",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Medium,
-            )
-            StatsSection("Transport") {
-                StatRow(
-                    "Smoothed RTT",
-                    stats.roundTripTime?.let(::formatMs) ?: "pending",
-                )
-                StatRow(
-                    "Estimated receive",
-                    stats.estimatedReceiveRateBps?.let(::formatBitsPerSecond) ?: "pending",
-                )
-                StatRow(
-                    "Estimated send",
-                    stats.estimatedSendRateBps?.let(::formatBitsPerSecond) ?: "pending",
-                )
-            }
         }
     }
 }
@@ -533,7 +492,7 @@ private fun BroadcastCard(
             }
 
             if (entry.player != null) {
-                DiagnosticsCard(entry)
+                DiagnosticsCard(entry, vm.connectionStats)
             }
         }
     }
@@ -671,7 +630,7 @@ private fun VolumeControl(
 }
 
 @Composable
-private fun DiagnosticsCard(entry: BroadcastEntry) {
+private fun DiagnosticsCard(entry: BroadcastEntry, connectionStats: ConnectionStats?) {
     var isExpanded by remember { mutableStateOf(true) }
     val stats = entry.playbackStats
 
@@ -733,6 +692,37 @@ private fun DiagnosticsCard(entry: BroadcastEntry) {
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StatsSection("Transport") {
+                        StatRow(
+                            "Smoothed RTT",
+                            connectionStats?.roundTripTime?.let(::formatMs) ?: "pending",
+                            if (connectionStats?.roundTripTime == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                        StatRow(
+                            "Estimated receive",
+                            connectionStats?.estimatedReceiveRateBps?.let(::formatBitsPerSecond)
+                                ?: "pending",
+                            if (connectionStats?.estimatedReceiveRateBps == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                        StatRow(
+                            "Estimated send",
+                            connectionStats?.estimatedSendRateBps?.let(::formatBitsPerSecond)
+                                ?: "pending",
+                            if (connectionStats?.estimatedSendRateBps == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                    }
                     StartupDiagnosticsSection(entry)
                     SelectedTracksSection(entry)
                     if (stats != null) {
@@ -1116,14 +1106,32 @@ private fun ArrivalStatsView(kind: String, arrival: FrameArrivalStats) {
 
 @Composable
 private fun StatsSection(title: String, content: @Composable () -> Unit) {
+    var isExpanded by rememberSaveable(title) { mutableStateOf(false) }
+
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(
-            text = title.uppercase(),
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-        )
-        content()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { isExpanded = !isExpanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black,
+            )
+            Box(modifier = Modifier.weight(1f))
+            Text(
+                text = if (isExpanded) "▼" else "▶",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color.Black,
+            )
+        }
+        if (isExpanded) {
+            content()
+        }
     }
 }
 
