@@ -65,6 +65,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.swmansion.moqkit.ConnectionStats
 import com.swmansion.moqkit.Session
 import com.swmansion.moqkit.subscribe.FrameArrivalStats
 import com.swmansion.moqkit.subscribe.PlaybackStats
@@ -165,6 +166,12 @@ fun PlayerDemoScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
+                vm.connectionStats?.let { stats ->
+                    item {
+                        ConnectionStatsCard(stats)
+                    }
+                }
+
                 if (vm.broadcasts.isEmpty()) {
                     item {
                         BroadcastPlaceholder("No Broadcasts")
@@ -202,6 +209,41 @@ fun PlayerDemoScreen(
                     .fillMaxSize()
                     .zIndex(1f),
             )
+        }
+    }
+}
+
+@Composable
+private fun ConnectionStatsCard(stats: ConnectionStats) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "Connection",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            StatsSection("Transport") {
+                StatRow(
+                    "Smoothed RTT",
+                    stats.roundTripTime?.let(::formatMs) ?: "pending",
+                )
+                StatRow(
+                    "Estimated receive",
+                    stats.estimatedReceiveRateBps?.let(::formatBitsPerSecond) ?: "pending",
+                )
+                StatRow(
+                    "Estimated send",
+                    stats.estimatedSendRateBps?.let(::formatBitsPerSecond) ?: "pending",
+                )
+            }
         }
     }
 }

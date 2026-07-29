@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.swmansion.moqkit.ConnectionStats
 import com.swmansion.moqkit.Session
 import com.swmansion.moqkit.subscribe.AudioTrackInfo
 import com.swmansion.moqkit.subscribe.Broadcast
@@ -53,6 +54,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     var broadcastPath by mutableStateOf("")
 
     var sessionState by mutableStateOf<Session.State>(Session.State.Idle)
+    var connectionStats by mutableStateOf<ConnectionStats?>(null)
     val broadcasts = mutableStateListOf<BroadcastEntry>()
     var selectedBroadcastPath by mutableStateOf<String?>(null)
         private set
@@ -62,6 +64,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
 
     private var session: Session? = null
     private var sessionJobs: List<Job> = emptyList()
+    private var connectionStatsJob: Job? = null
     private val catalogJobs = mutableMapOf<String, Job>()
     private var subscription: BroadcastSubscription? = null
 
@@ -87,8 +90,21 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
             viewModelScope.launch {
                 try {
                     s.connect()
+                    if (session !== s) {
+                        s.close()
+                        return@launch
+                    }
                     val newSubscription = s.subscribe(prefix = broadcastPath)
                     subscription = newSubscription
+                    connectionStatsJob = viewModelScope.launch {
+                        while (true) {
+                            val stats = s.connectionStats() ?: break
+                            if (connectionStats != stats) {
+                                connectionStats = stats
+                            }
+                            delay(1_000)
+                        }
+                    }
                     newSubscription.broadcasts.collect { broadcast ->
                         observeCatalogs(broadcast)
                     }
@@ -375,6 +391,8 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
     fun stop() {
         sessionJobs.forEach { it.cancel() }
         sessionJobs = emptyList()
+        connectionStatsJob?.cancel()
+        connectionStatsJob = null
         cancelCatalogJobs()
         subscription?.close()
         subscription = null
@@ -383,6 +401,7 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
             stopEntry(entry)
         }
         broadcasts.clear()
+        connectionStats = null
         val s = session
         session = null
         sessionState = Session.State.Idle

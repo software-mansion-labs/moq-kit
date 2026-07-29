@@ -203,6 +203,16 @@ public actor Session {
         }
     }
 
+    /// Returns the latest transport statistics for this relay connection.
+    ///
+    /// Call this periodically when an application needs live connection diagnostics. The
+    /// snapshot is available only while the session is connected, and individual fields may
+    /// still be `nil` when the transport cannot report them or has not produced an estimate.
+    public func connectionStats() -> ConnectionStats? {
+        guard currentState == .connected, let moqSession else { return nil }
+        return ConnectionStats(moqSession.stats())
+    }
+
     /// Starts watching for broadcast announcements on the relay.
     ///
     /// Call this after ``connect()`` to receive broadcasts whose path starts with `prefix`.

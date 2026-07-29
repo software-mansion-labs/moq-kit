@@ -131,6 +131,19 @@ class Session(
     }
 
     /**
+     * Returns the latest transport statistics for this relay connection.
+     *
+     * Call this periodically when an application needs live connection diagnostics. The
+     * snapshot is available only while the session is [State.Connected], and individual
+     * fields may still be `null` when the transport cannot report them or has not produced
+     * an estimate.
+     */
+    fun connectionStats(): ConnectionStats? {
+        if (_state.value != State.Connected) return null
+        return connection?.session?.stats()?.toConnectionStats()
+    }
+
+    /**
      * Starts watching for broadcast announcements under the supplied prefix.
      *
      * Collect [BroadcastSubscription.broadcasts] to receive each matching broadcast as it is

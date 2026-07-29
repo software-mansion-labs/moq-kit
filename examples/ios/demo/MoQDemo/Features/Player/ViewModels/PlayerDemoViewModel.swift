@@ -10,12 +10,15 @@ private let playerDemoLogger = Logger(
 @MainActor
 final class PlayerDemoViewModel: ObservableObject {
     @Published var sessionState: SessionState = .idle
+    @Published var connectionStats: ConnectionStats?
     @Published var broadcasts: [BroadcastEntry] = []
 
     private var session: Session?
     private var subscription: BroadcastSubscription?
     private var targetLatencyMs: UInt64 = 200
     private var stateObserverTask: Task<Void, Never>?
+    private var connectionTask: Task<Void, Never>?
+    private var connectionStatsTask: Task<Void, Never>?
     private var broadcastObserverTask: Task<Void, Never>?
     private var catalogObserverTasks: [String: Task<Void, Never>] = [:]
 
@@ -68,12 +71,30 @@ final class PlayerDemoViewModel: ObservableObject {
             }
         }
 
-        Task {
+        connectionTask = Task { [weak self] in
+            guard let self else { return }
             do {
                 try await s.connect()
+                guard !Task.isCancelled, session === s else {
+                    await s.close()
+                    return
+                }
                 let subscription = try await s.subscribe(prefix: prefix)
                 self.subscription = subscription
                 playerDemoLogger.debug("Subscribed to broadcasts prefix=\(prefix)")
+                connectionStatsTask = Task { [weak self] in
+                    while !Task.isCancelled {
+                        guard let stats = await s.connectionStats() else {
+                            self?.connectionStats = nil
+                            return
+                        }
+                        guard !Task.isCancelled else { return }
+                        if self?.connectionStats != stats {
+                            self?.connectionStats = stats
+                        }
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                }
                 broadcastObserverTask = Task { [weak self] in
                     guard let self else { return }
                     for await broadcast in subscription.broadcasts {
@@ -82,6 +103,10 @@ final class PlayerDemoViewModel: ObservableObject {
                     }
                 }
             } catch {
+                guard !Task.isCancelled, session === s else {
+                    await s.close()
+                    return
+                }
                 playerDemoLogger.error("Connect failed: \(error.localizedDescription)")
                 let sessionError =
                     error as? SessionError ?? .connectionFailed(error.localizedDescription)
@@ -94,8 +119,12 @@ final class PlayerDemoViewModel: ObservableObject {
         playerDemoLogger.debug(
             "Stop requested reason=\(reason), state=\(self.stateLabel), broadcasts=\(self.broadcasts.count), hasSession=\(self.session != nil), hasSubscription=\(self.subscription != nil)"
         )
+        connectionTask?.cancel()
+        connectionTask = nil
         stateObserverTask?.cancel()
         stateObserverTask = nil
+        connectionStatsTask?.cancel()
+        connectionStatsTask = nil
         broadcastObserverTask?.cancel()
         broadcastObserverTask = nil
         for (_, task) in catalogObserverTasks {
@@ -104,6 +133,7 @@ final class PlayerDemoViewModel: ObservableObject {
         catalogObserverTasks.removeAll()
         let entries = broadcasts
         broadcasts = []
+        connectionStats = nil
         sessionState = .idle
         let s = session
         session = nil

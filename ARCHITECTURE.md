@@ -40,7 +40,8 @@ in the submodule, but moq-kit does not use it for platform bindings.
 
 `Session` is the main SDK entry point on both platforms. It owns one relay connection,
 creates separate consume and publish origins, starts broadcast discovery, registers
-publishers, and tears down active work when the connection closes.
+publishers, exposes point-in-time `ConnectionStats` snapshots, and tears down active work
+when the connection closes.
 
 Publishing is centered on `Publisher`. A publisher collects track descriptors before start,
 then connects frame sources to encoders and writes encoded frames or data objects to Moq
@@ -122,8 +123,18 @@ downstream layers must not count the same discard again.
 Diagnostics must never apply backpressure to ingest, decode, or rendering. On iOS,
 `frameRendered` means AVFoundation accepted a sample for visible scheduled output; it is
 not a hardware scanout acknowledgement. The current published `MoqFFI` bindings do not
-expose transport group ranges or bandwidth estimates, so iOS frame events leave group
-metadata empty and do not yet produce `bandwidthSample`.
+expose transport group ranges, so iOS frame events leave group metadata empty.
+
+Connection metrics are connection-scoped rather than player- or track-scoped. Both SDKs
+expose them by converting the generated `MoqConnectionStats` record returned by
+`MoqSession.stats()` into the public `ConnectionStats` type. The snapshot contains the
+transport's smoothed RTT, a send-rate estimate from the local QUIC congestion controller,
+a receive-rate estimate learned from the peer through MoQ PROBE, and cumulative transport
+byte/packet counters. Every field remains optional because a backend may not report it or
+the estimate may not be ready yet; missing and zero are distinct. Callers choose their own
+polling cadence. The player demos poll once per second and display RTT plus estimated send
+and receive rates. These connection snapshots do not produce the track-level
+`PipelineEvent.bandwidthSample` event.
 
 ## Cross-Cutting Concerns
 

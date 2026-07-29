@@ -24,6 +24,10 @@ struct SessionPlayerView: View {
                 Spacer()
             }
 
+            if let stats = viewModel.connectionStats {
+                ConnectionStatsCardView(stats: stats)
+            }
+
             if viewModel.broadcasts.isEmpty {
                 VideoCardView {
                     RoundedRectangle(cornerRadius: 12)
@@ -40,6 +44,52 @@ struct SessionPlayerView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Connection Stats
+
+private struct ConnectionStatsCardView: View {
+    let stats: ConnectionStats
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Connection", systemImage: "network")
+                .font(.subheadline)
+                .fontWeight(.medium)
+            StatsSection(title: "Transport") {
+                StatRow(
+                    label: "Smoothed RTT",
+                    value: stats.roundTripTime.map(formatMs) ?? "pending"
+                )
+                StatRow(
+                    label: "Estimated receive",
+                    value: stats.estimatedReceiveRateBps.map(formatBitsPerSecond) ?? "pending"
+                )
+                StatRow(
+                    label: "Estimated send",
+                    value: stats.estimatedSendRateBps.map(formatBitsPerSecond) ?? "pending"
+                )
+            }
+        }
+        .padding(12)
+        .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func formatMs(_ duration: Duration) -> String {
+        let milliseconds = duration.milliseconds
+        if milliseconds >= 1_000 {
+            return String(format: "%.2f s", milliseconds / 1_000)
+        }
+        return "\(Int(milliseconds.rounded())) ms"
+    }
+
+    private func formatBitsPerSecond(_ bps: UInt64) -> String {
+        let kbps = Double(bps) / 1_000
+        if kbps >= 1_000 {
+            return String(format: "%.1f Mbps", kbps / 1_000)
+        }
+        return "\(Int(kbps.rounded())) kbps"
     }
 }
 
