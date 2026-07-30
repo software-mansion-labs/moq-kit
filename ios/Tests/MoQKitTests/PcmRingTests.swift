@@ -14,6 +14,7 @@ final class PcmRingTests: XCTestCase {
 
         XCTAssertEqual(result.acceptedFrames, 2)
         XCTAssertEqual(result.silenceFrames, 2)
+        XCTAssertNil(result.diagnostics)
         XCTAssertEqual(ring.length, 6)
     }
 
@@ -28,7 +29,35 @@ final class PcmRingTests: XCTestCase {
 
         XCTAssertEqual(result.acceptedFrames, 5)
         XCTAssertEqual(result.evictedFrames, 1)
+        XCTAssertEqual(result.diagnostics?.depthBefore.frames, 0)
+        XCTAssertEqual(result.diagnostics?.peakDepth.frames, 5)
+        XCTAssertEqual(result.diagnostics?.depthAfter.frames, 4)
+        XCTAssertEqual(result.diagnostics?.playheadUs, 0)
+        XCTAssertEqual(result.diagnostics?.bufferLimits.maxFrames, 4)
+        XCTAssertEqual(
+            result.diagnostics?.peakDepth.exceededLimits(of: result.diagnostics?.bufferLimits),
+            [.frames]
+        )
         XCTAssertEqual(ring.length, 4)
+    }
+
+    func testOldWriteReportsPlayheadAndTimestampDelta() {
+        var ring = PcmRing(
+            rate: 1_000,
+            channels: 1,
+            policy: PcmRingPolicy(maxFrames: 4, maxDurationUs: 10_000)
+        )
+        _ = write([1, 2, 3, 4], timestampUs: 0, to: &ring)
+        var output = [[Float32](repeating: 0, count: 3)]
+        _ = ring.read(into: &output, frameCount: 3)
+
+        let result = write([5, 6], timestampUs: 0, to: &ring)
+
+        XCTAssertEqual(result.rejectedOldFrames, 2)
+        XCTAssertEqual(result.diagnostics?.playheadUs, 3_000)
+        XCTAssertEqual(result.diagnostics?.timestampDeltaUs, -3_000)
+        XCTAssertEqual(result.diagnostics?.depthBefore.frames, 1)
+        XCTAssertEqual(result.diagnostics?.depthAfter.frames, 1)
     }
 
     func testFullRingCanBeReadWithoutInterleaving() {

@@ -126,9 +126,15 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     private func handleEvent(_ event: PlayerEvent) {
-        broadcastEntryLogger.debug(
-            "Player event path=\(self.broadcastPath), event=\(event.name.rawValue)"
-        )
+        if let trackName = event.type.logTrackName {
+            broadcastEntryLogger.debug(
+                "Player event path=\(self.broadcastPath), event=\(event.name.rawValue), track=\(trackName)"
+            )
+        } else {
+            broadcastEntryLogger.debug(
+                "Player event path=\(self.broadcastPath), event=\(event.name.rawValue)"
+            )
+        }
 
         startupDiagnostics.record(
             event,
@@ -173,6 +179,36 @@ final class BroadcastEntry: ObservableObject, Identifiable {
 
         statsSubscription = player.subscribeStats { [weak self] stats in
             self?.playbackStats = stats
+        }
+    }
+}
+
+private extension PlayerEventType {
+    var logTrackName: String? {
+        switch self {
+        case .playbackStart(let event), .trackPlaying(let event):
+            event.track.trackName ?? "none"
+        case .trackReady(let event):
+            event.track.trackName ?? "none"
+        case .trackSubscribeError(let event), .decodeError(let event):
+            event.track.trackName ?? "none"
+        case .trackSubscribeStart(let track),
+             .trackSubscribeEnd(let track),
+             .trackSwitch(let track),
+             .trackStallStart(let track),
+             .trackStallEnd(let track),
+             .rebufferStart(let track),
+             .rebufferEnd(let track):
+            track.trackName ?? "none"
+        case .trackSelect(let selection):
+            selection.trackName ?? "none"
+        case .playerInit,
+             .playerDestroy,
+             .playbackRequest,
+             .playbackPause,
+             .playbackResume,
+             .playbackEnd:
+            nil
         }
     }
 }

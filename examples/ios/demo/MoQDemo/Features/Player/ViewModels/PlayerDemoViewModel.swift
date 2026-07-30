@@ -193,7 +193,7 @@ final class PlayerDemoViewModel: ObservableObject {
                 playerDemoLogger.debug(
                     "Catalog update path=\(catalog.path), \(self.catalogLogDescription(catalog))"
                 )
-                await self.replaceBroadcast(with: catalog)
+                await self.applyCatalogUpdate(catalog)
             }
 
             guard !Task.isCancelled else { return }
@@ -203,21 +203,22 @@ final class PlayerDemoViewModel: ObservableObject {
         }
     }
 
-    private func replaceBroadcast(with catalog: Catalog) async {
+    private func applyCatalogUpdate(_ catalog: Catalog) async {
         let existingEntry = broadcasts.first(where: { $0.broadcastPath == catalog.path })
+        let action = existingEntry == nil ? "add" : "refresh"
         playerDemoLogger.debug(
-            "Replacing broadcast path=\(catalog.path), existing=\(existingEntry != nil), \(self.catalogLogDescription(catalog))"
+            "Applying catalog path=\(catalog.path), action=\(action), \(self.catalogLogDescription(catalog))"
         )
 
-        let selectedTracks = preferredTracks(
+        let trackPreferences = preferredTracks(
             for: catalog,
             preferredVideoTrackName: existingEntry?.selectedVideoTrackName,
             preferredAudioTrackName: existingEntry?.selectedAudioTrackName
         )
         playerDemoLogger.debug(
-            "Selected tracks for path=\(catalog.path): video=\(selectedTracks.videoTrackName ?? "none"), audio=\(selectedTracks.audioTrackName ?? "none")"
+            "Preferred tracks for path=\(catalog.path): video=\(trackPreferences.videoTrackName ?? "none"), audio=\(trackPreferences.audioTrackName ?? "none")"
         )
-        guard selectedTracks.videoTrackName != nil || selectedTracks.audioTrackName != nil else {
+        guard trackPreferences.videoTrackName != nil || trackPreferences.audioTrackName != nil else {
             playerDemoLogger.warning("No playable tracks for path=\(catalog.path)")
             if let existingEntry {
                 await existingEntry.stop(reason: "catalog has no playable tracks for \(catalog.path)")
@@ -228,10 +229,10 @@ final class PlayerDemoViewModel: ObservableObject {
 
         if let existingEntry {
             let wasSelected = selectedBroadcastPath == existingEntry.id
-            await existingEntry.stop(reason: "catalog update replaced broadcast \(catalog.path)")
+            await existingEntry.stop(reason: "catalog metadata refreshed for \(catalog.path)")
             existingEntry.catalog = catalog
-            existingEntry.selectedVideoTrackName = selectedTracks.videoTrackName
-            existingEntry.selectedAudioTrackName = selectedTracks.audioTrackName
+            existingEntry.selectedVideoTrackName = trackPreferences.videoTrackName
+            existingEntry.selectedAudioTrackName = trackPreferences.audioTrackName
             existingEntry.offline = false
             if wasSelected {
                 await startPlayer(existingEntry)
@@ -241,8 +242,8 @@ final class PlayerDemoViewModel: ObservableObject {
 
         let newEntry = BroadcastEntry(
             catalog: catalog,
-            initialVideoTrackName: selectedTracks.videoTrackName,
-            initialAudioTrackName: selectedTracks.audioTrackName,
+            initialVideoTrackName: trackPreferences.videoTrackName,
+            initialAudioTrackName: trackPreferences.audioTrackName,
             initialLatencyMs: targetLatencyMs
         )
         broadcasts.append(newEntry)

@@ -2,6 +2,15 @@ import Foundation
 import os
 
 extension PipelineEvent {
+    var shouldLogFrameDrop: Bool {
+        guard case .frameDropped(_, _, let reason, _, _, _, _) = self else {
+            return false
+        }
+        // Temporarily mute these high-volume policy drops while keeping their typed
+        // diagnostics available to PipelineBus observers and diagnostics streams.
+        return reason != .staleVsPlayback && reason != .backlogOverflow
+    }
+
     var frameDropLogDescription: String? {
         guard case .frameDropped(
             let context,
@@ -14,17 +23,114 @@ extension PipelineEvent {
         ) = self else {
             return nil
         }
+        let diagnostics = context.dropDiagnostics
 
         return "Frame dropped "
             + "track=\(context.trackId), "
             + "media=\(context.mediaKind), "
             + "stage=\(stage), "
             + "reason=\(reason), "
-            + "ptsUs=\(ptsUs.map(String.init) ?? "nil"), "
+            + "pts=\(ptsUs.map(Self.formatTimestamp) ?? "nil"), "
             + "groupSequence=\(groupSequence.map(String.init) ?? "nil"), "
             + "count=\(count), "
             + "bytes=\(bytes), "
+            + "playhead=\(diagnostics?.playheadUs.map(Self.formatTimestamp) ?? "nil"), "
+            + "decision=\(diagnostics.map(Self.formatDecision) ?? "nil"), "
+            + "bufferBefore=\(diagnostics?.bufferDepthBefore.map(Self.formatDepth) ?? "nil"), "
+            + "bufferAfter=\(diagnostics?.bufferDepthAfter.map(Self.formatDepth) ?? "nil"), "
+            + "limits=\(diagnostics?.bufferLimits.map(Self.formatLimits) ?? "nil"), "
             + "timestampNanos=\(context.timestampNanos)"
+    }
+
+    private static func formatDecision(_ diagnostics: FrameDropDiagnostics) -> String {
+        switch diagnostics.decision {
+        case .backlogOverflow(let exceededLimits):
+            guard !exceededLimits.isEmpty else {
+                return "bounded buffer eviction"
+            }
+            let names = exceededLimits.map { limit in
+                switch limit {
+                case .frames: return "frames"
+                case .bytes: return "bytes"
+                case .duration: return "duration"
+                }
+            }
+            return "buffer capacity exceeded (\(names.joined(separator: ", ")))"
+        case .staleVsPlayback(
+            let reference,
+            let referenceTimestampUs,
+            let timestampDeltaUs,
+            let toleranceUs
+        ):
+            let referenceName: String
+            switch reference {
+            case .playhead: referenceName = "playhead"
+            case .targetPlayback: referenceName = "target playback"
+            case .audioReadCursor: referenceName = "audio read cursor"
+            }
+            let latenessUs = timestampDeltaUs < 0 ? timestampDeltaUs.magnitude : 0
+            var result = "frame is \(formatDuration(latenessUs)) behind \(referenceName)"
+                + " (\(formatTimestamp(referenceTimestampUs)))"
+            if let toleranceUs {
+                let exceededUs = latenessUs > toleranceUs ? latenessUs - toleranceUs : 0
+                result += "; allowed lateness=\(formatDuration(toleranceUs))"
+                    + "; exceeded by=\(formatDuration(exceededUs))"
+            }
+            return result
+        }
+    }
+
+    private static func formatTimestamp(_ timestampUs: Int64) -> String {
+        let sign = timestampUs < 0 ? "-" : ""
+        let value = timestampUs.magnitude
+        let hours = value / 3_600_000_000
+        let minutes = (value / 60_000_000) % 60
+        let seconds = (value / 1_000_000) % 60
+        let microseconds = value % 1_000_000
+        return String(
+            format: "%@%02llu:%02llu:%02llu.%06llu",
+            sign, hours, minutes, seconds, microseconds
+        )
+    }
+
+    private static func formatDuration(_ durationUs: UInt64) -> String {
+        if durationUs >= 1_000_000 {
+            let seconds = durationUs / 1_000_000
+            let remainderUs = durationUs % 1_000_000
+            if remainderUs.isMultiple(of: 1_000) {
+                return String(
+                    format: "%llu.%03llus",
+                    seconds,
+                    remainderUs / 1_000
+                )
+            }
+            return String(format: "%llu.%06llus", seconds, remainderUs)
+        }
+        if durationUs >= 1_000 {
+            return durationUs.isMultiple(of: 1_000)
+                ? "\(durationUs / 1_000)ms"
+                : String(format: "%.3fms", Double(durationUs) / 1_000)
+        }
+        return "\(durationUs)µs"
+    }
+
+    private static func formatDepth(_ depth: BufferDepth) -> String {
+        "\(depth.frames) frames/\(formatBytes(depth.bytes))/\(formatDuration(depth.durationUs))"
+    }
+
+    private static func formatLimits(_ limits: BufferLimits) -> String {
+        "\(limits.maxFrames) frames/\(formatBytes(limits.maxBytes))"
+            + "/\(formatDuration(limits.maxDurationUs))"
+    }
+
+    private static func formatBytes(_ bytes: UInt64) -> String {
+        if bytes >= 1_048_576 {
+            return String(format: "%.1f MiB", Double(bytes) / 1_048_576)
+        }
+        if bytes >= 1_024 {
+            return String(format: "%.1f KiB", Double(bytes) / 1_024)
+        }
+        return "\(bytes) B"
     }
 }
 
@@ -90,7 +196,9 @@ final class PipelineBus: @unchecked Sendable {
     }
 
     func emit(_ event: PipelineEvent) {
-        if let dropDescription = event.frameDropLogDescription {
+        if event.shouldLogFrameDrop,
+           let dropDescription = event.frameDropLogDescription
+        {
             KitLogger.player.debug("\(dropDescription, privacy: .public)")
         }
 

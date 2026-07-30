@@ -11,7 +11,12 @@ enum AdmissionRejectReason: Equatable {
 enum AdmissionEffect: Equatable {
     case admitted
     case rejected(reason: AdmissionRejectReason)
-    case evictedGop(count: Int, bytes: UInt64)
+    case evictedGop(
+        count: Int,
+        bytes: UInt64,
+        depthBefore: BufferDepth,
+        depthAfter: BufferDepth
+    )
 }
 
 /// The single bounded compressed-frame queue before video decode/display processing.
@@ -139,6 +144,7 @@ final class FrameBuffer<Payload> {
     }
 
     private func evictOldestGop() -> AdmissionEffect {
+        let depthBefore = depth()
         let first = frames[0]
         let count: Int
         if !policy.evictWholeGops {
@@ -159,13 +165,25 @@ final class FrameBuffer<Payload> {
         if policy.requireKeyframeAfterReset {
             keyframeAccepted = frames.first?.keyframe == true
         }
-        return .evictedGop(count: count, bytes: bytes)
+        return .evictedGop(
+            count: count,
+            bytes: bytes,
+            depthBefore: depthBefore,
+            depthAfter: depth()
+        )
     }
 
     private func evictAll() -> AdmissionEffect {
-        let effect = AdmissionEffect.evictedGop(count: frames.count, bytes: byteCount)
+        let count = frames.count
+        let bytes = byteCount
+        let depthBefore = depth()
         frames.removeAll(keepingCapacity: true)
         byteCount = 0
-        return effect
+        return .evictedGop(
+            count: count,
+            bytes: bytes,
+            depthBefore: depthBefore,
+            depthAfter: depth()
+        )
     }
 }

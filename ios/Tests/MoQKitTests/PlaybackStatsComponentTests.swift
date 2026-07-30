@@ -128,10 +128,11 @@ final class AudioPlaybackStartHandoffTests: XCTestCase {
         let handoff = AudioPlaybackStartHandoff()
 
         handoff.prepare(playbackStartContext(sourceTimestampUs: 1_000))
-        handoff.clear()
+        XCTAssertTrue(handoff.clearAndReportPending())
 
         XCTAssertFalse(handoff.hasPendingPlaybackStart)
         XCTAssertNil(handoff.consumeIfRendered(timestampUs: 1_000))
+        XCTAssertFalse(handoff.clearAndReportPending())
     }
 
     func testPrepareReplacesPendingAudioStart() throws {

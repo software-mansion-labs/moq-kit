@@ -1,82 +1,113 @@
 import CoreMedia
 
 enum VideoPresentationDecision: Equatable {
+    case buffering
     case wait(delayUs: UInt64)
     case beginStall
     case alreadyStalled
 }
 
-/// Tracks how long the last scheduled visible frame remains valid. It detects the
+enum VideoSubmissionDecision: Equatable {
+    case ignored
+    case horizonExtended(endUs: UInt64)
+    case stallEnded(endUs: UInt64)
+}
+
+/// Tracks the furthest presentation end submitted to AVFoundation. It detects the
 /// presentation boundary only; `PipelineStallAttributor` owns cause attribution.
 struct VideoPresentationHorizon {
     // ~30 fps; used when no per-frame duration or interval is available.
-    private static let fallbackVisibleFrameDurationUs: UInt64 = 33_333
+    private static let fallbackFrameDurationUs: UInt64 = 33_333
 
-    private(set) var lastVisibleFramePTSUs: UInt64?
-    private(set) var lastVisibleFrameEndUs: UInt64?
-    private(set) var hasPendingStallMarker = false
+    private(set) var latestSubmittedPTSUs: UInt64?
+    private(set) var submittedHorizonEndUs: UInt64?
     private(set) var isStalled = false
 
-    private var lastVisibleFrameIntervalUs: UInt64?
+    private var latestSubmittedIntervalUs: UInt64?
 
     @discardableResult
-    mutating func recordVisibleFrame(
+    mutating func recordSubmittedSample(
         sampleBuffer: CMSampleBuffer,
         presentationTime: CMTime,
-        frontFrameIntervalUs: UInt64?
-    ) -> Bool {
+        frontFrameIntervalUs: UInt64?,
+        playheadUs: UInt64
+    ) -> VideoSubmissionDecision {
         guard let presentationTimeUs = Self.microseconds(from: presentationTime) else {
-            return false
+            return .ignored
         }
 
-        let visibleFrameIntervalUs = lastVisibleFramePTSUs.flatMap { previousPTSUs in
+        let observedIntervalUs = latestSubmittedPTSUs.flatMap { previousPTSUs in
             presentationTimeUs > previousPTSUs ? presentationTimeUs - previousPTSUs : nil
         }
         let durationUs =
             Self.sampleDurationUs(sampleBuffer)
             ?? Self.validDurationUs(frontFrameIntervalUs)
-            ?? visibleFrameIntervalUs
-            ?? lastVisibleFrameIntervalUs
-            ?? Self.fallbackVisibleFrameDurationUs
+            ?? observedIntervalUs
+            ?? latestSubmittedIntervalUs
+            ?? Self.fallbackFrameDurationUs
 
-        if let visibleFrameIntervalUs {
-            lastVisibleFrameIntervalUs = visibleFrameIntervalUs
+        if let observedIntervalUs {
+            latestSubmittedIntervalUs = observedIntervalUs
         }
-        lastVisibleFramePTSUs = presentationTimeUs
-        lastVisibleFrameEndUs = Self.addClamping(presentationTimeUs, durationUs)
-        hasPendingStallMarker = false
+        if let latestSubmittedPTSUs {
+            if presentationTimeUs > latestSubmittedPTSUs {
+                self.latestSubmittedPTSUs = presentationTimeUs
+            }
+        } else {
+            latestSubmittedPTSUs = presentationTimeUs
+        }
 
-        guard isStalled else { return false }
+        let candidateEndUs = Self.addClamping(presentationTimeUs, durationUs)
+        guard candidateEndUs > (submittedHorizonEndUs ?? 0) else {
+            return .ignored
+        }
+        submittedHorizonEndUs = candidateEndUs
+
+        guard isStalled, candidateEndUs > playheadUs else {
+            return .horizonExtended(endUs: candidateEndUs)
+        }
         isStalled = false
-        return true
+        return .stallEnded(endUs: candidateEndUs)
     }
 
-    mutating func evaluateStallStart(at nowUs: UInt64) -> VideoPresentationDecision {
+    mutating func evaluateStallStart(at playheadUs: UInt64) -> VideoPresentationDecision {
         guard !isStalled else {
-            hasPendingStallMarker = false
             return .alreadyStalled
         }
-
-        if let lastVisibleFrameEndUs, nowUs < lastVisibleFrameEndUs {
-            hasPendingStallMarker = true
-            return .wait(delayUs: lastVisibleFrameEndUs - nowUs)
+        guard let submittedHorizonEndUs else {
+            return .buffering
         }
-
-        hasPendingStallMarker = false
-        isStalled = true
-        return .beginStall
+        guard playheadUs < submittedHorizonEndUs else {
+            isStalled = true
+            return .beginStall
+        }
+        return .wait(delayUs: submittedHorizonEndUs - playheadUs)
     }
 
-    mutating func clearPendingStallMarker() {
-        hasPendingStallMarker = false
+    /// Invalidates AVFoundation-owned presentation coverage while preserving an
+    /// already-active public stall until replacement coverage is submitted.
+    mutating func resetCoverage() {
+        latestSubmittedPTSUs = nil
+        submittedHorizonEndUs = nil
+        latestSubmittedIntervalUs = nil
     }
 
+    /// Clears all presentation and stall state during renderer teardown.
     mutating func reset() {
-        lastVisibleFramePTSUs = nil
-        lastVisibleFrameEndUs = nil
-        hasPendingStallMarker = false
-        isStalled = false
-        lastVisibleFrameIntervalUs = nil
+        self = VideoPresentationHorizon()
+    }
+
+    static func conservativeWallDelayUs(
+        mediaDelayUs: UInt64,
+        maxClockRate: Double
+    ) -> UInt64 {
+        guard mediaDelayUs > 0 else { return 0 }
+        guard maxClockRate.isFinite, maxClockRate > 1 else { return mediaDelayUs }
+
+        let scaledDelay = (Double(mediaDelayUs) / maxClockRate).rounded(.down)
+        guard scaledDelay >= 1 else { return 1 }
+        guard scaledDelay < Double(UInt64.max) else { return mediaDelayUs }
+        return UInt64(scaledDelay)
     }
 
     private static func sampleDurationUs(_ sampleBuffer: CMSampleBuffer) -> UInt64? {

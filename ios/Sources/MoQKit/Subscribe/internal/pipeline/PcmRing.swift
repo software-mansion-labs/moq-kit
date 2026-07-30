@@ -21,9 +21,33 @@ struct PcmRingPolicy: Sendable {
 
 struct PcmWriteResult: Equatable {
     let acceptedFrames: Int
-    var rejectedOldFrames: Int = 0
-    var evictedFrames: Int = 0
-    var silenceFrames: Int = 0
+    let rejectedOldFrames: Int
+    let evictedFrames: Int
+    let silenceFrames: Int
+    let diagnostics: PcmWriteDiagnostics?
+
+    init(
+        acceptedFrames: Int,
+        rejectedOldFrames: Int = 0,
+        evictedFrames: Int = 0,
+        silenceFrames: Int = 0,
+        diagnostics: PcmWriteDiagnostics? = nil
+    ) {
+        self.acceptedFrames = acceptedFrames
+        self.rejectedOldFrames = rejectedOldFrames
+        self.evictedFrames = evictedFrames
+        self.silenceFrames = silenceFrames
+        self.diagnostics = diagnostics
+    }
+}
+
+struct PcmWriteDiagnostics: Equatable {
+    let depthBefore: BufferDepth
+    let peakDepth: BufferDepth
+    let depthAfter: BufferDepth
+    let playheadUs: UInt64
+    let timestampDeltaUs: Int64
+    let bufferLimits: BufferLimits
 }
 
 /// Timestamp-positioned Float32 PCM ring (non-interleaved, per channel) with explicit
@@ -32,6 +56,7 @@ struct PcmRing {
     private var buffer: [[Float32]]
     private var writeIndex: Int = 0
     private var readIndex: Int = 0
+    private var bufferLimits: BufferLimits
 
     let rate: Int
     let channels: Int
@@ -52,6 +77,11 @@ struct PcmRing {
         self.rate = rate
         self.channels = channels
         self.buffer = (0..<channels).map { _ in [Float32](repeating: 0, count: samples) }
+        self.bufferLimits = BufferLimits(
+            maxFrames: policy.maxFrames,
+            maxBytes: policy.maxBytes,
+            maxDurationUs: policy.maxDurationUs
+        )
     }
 
     /// Timestamp of the current read position in microseconds.
@@ -137,6 +167,11 @@ struct PcmRing {
             channels * MemoryLayout<Float32>.size
         ))
         let newCapacity = max(1, min(policy.maxFrames, durationFrames, byteFrames))
+        bufferLimits = BufferLimits(
+            maxFrames: policy.maxFrames,
+            maxBytes: policy.maxBytes,
+            maxDurationUs: policy.maxDurationUs
+        )
         guard newCapacity != capacity else { return }
         precondition(newCapacity > 0, "empty buffer")
 
@@ -168,6 +203,7 @@ struct PcmRing {
         channelData: UnsafePointer<UnsafeMutablePointer<Float32>>,
         frameCount: Int
     ) -> PcmWriteResult {
+        let framesBefore = length
         var start = Int(round(Double(timestampUs) / 1_000_000.0 * Double(rate)))
         var samples = frameCount
         var discarded = 0
@@ -180,10 +216,22 @@ struct PcmRing {
             writeIndex = start
         }
 
+        let playheadUs = self.timestampUs
+        let timestampDeltaUs = Int64(clamping: timestampUs) - Int64(clamping: playheadUs)
+
         // Ignore samples that are too old (before the read index)
         let offset = readIndex - start
         if offset > samples {
-            return PcmWriteResult(acceptedFrames: 0, rejectedOldFrames: samples)
+            return PcmWriteResult(
+                acceptedFrames: 0,
+                rejectedOldFrames: samples,
+                diagnostics: makeWriteDiagnostics(
+                    framesBefore: framesBefore,
+                    peakFrames: framesBefore,
+                    playheadUs: playheadUs,
+                    timestampDeltaUs: timestampDeltaUs
+                )
+            )
         } else if offset > 0 {
             discarded += offset
             samples -= offset
@@ -191,6 +239,7 @@ struct PcmRing {
         }
 
         let end = start + samples
+        let peakFrames = max(length, end - readIndex)
 
         // Check if we need to discard old samples to prevent overflow
         let overflow = end - readIndex - buffer[0].count
@@ -220,11 +269,48 @@ struct PcmRing {
             writeIndex = end
         }
 
+        let rejectedOldFrames = max(0, discarded - max(0, overflow))
+        let evictedFrames = max(0, overflow)
         return PcmWriteResult(
             acceptedFrames: samples,
-            rejectedOldFrames: max(0, discarded - max(0, overflow)),
-            evictedFrames: max(0, overflow),
-            silenceFrames: silenceFrames
+            rejectedOldFrames: rejectedOldFrames,
+            evictedFrames: evictedFrames,
+            silenceFrames: silenceFrames,
+            diagnostics: rejectedOldFrames > 0 || evictedFrames > 0
+                ? makeWriteDiagnostics(
+                    framesBefore: framesBefore,
+                    peakFrames: peakFrames,
+                    playheadUs: playheadUs,
+                    timestampDeltaUs: timestampDeltaUs
+                )
+                : nil
+        )
+    }
+
+    private func makeWriteDiagnostics(
+        framesBefore: Int,
+        peakFrames: Int,
+        playheadUs: UInt64,
+        timestampDeltaUs: Int64
+    ) -> PcmWriteDiagnostics {
+        PcmWriteDiagnostics(
+            depthBefore: makeDiagnosticDepth(frames: framesBefore),
+            peakDepth: makeDiagnosticDepth(frames: peakFrames),
+            depthAfter: makeDiagnosticDepth(frames: length),
+            playheadUs: playheadUs,
+            timestampDeltaUs: timestampDeltaUs,
+            bufferLimits: bufferLimits
+        )
+    }
+
+    private func makeDiagnosticDepth(frames: Int) -> BufferDepth {
+        let boundedFrames = max(0, frames)
+        return BufferDepth(
+            frames: boundedFrames,
+            bytes: UInt64(boundedFrames * channels * MemoryLayout<Float32>.size),
+            durationUs: UInt64(
+                max(0, Double(boundedFrames) / Double(rate) * 1_000_000)
+            )
         )
     }
 

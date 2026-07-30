@@ -12,8 +12,8 @@ extension PlaybackStatsTracker: AudioRendererDelegate {
         armAudioPlaybackStart(context)
     }
 
-    func audioRendererDidClearExpectedPlaybackStart(_ renderer: AudioRenderer) {
-        disarmAudioPlaybackStart()
+    func audioRendererDidClearExpectedPlaybackStart(_ renderer: AudioRenderer) -> Bool {
+        disarmAudioPlaybackStartAndReportPending()
     }
 
     func audioRenderer(

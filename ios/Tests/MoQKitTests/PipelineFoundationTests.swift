@@ -84,7 +84,26 @@ final class PipelineFoundationTests: XCTestCase {
             context: PipelineContext(
                 trackId: "video-1080p",
                 mediaKind: .video,
-                timestampNanos: 42
+                timestampNanos: 42,
+                dropDiagnostics: FrameDropDiagnostics(
+                    decision: .backlogOverflow(exceededLimits: [.frames, .bytes, .duration]),
+                    playheadUs: 1_000_000,
+                    bufferDepthBefore: BufferDepth(
+                        frames: 12,
+                        bytes: 12_288,
+                        durationUs: 1_500_000
+                    ),
+                    bufferDepthAfter: BufferDepth(
+                        frames: 9,
+                        bytes: 8_192,
+                        durationUs: 900_000
+                    ),
+                    bufferLimits: BufferLimits(
+                        maxFrames: 10,
+                        maxBytes: 10_000,
+                        maxDurationUs: 1_000_000
+                    )
+                )
             ),
             stage: .buffer,
             reason: .backlogOverflow,
@@ -97,9 +116,72 @@ final class PipelineFoundationTests: XCTestCase {
         XCTAssertEqual(
             try XCTUnwrap(event.frameDropLogDescription),
             "Frame dropped track=video-1080p, media=video, stage=buffer, "
-                + "reason=backlogOverflow, ptsUs=1234, groupSequence=7, "
-                + "count=3, bytes=4096, timestampNanos=42"
+                + "reason=backlogOverflow, pts=00:00:00.001234, groupSequence=7, "
+                + "count=3, bytes=4096, playhead=00:00:01.000000, "
+                + "decision=buffer capacity exceeded (frames, bytes, duration), "
+                + "bufferBefore=12 frames/12.0 KiB/1.500s, "
+                + "bufferAfter=9 frames/8.0 KiB/900ms, "
+                + "limits=10 frames/9.8 KiB/1.000s, timestampNanos=42"
         )
+        XCTAssertFalse(event.shouldLogFrameDrop)
+    }
+
+    func testStaleDropLogExplainsTimestampDifferenceAndTolerance() throws {
+        let event = PipelineEvent.frameDropped(
+            context: PipelineContext(
+                trackId: "audio",
+                mediaKind: .audio,
+                timestampNanos: 7,
+                dropDiagnostics: FrameDropDiagnostics(
+                    decision: .staleVsPlayback(
+                        reference: .playhead,
+                        referenceTimestampUs: 3_000_000,
+                        timestampDeltaUs: -1_250_001,
+                        toleranceUs: 1_000_000
+                    ),
+                    playheadUs: 3_000_000,
+                    bufferDepthBefore: BufferDepth(
+                        frames: 4,
+                        bytes: 2_048,
+                        durationUs: 120_000
+                    ),
+                    bufferDepthAfter: BufferDepth(
+                        frames: 4,
+                        bytes: 2_048,
+                        durationUs: 120_000
+                    )
+                )
+            ),
+            stage: .timeline,
+            reason: .staleVsPlayback,
+            ptsUs: 1_749_999
+        )
+
+        XCTAssertEqual(
+            try XCTUnwrap(event.frameDropLogDescription),
+            "Frame dropped track=audio, media=audio, stage=timeline, "
+                + "reason=staleVsPlayback, pts=00:00:01.749999, groupSequence=nil, "
+                + "count=1, bytes=0, playhead=00:00:03.000000, "
+                + "decision=frame is 1.250001s behind playhead (00:00:03.000000); "
+                + "allowed lateness=1.000s; "
+                + "exceeded by=250.001ms, bufferBefore=4 frames/2.0 KiB/120ms, "
+                + "bufferAfter=4 frames/2.0 KiB/120ms, limits=nil, timestampNanos=7"
+        )
+        XCTAssertFalse(event.shouldLogFrameDrop)
+    }
+
+    func testOtherFrameDropReasonsRemainLogged() {
+        let event = PipelineEvent.frameDropped(
+            context: PipelineContext(
+                trackId: "video",
+                mediaKind: .video,
+                timestampNanos: 1
+            ),
+            stage: .decoder,
+            reason: .invalidPayload
+        )
+
+        XCTAssertTrue(event.shouldLogFrameDrop)
     }
 
     func testNonDropEventHasNoFrameDropLog() {

@@ -42,11 +42,14 @@ final class TrackTimelineTests: XCTestCase {
 
         let decision = timeline.onFrame(timedFrame(timestampUs: 899, keyframe: true))
 
-        guard case .drop(let reason, let frame) = decision else {
+        guard case .drop(let reason, let frame, let context) = decision else {
             return XCTFail("Expected stale frame drop")
         }
         XCTAssertEqual(reason, .staleVsPlayback)
         XCTAssertEqual(frame.timestampUs, 899)
+        XCTAssertEqual(context.playbackPositionUs, 1_000)
+        XCTAssertEqual(context.timestampDeltaUs, -101)
+        XCTAssertEqual(context.freshnessBudgetUs, 100)
     }
 
     func testEpochChangeResetsAndRetainsResumeFrame() {

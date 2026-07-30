@@ -84,6 +84,7 @@ final class VideoRenderer: @unchecked Sendable {
     // MARK: - Scheduled work
 
     private var pendingStallCheck: DispatchWorkItem?
+    private var stallCheckGeneration: UInt64 = 0
     private var pendingDrainWakeup: DispatchWorkItem?
     private var pendingSwitchTimeout: DispatchWorkItem?
 
@@ -151,9 +152,10 @@ final class VideoRenderer: @unchecked Sendable {
             timelineStarted = !timing.isVideoDriven
             timing.detachVideoLayer(layer)
 
-            pendingStallCheck?.cancel()
-            pendingStallCheck = nil
+            cancelVideoStallCheck()
             stallHorizon.reset()
+            videoStallStartedNanos = nil
+            videoStallCause = nil
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
             pendingSwitchTimeout?.cancel()
@@ -172,8 +174,7 @@ final class VideoRenderer: @unchecked Sendable {
                 "VideoRenderer flushing active track, bufferFillMs=\(self.activeTrack.depthMs)")
             activeTrack.flush()
             renderTarget.flush(removeDisplayedImage: true)
-            pendingStallCheck?.cancel()
-            pendingStallCheck = nil
+            cancelVideoStallCheck()
             stallHorizon.reset()
             pendingDrainWakeup?.cancel()
             pendingDrainWakeup = nil
@@ -264,6 +265,7 @@ final class VideoRenderer: @unchecked Sendable {
                 if let delay = self.renderDelay(forVideoTimestampUs: front.timestampUs) {
                     self.renderTarget.stopRequestingMediaData()
                     self.scheduleDrainWakeup(delay)
+                    self.evaluateVideoStallStart()
                     return
                 }
 
@@ -272,6 +274,8 @@ final class VideoRenderer: @unchecked Sendable {
                     return
                 }
             }
+
+            self.evaluateVideoStallStart()
         }
     }
 
@@ -282,6 +286,7 @@ final class VideoRenderer: @unchecked Sendable {
             return startClockIfReady()
         }
 
+        guard !stallHorizon.isStalled else { return true }
         syncClockToTargetLatency()
         return true
     }
@@ -328,7 +333,8 @@ final class VideoRenderer: @unchecked Sendable {
         case .flushSwap:
             let dropped = activeTrack.diagnosticDepth.frames
             renderTarget.flush(removeDisplayedImage: true)
-            stallHorizon.reset()
+            cancelVideoStallCheck()
+            stallHorizon.resetCoverage()
             emitDisplayFlush(
                 reason: .renditionSwitch,
                 trigger: "rendition timestamp domains require flush",
@@ -379,8 +385,9 @@ final class VideoRenderer: @unchecked Sendable {
     @discardableResult
     private func enqueueNextActiveFrame() -> Bool {
         let frontFrameIntervalUs = activeTrack.frontFrameIntervalUs
-        let (entry, playable) = activeTrack.dequeue()
-        guard let entry else { return false }
+        guard let dequeue = activeTrack.dequeue() else { return false }
+        let entry = dequeue.entry
+        let playable = dequeue.playable
 
         let displaySample = displaySampleBuffer(
             for: entry.item.sampleBuffer,
@@ -388,8 +395,26 @@ final class VideoRenderer: @unchecked Sendable {
 
         if !playable {
             doNotDisplaySample(displaySample.sampleBuffer)
+            let dropDiagnostics = dequeue.targetPlaybackUs.map { targetPlaybackUs in
+                FrameDropDiagnostics(
+                    decision: .staleVsPlayback(
+                        reference: .targetPlayback,
+                        referenceTimestampUs: targetPlaybackUs,
+                        timestampDeltaUs: Int64(clamping: entry.timestampUs)
+                            - targetPlaybackUs,
+                        toleranceUs: nil
+                    ),
+                    playheadUs: dequeue.playheadUs,
+                    bufferDepthBefore: dequeue.depthBefore,
+                    bufferDepthAfter: dequeue.depthAfter,
+                    bufferLimits: activeTrack.bufferLimits
+                )
+            }
             pipelineBus.emit(.frameDropped(
-                context: pipelineContext(for: activeTrack),
+                context: pipelineContext(
+                    for: activeTrack,
+                    dropDiagnostics: dropDiagnostics
+                ),
                 stage: .renderer,
                 reason: .staleVsPlayback,
                 ptsUs: Int64(clamping: entry.timestampUs),
@@ -408,12 +433,16 @@ final class VideoRenderer: @unchecked Sendable {
                 ptsUs: Int64(clamping: entry.timestampUs),
                 renderNanos: DispatchTime.now().uptimeNanoseconds
             ))
-            let shouldEndStall = stallHorizon.recordVisibleFrame(
+            let submissionDecision = stallHorizon.recordSubmittedSample(
                 sampleBuffer: displaySample.sampleBuffer,
                 presentationTime: displaySample.presentationTime,
-                frontFrameIntervalUs: frontFrameIntervalUs
+                frontFrameIntervalUs: frontFrameIntervalUs,
+                playheadUs: currentPlaybackTimeUs()
             )
-            if shouldEndStall {
+            switch submissionDecision {
+            case .ignored, .horizonExtended:
+                break
+            case .stallEnded:
                 endVideoStall()
             }
         }
@@ -481,6 +510,7 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     private func syncClockToTargetLatency() {
+        guard !stallHorizon.isStalled else { return }
         guard let desiredSourceUs = activeTrack.targetPlaybackPTS() else { return }
 
         let desiredPlayheadUs = displayTimeUs(forVideoTimeUs: desiredSourceUs)
@@ -522,36 +552,42 @@ final class VideoRenderer: @unchecked Sendable {
     }
 
     private func evaluateVideoStallStart() {
-        pendingStallCheck?.cancel()
-        pendingStallCheck = nil
-        stallHorizon.clearPendingStallMarker()
-
-        guard activeTrack.peekFront() == nil else { return }
-
-        if promotePendingTrackIfReady() {
-            armVideoEnqueue()
-            return
-        }
-
         switch stallHorizon.evaluateStallStart(at: currentPlaybackTimeUs()) {
+        case .buffering:
+            cancelVideoStallCheck()
         case .wait(let delayUs):
             scheduleVideoStallCheck(afterUs: delayUs)
         case .beginStall:
+            cancelVideoStallCheck()
             beginVideoStall()
         case .alreadyStalled:
-            break
+            cancelVideoStallCheck()
         }
     }
 
     private func scheduleVideoStallCheck(afterUs delayUs: UInt64) {
+        cancelVideoStallCheck()
+        let generation = stallCheckGeneration
         let workItem = DispatchWorkItem { [weak self] in
-            self?.evaluateVideoStallStart()
+            guard let self, self.stallCheckGeneration == generation else { return }
+            self.pendingStallCheck = nil
+            self.evaluateVideoStallStart()
         }
         pendingStallCheck = workItem
+        let wallDelayUs = VideoPresentationHorizon.conservativeWallDelayUs(
+            mediaDelayUs: delayUs,
+            maxClockRate: timing.isVideoDriven ? PipelinePolicies.clock.maxRate : 1.0
+        )
         enqueueQueue.asyncAfter(
-            deadline: .now() + Double(delayUs) / 1_000_000.0,
+            deadline: .now() + Double(wallDelayUs) / 1_000_000.0,
             execute: workItem
         )
+    }
+
+    private func cancelVideoStallCheck() {
+        pendingStallCheck?.cancel()
+        pendingStallCheck = nil
+        stallCheckGeneration &+= 1
     }
 
     private func beginVideoStall() {
@@ -753,7 +789,8 @@ final class VideoRenderer: @unchecked Sendable {
         let reset: TimelineDecision<VideoRendererSample> =
             activeTrack.timeline.requestReset()
         activeTrack.flush()
-        stallHorizon.reset()
+        cancelVideoStallCheck()
+        stallHorizon.resetCoverage()
         if case .reset(_, let epoch, _, _) = reset {
             pipelineBus.emit(.discontinuity(
                 context: context,
@@ -791,11 +828,15 @@ final class VideoRenderer: @unchecked Sendable {
         ))
     }
 
-    private func pipelineContext(for track: VideoRendererTrack) -> PipelineContext {
+    private func pipelineContext(
+        for track: VideoRendererTrack,
+        dropDiagnostics: FrameDropDiagnostics? = nil
+    ) -> PipelineContext {
         PipelineContext(
             trackId: track.trackName,
             mediaKind: .video,
-            timestampNanos: DispatchTime.now().uptimeNanoseconds
+            timestampNanos: DispatchTime.now().uptimeNanoseconds,
+            dropDiagnostics: dropDiagnostics
         )
     }
 
@@ -805,9 +846,6 @@ final class VideoRenderer: @unchecked Sendable {
         return { [weak self] in
             queue.async {
                 guard let self else { return }
-                self.pendingStallCheck?.cancel()
-                self.pendingStallCheck = nil
-                self.stallHorizon.clearPendingStallMarker()
                 self.armVideoEnqueue()
             }
         }

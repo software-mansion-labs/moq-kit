@@ -193,14 +193,14 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
 
     // MARK: - Stalls
 
-    func noteStall(kind: MediaFrameKind, stalled: Bool) {
+    func noteStall(kind: MediaFrameKind, trackName: String? = nil, stalled: Bool) {
         let instant = nowInstant()
         let change = lock.withLock {
             lifecycle.recordStall(kind: kind, stalled: stalled, at: instant)
         }
 
         guard let change else { return }
-        let track = trackEvent(kind: change.kind)
+        let track = trackEvent(kind: change.kind, trackName: trackName)
         events.emit(change.stalled ? .trackStallStart(track) : .trackStallEnd(track))
         if change.rebufferChanged {
             events.emit(change.stalled ? .rebufferStart(track) : .rebufferEnd(track))
@@ -230,8 +230,8 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
         )
     }
 
-    func disarmAudioPlaybackStart() {
-        audioStartHandoff.clear()
+    func disarmAudioPlaybackStartAndReportPending() -> Bool {
+        audioStartHandoff.clearAndReportPending()
     }
 
     var isAudioPlaybackStartArmed: Bool {
@@ -349,9 +349,17 @@ final class PlaybackStatsTracker: MediaFrameObserver, @unchecked Sendable {
                 }
             }
         case .stallStarted(let context, _):
-            noteStall(kind: context.mediaKind.mediaFrameKind, stalled: true)
+            noteStall(
+                kind: context.mediaKind.mediaFrameKind,
+                trackName: context.trackId,
+                stalled: true
+            )
         case .stallEnded(let context, _, _):
-            noteStall(kind: context.mediaKind.mediaFrameKind, stalled: false)
+            noteStall(
+                kind: context.mediaKind.mediaFrameKind,
+                trackName: context.trackId,
+                stalled: false
+            )
         default:
             break
         }

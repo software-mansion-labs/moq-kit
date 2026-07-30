@@ -75,11 +75,12 @@ struct PipelineContextFactory: Sendable {
         self.timeSource = timeSource
     }
 
-    func make() -> PipelineContext {
+    func make(dropDiagnostics: FrameDropDiagnostics? = nil) -> PipelineContext {
         PipelineContext(
             trackId: trackId,
             mediaKind: mediaKind,
-            timestampNanos: timeSource.nowNanos
+            timestampNanos: timeSource.nowNanos,
+            dropDiagnostics: dropDiagnostics
         )
     }
 }

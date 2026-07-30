@@ -12,7 +12,7 @@ struct VideoRendererSample {
 
 enum VideoFrameInsertOutcome {
     case admitted(depth: BufferDepth, evictions: [AdmissionEffect])
-    case rejected(AdmissionRejectReason)
+    case rejected(reason: AdmissionRejectReason, depth: BufferDepth)
     case invalidPayload
 
     var accepted: Bool {
@@ -43,10 +43,20 @@ final class VideoRendererTrack: @unchecked Sendable {
         let item: VideoRendererSample
     }
 
+    struct DequeueResult {
+        let entry: Entry
+        let playable: Bool
+        let playheadUs: Int64?
+        let targetPlaybackUs: Int64?
+        let depthBefore: BufferDepth
+        let depthAfter: BufferDepth
+    }
+
     let trackName: String
     let trackEpoch: TrackEpoch
     let processor: VideoFrameProcessor
     let timeline: TrackTimeline
+    let bufferLimits: BufferLimits
 
     private var buffer: FrameBuffer<VideoRendererSample>
     private var mode: State = .buffering
@@ -68,7 +78,13 @@ final class VideoRendererTrack: @unchecked Sendable {
                 targetLatencyUs: Int64(clamping: targetBuffering.microsecondsUInt64Clamped)
             )
         )
-        self.buffer = FrameBuffer<VideoRendererSample>()
+        let admissionPolicy = PipelinePolicies.admission
+        self.buffer = FrameBuffer<VideoRendererSample>(policy: admissionPolicy)
+        self.bufferLimits = BufferLimits(
+            maxFrames: admissionPolicy.maxFrames,
+            maxBytes: admissionPolicy.maxBytes,
+            maxDurationUs: UInt64(admissionPolicy.maxDurationUs)
+        )
         self.targetBufferingUs = targetBuffering.microsecondsUInt64Clamped
     }
 
@@ -86,6 +102,7 @@ final class VideoRendererTrack: @unchecked Sendable {
 
         lock.withLock {
             do {
+                let depthBefore = buffer.depth()
                 guard
                     let sb = try processor.process(
                         payload: payload, timestampUs: timestampUs, keyframe: keyframe)
@@ -103,14 +120,14 @@ final class VideoRendererTrack: @unchecked Sendable {
                     )
                 )
                 if case .rejected(let reason) = effects.first {
-                    outcome = .rejected(reason)
+                    outcome = .rejected(reason: reason, depth: depthBefore)
                     return
                 }
                 let accepted = buffer.contains {
                     $0.timestampUs == Int64(timestampUs) && $0.keyframe == keyframe
                 }
                 guard accepted else {
-                    outcome = .rejected(.frameTooLarge)
+                    outcome = .rejected(reason: .frameTooLarge, depth: depthBefore)
                     return
                 }
                 outcome = .admitted(
@@ -146,17 +163,23 @@ final class VideoRendererTrack: @unchecked Sendable {
         }
     }
 
-    /// Dequeue the oldest entry. Returns `(nil, false)` when buffering or empty.
-    func dequeue() -> (Entry?, Bool) {
+    /// Dequeue the oldest entry with the state used for its playback decision.
+    func dequeue() -> DequeueResult? {
         lock.withLock {
-            guard mode == .playing, let frame = buffer.removeFront() else {
-                return (nil, false)
+            guard mode == .playing else {
+                return nil
             }
-            let target = timeline.targetPlaybackUs()
-            let playable = target.map { frame.timestampUs >= $0 } ?? true
-            return (
-                Entry(timestampUs: UInt64(frame.timestampUs), item: frame.payload),
-                playable
+            let depthBefore = buffer.depth()
+            guard let frame = buffer.removeFront() else { return nil }
+            let playback = timeline.playbackSnapshot()
+            let playable = playback.targetPlaybackUs.map { frame.timestampUs >= $0 } ?? true
+            return DequeueResult(
+                entry: Entry(timestampUs: UInt64(frame.timestampUs), item: frame.payload),
+                playable: playable,
+                playheadUs: playback.playheadUs,
+                targetPlaybackUs: playback.targetPlaybackUs,
+                depthBefore: depthBefore,
+                depthAfter: buffer.depth()
             )
         }
     }

@@ -225,6 +225,37 @@ final class PlaybackStatsTrackerLifecycleTests: XCTestCase {
         XCTAssertEqual(stats.audioStalls?.count, 1)
     }
 
+    func testStallEventsPreservePipelineTrackName() throws {
+        let hub = PlayerEventHub()
+        let pipelineBus = PipelineBus()
+        let tracker = PlaybackStatsTracker(events: hub, pipelineBus: pipelineBus)
+        let recorder = EventRecorder()
+        let subscription = hub.subscribeInternal { recorder.record($0) }
+        defer { subscription.cancel() }
+
+        tracker.beginSession(rebufferKind: .audio)
+        pipelineBus.emit(.stallStarted(
+            context: PipelineContext(
+                trackId: "0.opus",
+                mediaKind: .audio,
+                timestampNanos: 1
+            ),
+            cause: .renderStall
+        ))
+
+        let stall = try XCTUnwrap(recorder.first(named: .trackStallStart))
+        guard case .trackStallStart(let stallTrack) = stall.type else {
+            return XCTFail("Expected track.stall.start")
+        }
+        XCTAssertEqual(stallTrack.trackName, "0.opus")
+
+        let rebuffer = try XCTUnwrap(recorder.first(named: .rebufferStart))
+        guard case .rebufferStart(let rebufferTrack) = rebuffer.type else {
+            return XCTFail("Expected rebuffer.start")
+        }
+        XCTAssertEqual(rebufferTrack.trackName, "0.opus")
+    }
+
     func testCloseOutInFlightStallsDoesNotCreateIdleStallStats() {
         let clock = TestPlaybackWallClock()
         let tracker = makeTracker(clock: clock)
@@ -362,6 +393,10 @@ private final class EventRecorder: @unchecked Sendable {
 
     var names: [PlayerEventName] {
         lock.withLock { events.map(\.name) }
+    }
+
+    func first(named name: PlayerEventName) -> PlayerEvent? {
+        lock.withLock { events.first { $0.name == name } }
     }
 
     func record(_ event: PlayerEvent) {

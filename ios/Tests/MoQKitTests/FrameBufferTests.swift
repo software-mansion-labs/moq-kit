@@ -43,7 +43,12 @@ final class FrameBufferTests: XCTestCase {
         _ = buffer.offer(timedBufferFrame(timestampUs: 20))
         let effects = buffer.offer(timedBufferFrame(timestampUs: 30, keyframe: true))
 
-        XCTAssertTrue(effects.contains(.evictedGop(count: 3, bytes: 3)))
+        XCTAssertTrue(effects.contains(.evictedGop(
+            count: 3,
+            bytes: 3,
+            depthBefore: BufferDepth(frames: 4, bytes: 4, durationUs: 30),
+            depthAfter: BufferDepth(frames: 1, bytes: 1, durationUs: 0)
+        )))
         XCTAssertEqual(buffer.peekFront()?.timestampUs, 30)
         XCTAssertEqual(buffer.depth().frames, 1)
     }

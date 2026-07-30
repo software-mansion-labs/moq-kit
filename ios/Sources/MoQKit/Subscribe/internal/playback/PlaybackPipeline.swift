@@ -9,6 +9,27 @@ enum PlaybackPipelineSwitchOutcome {
     case restartRequired
 }
 
+private extension FrameDropDiagnostics {
+    static func timelineStale(
+        _ context: TimelineDropContext,
+        bufferDepth: BufferDepth,
+        bufferLimits: BufferLimits? = nil
+    ) -> Self {
+        Self(
+            decision: .staleVsPlayback(
+                reference: .playhead,
+                referenceTimestampUs: context.playbackPositionUs,
+                timestampDeltaUs: context.timestampDeltaUs,
+                toleranceUs: context.freshnessBudgetUs
+            ),
+            playheadUs: context.playbackPositionUs,
+            bufferDepthBefore: bufferDepth,
+            bufferDepthAfter: bufferDepth,
+            bufferLimits: bufferLimits
+        )
+    }
+}
+
 /// Decodes and renders subscribed media tracks, and exposes seamless rendition switching.
 ///
 /// One pipeline instance covers all combinations of selected tracks:
@@ -88,6 +109,11 @@ final class PlaybackPipeline {
             maxLatency: targetBuffering,
             tracker: tracker
         )
+        if let audioTrack {
+            KitLogger.player.debug(
+                "Advanced audio track epoch from 0 to \(initialAudioEpoch), reason=initialSubscription, currentTrack=\(audioTrack.name)"
+            )
+        }
 
         self.mediaSource = mediaSource
         self.targetBuffering = targetBuffering
@@ -356,7 +382,9 @@ final class PlaybackPipeline {
 
         KitLogger.player.debug("Switching audio track to \(track.name)")
 
-        let nextEpoch = audioEpoch.next()
+        let previousEpoch = audioEpoch
+        let previousTrackName = audioTrackName
+        let nextEpoch = previousEpoch.next()
         tracker.emitSubscribeStart(kind: .audio, trackName: track.name, trackEpoch: nextEpoch)
         let newSub: MediaTrack
         do {
@@ -378,6 +406,9 @@ final class PlaybackPipeline {
         audioSubscription = newSub
         audioTrackName = track.name
         audioEpoch = nextEpoch
+        KitLogger.player.debug(
+            "Advanced audio track epoch from \(previousEpoch) to \(nextEpoch), reason=trackSwitch, previousTrack=\(previousTrackName ?? "none"), currentTrack=\(track.name)"
+        )
         audioTask = Self.makeAudioIngestTask(
             trackName: track.name,
             subscription: newSub,
@@ -508,9 +539,14 @@ extension PlaybackPipeline {
                     )
 
                     switch track.timeline.onFrame(pipelineFrame) {
-                    case .drop(_, let dropped):
+                    case .drop(_, let dropped, let dropContext):
+                        let depth = track.diagnosticDepth
                         pipelineBus.emit(.frameDropped(
-                            context: context.make(),
+                            context: context.make(dropDiagnostics: .timelineStale(
+                                dropContext,
+                                bufferDepth: depth,
+                                bufferLimits: track.bufferLimits
+                            )),
                             stage: .timeline,
                             reason: .staleVsPlayback,
                             ptsUs: dropped.timestampUs,
@@ -552,11 +588,26 @@ extension PlaybackPipeline {
                     switch insertOutcome {
                     case .admitted(let depth, let evictions):
                         for eviction in evictions {
-                            guard case .evictedGop(let count, let bytes) = eviction else {
+                            guard case .evictedGop(
+                                let count,
+                                let bytes,
+                                let depthBefore,
+                                let depthAfter
+                            ) = eviction else {
                                 continue
                             }
                             pipelineBus.emit(.frameDropped(
-                                context: context.make(),
+                                context: context.make(dropDiagnostics: FrameDropDiagnostics(
+                                    decision: .backlogOverflow(
+                                        exceededLimits: depthBefore.exceededLimits(
+                                            of: track.bufferLimits
+                                        )
+                                    ),
+                                    playheadUs: track.timeline.currentPlaybackPositionUs,
+                                    bufferDepthBefore: depthBefore,
+                                    bufferDepthAfter: depthAfter,
+                                    bufferLimits: track.bufferLimits
+                                )),
                                 stage: .buffer,
                                 reason: .backlogOverflow,
                                 count: count,
@@ -572,7 +623,7 @@ extension PlaybackPipeline {
                             context: context.make(),
                             depth: depth
                         ))
-                    case .rejected(let reason):
+                    case .rejected(let reason, let depth):
                         let dropReason: DropReason
                         switch reason {
                         case .waitingForKeyframe:
@@ -584,8 +635,17 @@ extension PlaybackPipeline {
                         case .frameTooLarge:
                             dropReason = .backlogOverflow
                         }
+                        let diagnostics = reason == .frameTooLarge
+                            ? FrameDropDiagnostics(
+                                decision: .backlogOverflow(exceededLimits: [.bytes]),
+                                playheadUs: track.timeline.currentPlaybackPositionUs,
+                                bufferDepthBefore: depth,
+                                bufferDepthAfter: depth,
+                                bufferLimits: track.bufferLimits
+                            )
+                            : nil
                         pipelineBus.emit(.frameDropped(
-                            context: context.make(),
+                            context: context.make(dropDiagnostics: diagnostics),
                             stage: .buffer,
                             reason: dropReason,
                             ptsUs: ptsUs,
@@ -676,6 +736,7 @@ extension PlaybackPipeline {
             }
 
             var firstFrame = true
+            var needsPlaybackStartHandoff = true
             let recovery = AudioRecoveryController()
 
             defer {
@@ -714,9 +775,13 @@ extension PlaybackPipeline {
                             epoch: trackEpoch
                         )
                         switch timeline.onFrame(pipelineFrame) {
-                        case .drop(_, let dropped):
+                        case .drop(_, let dropped, let dropContext):
+                            let depth = renderer.diagnosticDepth
                             pipelineBus.emit(.frameDropped(
-                                context: context.make(),
+                                context: context.make(dropDiagnostics: .timelineStale(
+                                    dropContext,
+                                    bufferDepth: depth
+                                )),
                                 stage: .timeline,
                                 reason: .staleVsPlayback,
                                 ptsUs: dropped.timestampUs,
@@ -724,7 +789,9 @@ extension PlaybackPipeline {
                             ))
                             continue
                         case .reset(let reason, let epoch, _, let gapUs):
-                            renderer.flush()
+                            let clearedPendingPlaybackStart = renderer.flush()
+                            needsPlaybackStartHandoff =
+                                clearedPendingPlaybackStart || needsPlaybackStartHandoff
                             pipelineBus.emit(.discontinuity(
                                 context: context.make(),
                                 epoch: epoch,
@@ -756,12 +823,36 @@ extension PlaybackPipeline {
                             (write.rejectedOldFrames + write.evictedFrames)
                             / decodedFrameSize
                         if droppedFrames > 0 {
+                            let backlogOverflow = write.evictedFrames > 0
+                            let dropDiagnostics = write.diagnostics.map { diagnostics in
+                                FrameDropDiagnostics(
+                                    decision: backlogOverflow
+                                        ? .backlogOverflow(
+                                            exceededLimits: diagnostics.peakDepth
+                                                .exceededLimits(
+                                                    of: diagnostics.bufferLimits
+                                                )
+                                        )
+                                        : .staleVsPlayback(
+                                            reference: .audioReadCursor,
+                                            referenceTimestampUs: Int64(
+                                                clamping: diagnostics.playheadUs
+                                            ),
+                                            timestampDeltaUs: diagnostics.timestampDeltaUs,
+                                            toleranceUs: 0
+                                        ),
+                                    playheadUs: Int64(clamping: diagnostics.playheadUs),
+                                    bufferDepthBefore: backlogOverflow
+                                        ? diagnostics.peakDepth
+                                        : diagnostics.depthBefore,
+                                    bufferDepthAfter: diagnostics.depthAfter,
+                                    bufferLimits: diagnostics.bufferLimits
+                                )
+                            }
                             pipelineBus.emit(.frameDropped(
-                                context: context.make(),
+                                context: context.make(dropDiagnostics: dropDiagnostics),
                                 stage: .buffer,
-                                reason: write.evictedFrames > 0
-                                    ? .backlogOverflow
-                                    : .staleVsPlayback,
+                                reason: backlogOverflow ? .backlogOverflow : .staleVsPlayback,
                                 ptsUs: ptsUs,
                                 count: droppedFrames
                             ))
@@ -778,16 +869,20 @@ extension PlaybackPipeline {
                             depth: depth
                         ))
 
-                        if firstFrame, write.acceptedFrames > 0 {
-                            firstFrame = false
-                            KitLogger.player.debug(
-                                "First audio frame decoded track=\(trackName), timestampUs=\(frame.timestampUs), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
-                            )
+                        if needsPlaybackStartHandoff, write.acceptedFrames > 0 {
+                            needsPlaybackStartHandoff = false
                             renderer.expectPlaybackStart(
                                 trackName: trackName,
                                 sourceTimestampUs: frame.timestampUs,
                                 targetBuffering: targetBuffering,
                                 trackEpoch: trackEpoch
+                            )
+                        }
+
+                        if firstFrame, write.acceptedFrames > 0 {
+                            firstFrame = false
+                            KitLogger.player.debug(
+                                "First audio frame decoded track=\(trackName), timestampUs=\(frame.timestampUs), bytes=\(frame.payload.count), trackEpoch=\(trackEpoch)"
                             )
                             tracker.emitTrackReady(
                                 kind: .audio,
@@ -839,7 +934,9 @@ extension PlaybackPipeline {
                         }
                         do {
                             decoder = try AudioDecoder(config: config)
-                            renderer.flush()
+                            let clearedPendingPlaybackStart = renderer.flush()
+                            needsPlaybackStartHandoff =
+                                clearedPendingPlaybackStart || needsPlaybackStartHandoff
                             pipelineBus.emit(.decoderFlushed(
                                 context: context.make(),
                                 reason: .decoderRecovery,

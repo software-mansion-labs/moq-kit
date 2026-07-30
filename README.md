@@ -238,6 +238,11 @@ newest events without blocking playback. Use it for typed drop, discontinuity, b
 switch, recovery, clock, latency, and stall details; use `Player.stats` or
 `subscribeStats(_:)` for aggregate UI metrics.
 
+On iOS, the `PipelineContext.dropDiagnostics` value on `frameDropped` events caused by
+`staleVsPlayback` or `backlogOverflow` captures the playhead, the timestamp reference and
+exact microsecond delta used by the decision, buffer occupancy before and after the drop,
+and applicable buffer limits. The typed event retains exact values for telemetry.
+
 ### Publish camera and microphone in Swift
 
 ```swift

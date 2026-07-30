@@ -11,11 +11,19 @@ public struct PipelineContext: Sendable, Equatable {
     public let trackId: String
     public let mediaKind: PipelineMediaKind
     public let timestampNanos: UInt64
+    /// Detailed drop state when this context belongs to a stale or overflow drop event.
+    public let dropDiagnostics: FrameDropDiagnostics?
 
-    public init(trackId: String, mediaKind: PipelineMediaKind, timestampNanos: UInt64) {
+    public init(
+        trackId: String,
+        mediaKind: PipelineMediaKind,
+        timestampNanos: UInt64,
+        dropDiagnostics: FrameDropDiagnostics? = nil
+    ) {
         self.trackId = trackId
         self.mediaKind = mediaKind
         self.timestampNanos = timestampNanos
+        self.dropDiagnostics = dropDiagnostics
     }
 }
 
@@ -33,6 +41,83 @@ public struct BufferDepth: Sendable, Equatable {
     }
 
     public static let empty = BufferDepth(frames: 0, bytes: 0, durationUs: 0)
+}
+
+/// Capacity constraints applied to a bounded media buffer.
+public struct BufferLimits: Sendable, Equatable {
+    public let maxFrames: Int
+    public let maxBytes: UInt64
+    public let maxDurationUs: UInt64
+
+    public init(maxFrames: Int, maxBytes: UInt64, maxDurationUs: UInt64) {
+        precondition(maxFrames > 0, "maxFrames must be positive")
+        precondition(maxBytes > 0, "maxBytes must be positive")
+        precondition(maxDurationUs > 0, "maxDurationUs must be positive")
+        self.maxFrames = maxFrames
+        self.maxBytes = maxBytes
+        self.maxDurationUs = maxDurationUs
+    }
+}
+
+extension BufferDepth {
+    func exceededLimits(of limits: BufferLimits?) -> [BufferLimitKind] {
+        guard let limits else { return [] }
+        var exceeded: [BufferLimitKind] = []
+        if frames > limits.maxFrames { exceeded.append(.frames) }
+        if bytes > limits.maxBytes { exceeded.append(.bytes) }
+        if durationUs > limits.maxDurationUs { exceeded.append(.duration) }
+        return exceeded
+    }
+}
+
+/// Timestamp used to decide whether a frame is stale.
+public enum DropTimestampReference: Sendable, Equatable {
+    case playhead
+    case targetPlayback
+    case audioReadCursor
+}
+
+/// Buffer constraint that forced backlog eviction.
+public enum BufferLimitKind: Sendable, Equatable {
+    case frames
+    case bytes
+    case duration
+}
+
+/// The concrete policy decision that caused a frame drop.
+public enum FrameDropDecision: Sendable, Equatable {
+    /// `timestampDeltaUs` is the frame PTS minus the referenced timestamp. A negative value
+    /// means the frame was behind the reference.
+    case staleVsPlayback(
+        reference: DropTimestampReference,
+        referenceTimestampUs: Int64,
+        timestampDeltaUs: Int64,
+        toleranceUs: UInt64?
+    )
+    case backlogOverflow(exceededLimits: [BufferLimitKind])
+}
+
+/// Point-in-time state captured when a frame is dropped.
+public struct FrameDropDiagnostics: Sendable, Equatable {
+    public let decision: FrameDropDecision
+    public let playheadUs: Int64?
+    public let bufferDepthBefore: BufferDepth?
+    public let bufferDepthAfter: BufferDepth?
+    public let bufferLimits: BufferLimits?
+
+    public init(
+        decision: FrameDropDecision,
+        playheadUs: Int64? = nil,
+        bufferDepthBefore: BufferDepth? = nil,
+        bufferDepthAfter: BufferDepth? = nil,
+        bufferLimits: BufferLimits? = nil
+    ) {
+        self.decision = decision
+        self.playheadUs = playheadUs
+        self.bufferDepthBefore = bufferDepthBefore
+        self.bufferDepthAfter = bufferDepthAfter
+        self.bufferLimits = bufferLimits
+    }
 }
 
 /// Playback-clock adjustment selected by the clock policy.

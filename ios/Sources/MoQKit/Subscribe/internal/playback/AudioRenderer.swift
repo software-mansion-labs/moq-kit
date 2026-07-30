@@ -9,7 +9,7 @@ import Foundation
 protocol AudioRendererDelegate: AnyObject, Sendable {
     func audioRendererHasPendingPlaybackStart(_ renderer: AudioRenderer) -> Bool
     func audioRenderer(_ renderer: AudioRenderer, didPreparePlaybackStart context: PlaybackStartContext)
-    func audioRendererDidClearExpectedPlaybackStart(_ renderer: AudioRenderer)
+    func audioRendererDidClearExpectedPlaybackStart(_ renderer: AudioRenderer) -> Bool
     func audioRenderer(
         _ renderer: AudioRenderer,
         didRenderAudioAt timestampUs: UInt64,
@@ -196,9 +196,10 @@ final class AudioRenderer: @unchecked Sendable {
         sourceNode.volume = clamped
     }
 
-    func flush() {
+    @discardableResult
+    func flush() -> Bool {
         ringState.reset()
-        eventBridge.clearExpectedPlaybackStart()
+        return eventBridge.clearExpectedPlaybackStart()
     }
 
     var bufferFill: Duration { .millisecondsClamped(ringState.fillMs) }
@@ -276,9 +277,11 @@ private final class AudioRenderEventBridge: @unchecked Sendable {
         delegate?.audioRenderer(renderer, didPreparePlaybackStart: context)
     }
 
-    func clearExpectedPlaybackStart() {
-        guard let renderer else { return }
-        delegate?.audioRendererDidClearExpectedPlaybackStart(renderer)
+    @discardableResult
+    func clearExpectedPlaybackStart() -> Bool {
+        latestTimestampUs.store(.max, ordering: .releasing)
+        guard let renderer else { return false }
+        return delegate?.audioRendererDidClearExpectedPlaybackStart(renderer) ?? false
     }
 
     func recordRenderedAudio(

@@ -10,9 +10,24 @@ enum TimelineResetReason: Equatable {
     case downstreamRecovery
 }
 
+struct TimelineDropContext: Equatable {
+    let playbackPositionUs: Int64
+    let timestampDeltaUs: Int64
+    let freshnessBudgetUs: UInt64
+}
+
+struct TrackPlaybackSnapshot: Equatable {
+    let playheadUs: Int64?
+    let targetPlaybackUs: Int64?
+}
+
 enum TimelineDecision<Payload> {
     case admit(PipelineFrame<Payload>)
-    case drop(reason: TimelineDropReason, frame: PipelineFrame<Payload>)
+    case drop(
+        reason: TimelineDropReason,
+        frame: PipelineFrame<Payload>,
+        context: TimelineDropContext
+    )
     case reset(
         reason: TimelineResetReason,
         epoch: UInt64,
@@ -84,7 +99,15 @@ final class TrackTimeline: @unchecked Sendable {
                frame.timestampUs < playbackPositionUs,
                playbackPositionUs - frame.timestampUs > policy.freshnessBudgetUs
             {
-                return .drop(reason: .staleVsPlayback, frame: frame)
+                return .drop(
+                    reason: .staleVsPlayback,
+                    frame: frame,
+                    context: TimelineDropContext(
+                        playbackPositionUs: playbackPositionUs,
+                        timestampDeltaUs: frame.timestampUs - playbackPositionUs,
+                        freshnessBudgetUs: UInt64(clamping: policy.freshnessBudgetUs)
+                    )
+                )
             }
 
             lastTimestampUs = frame.timestampUs
@@ -120,6 +143,10 @@ final class TrackTimeline: @unchecked Sendable {
         lock.withLock { epoch }
     }
 
+    var currentPlaybackPositionUs: Int64? {
+        lock.withLock { self.playbackPositionUs }
+    }
+
     var targetLatencyUs: Int64 {
         lock.withLock { latencyTargetUs }
     }
@@ -132,17 +159,20 @@ final class TrackTimeline: @unchecked Sendable {
     }
 
     func liveEdgeUs() -> Int64? {
-        lock.withLock {
-            guard let liveEdgeOffsetUs else { return nil }
-            let nowUs = Int64(clamping: timeSource.nowNanos / 1_000)
-            let result = nowUs.addingReportingOverflow(liveEdgeOffsetUs)
-            return result.overflow ? nil : result.partialValue
-        }
+        lock.withLock { liveEdgeUsLocked() }
     }
 
     func targetPlaybackUs() -> Int64? {
-        guard let liveEdge = liveEdgeUs() else { return nil }
-        return max(0, liveEdge - targetLatencyUs)
+        playbackSnapshot().targetPlaybackUs
+    }
+
+    func playbackSnapshot() -> TrackPlaybackSnapshot {
+        lock.withLock {
+            TrackPlaybackSnapshot(
+                playheadUs: playbackPositionUs,
+                targetPlaybackUs: targetPlaybackUsLocked()
+            )
+        }
     }
 
     func currentLatencyUs() -> Int64? {
@@ -165,6 +195,20 @@ final class TrackTimeline: @unchecked Sendable {
     private func resetLiveEdge(timestampUs: Int64, arrivalNanos: UInt64) {
         liveEdgeOffsetUs = nil
         recordLiveEdge(timestampUs: timestampUs, arrivalNanos: arrivalNanos)
+    }
+
+    private func liveEdgeUsLocked() -> Int64? {
+        guard let liveEdgeOffsetUs else { return nil }
+        let nowUs = Int64(clamping: timeSource.nowNanos / 1_000)
+        let result = nowUs.addingReportingOverflow(liveEdgeOffsetUs)
+        return result.overflow ? nil : result.partialValue
+    }
+
+    private func targetPlaybackUsLocked() -> Int64? {
+        guard let liveEdge = liveEdgeUsLocked() else { return nil }
+        let result = liveEdge.subtractingReportingOverflow(latencyTargetUs)
+        guard !result.overflow else { return nil }
+        return max(0, result.partialValue)
     }
 
     private static func absoluteDifference(_ left: Int64, _ right: Int64) -> UInt64 {

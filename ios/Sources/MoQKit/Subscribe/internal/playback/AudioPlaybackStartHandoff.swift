@@ -41,9 +41,15 @@ final class AudioPlaybackStartHandoff: @unchecked Sendable {
     }
 
     func clear() {
+        _ = clearAndReportPending()
+    }
+
+    func clearAndReportPending() -> Bool {
         lock.withLock {
+            let wasPending = pendingContext != nil
             pendingContext = nil
             isArmed.store(false, ordering: .relaxed)
+            return wasPending
         }
     }
 

@@ -3,120 +3,275 @@ import CoreMedia
 import XCTest
 
 final class VideoPresentationHorizonTests: XCTestCase {
-    func testFutureVisibleHorizonDelaysStallStart() throws {
+    func testNoSubmittedHorizonRemainsBuffering() {
         var horizon = VideoPresentationHorizon()
-        let sample = try makeSampleBuffer(durationUs: 100_000)
 
-        XCTAssertFalse(
-            horizon.recordVisibleFrame(
-                sampleBuffer: sample,
-                presentationTime: cmTime(1_000_000),
-                frontFrameIntervalUs: nil
-            ))
-
-        XCTAssertEqual(horizon.evaluateStallStart(at: 1_050_000), .wait(delayUs: 50_000))
-        XCTAssertTrue(horizon.hasPendingStallMarker)
+        XCTAssertEqual(horizon.evaluateStallStart(at: 1_000_000), .buffering)
         XCTAssertFalse(horizon.isStalled)
     }
 
-    func testStallStartsWhenVisibleHorizonHasElapsed() throws {
+    func testFutureSubmittedHorizonDelaysStallStart() throws {
         var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: 100_000)
 
-        horizon.recordVisibleFrame(
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: cmTime(1_000_000),
+                frontFrameIntervalUs: nil,
+                playheadUs: 1_000_000
+            ),
+            .horizonExtended(endUs: 1_100_000)
+        )
+
+        XCTAssertEqual(horizon.evaluateStallStart(at: 1_050_000), .wait(delayUs: 50_000))
+        XCTAssertFalse(horizon.isStalled)
+    }
+
+    func testStallStartsOnceWhenSubmittedHorizonHasElapsed() throws {
+        var horizon = VideoPresentationHorizon()
+        let sample = try makeSampleBuffer(durationUs: 100_000)
+
+        horizon.recordSubmittedSample(
             sampleBuffer: sample,
             presentationTime: cmTime(1_000_000),
-            frontFrameIntervalUs: nil
+            frontFrameIntervalUs: nil,
+            playheadUs: 1_000_000
         )
 
         XCTAssertEqual(horizon.evaluateStallStart(at: 1_100_000), .beginStall)
+        XCTAssertEqual(horizon.evaluateStallStart(at: 1_100_000), .alreadyStalled)
         XCTAssertTrue(horizon.isStalled)
-        XCTAssertFalse(horizon.hasPendingStallMarker)
     }
 
     func testSampleDurationIsPreferredOverFrameInterval() throws {
         var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: 40_000)
 
-        horizon.recordVisibleFrame(
+        horizon.recordSubmittedSample(
             sampleBuffer: sample,
             presentationTime: cmTime(1_000_000),
-            frontFrameIntervalUs: 100_000
+            frontFrameIntervalUs: 100_000,
+            playheadUs: 1_000_000
         )
 
-        XCTAssertEqual(horizon.lastVisibleFrameEndUs, 1_040_000)
+        XCTAssertEqual(horizon.submittedHorizonEndUs, 1_040_000)
     }
 
     func testFrontFrameIntervalIsUsedWhenSampleDurationIsUnavailable() throws {
         var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: nil)
 
-        horizon.recordVisibleFrame(
+        horizon.recordSubmittedSample(
             sampleBuffer: sample,
             presentationTime: cmTime(1_000_000),
-            frontFrameIntervalUs: 50_000
+            frontFrameIntervalUs: 50_000,
+            playheadUs: 1_000_000
         )
 
-        XCTAssertEqual(horizon.lastVisibleFrameEndUs, 1_050_000)
+        XCTAssertEqual(horizon.submittedHorizonEndUs, 1_050_000)
     }
 
-    func testVisiblePTSDeltaIsUsedWhenSampleDurationAndFrontIntervalAreUnavailable() throws {
+    func testSubmittedPTSDeltaIsUsedWhenExplicitDurationsAreUnavailable() throws {
         var horizon = VideoPresentationHorizon()
         let sample = try makeSampleBuffer(durationUs: nil)
 
-        horizon.recordVisibleFrame(
+        horizon.recordSubmittedSample(
             sampleBuffer: sample,
             presentationTime: cmTime(1_000_000),
-            frontFrameIntervalUs: nil
+            frontFrameIntervalUs: nil,
+            playheadUs: 1_000_000
         )
-        horizon.recordVisibleFrame(
+        horizon.recordSubmittedSample(
             sampleBuffer: sample,
             presentationTime: cmTime(1_060_000),
-            frontFrameIntervalUs: nil
+            frontFrameIntervalUs: nil,
+            playheadUs: 1_000_000
         )
 
-        XCTAssertEqual(horizon.lastVisibleFrameEndUs, 1_120_000)
+        XCTAssertEqual(horizon.submittedHorizonEndUs, 1_120_000)
     }
 
-    func testNewPlayableFrameClearsActiveStall() throws {
+    func testEarlierPTSDoesNotShrinkHorizonOrMoveCadenceAnchorBackward() throws {
         var horizon = VideoPresentationHorizon()
-        let first = try makeSampleBuffer(durationUs: 40_000)
-        let second = try makeSampleBuffer(durationUs: 40_000)
+        let sample = try makeSampleBuffer(durationUs: nil)
 
-        horizon.recordVisibleFrame(
-            sampleBuffer: first,
-            presentationTime: cmTime(1_000_000),
-            frontFrameIntervalUs: nil
-        )
-        XCTAssertEqual(horizon.evaluateStallStart(at: 1_040_000), .beginStall)
-
-        XCTAssertTrue(
-            horizon.recordVisibleFrame(
-                sampleBuffer: second,
-                presentationTime: cmTime(1_080_000),
-                frontFrameIntervalUs: nil
-            ))
-        XCTAssertFalse(horizon.isStalled)
-    }
-
-    func testResetClearsVisibleHorizonAndPendingCheck() throws {
-        var horizon = VideoPresentationHorizon()
-        let sample = try makeSampleBuffer(durationUs: 100_000)
-
-        horizon.recordVisibleFrame(
+        horizon.recordSubmittedSample(
             sampleBuffer: sample,
             presentationTime: cmTime(1_000_000),
-            frontFrameIntervalUs: nil
+            frontFrameIntervalUs: nil,
+            playheadUs: 1_000_000
         )
-        XCTAssertEqual(horizon.evaluateStallStart(at: 1_050_000), .wait(delayUs: 50_000))
+        horizon.recordSubmittedSample(
+            sampleBuffer: sample,
+            presentationTime: cmTime(1_060_000),
+            frontFrameIntervalUs: nil,
+            playheadUs: 1_000_000
+        )
+
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: cmTime(1_030_000),
+                frontFrameIntervalUs: nil,
+                playheadUs: 1_000_000
+            ),
+            .ignored
+        )
+        XCTAssertEqual(horizon.submittedHorizonEndUs, 1_120_000)
+
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: cmTime(1_120_000),
+                frontFrameIntervalUs: nil,
+                playheadUs: 1_000_000
+            ),
+            .horizonExtended(endUs: 1_180_000)
+        )
+    }
+
+    func testInvalidPresentationTimeDoesNotExtendHorizon() throws {
+        var horizon = VideoPresentationHorizon()
+        let sample = try makeSampleBuffer(durationUs: 40_000)
+
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: .invalid,
+                frontFrameIntervalUs: nil,
+                playheadUs: 0
+            ),
+            .ignored
+        )
+        XCTAssertNil(horizon.submittedHorizonEndUs)
+    }
+
+    func testExpiredSubmissionDoesNotEndActiveStall() throws {
+        var horizon = try makeStalledHorizon()
+        let sample = try makeSampleBuffer(durationUs: 40_000)
+
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: cmTime(1_050_000),
+                frontFrameIntervalUs: nil,
+                playheadUs: 1_100_000
+            ),
+            .horizonExtended(endUs: 1_090_000)
+        )
+        XCTAssertTrue(horizon.isStalled)
+    }
+
+    func testFutureSubmissionEndsActiveStallOnce() throws {
+        var horizon = try makeStalledHorizon()
+        let sample = try makeSampleBuffer(durationUs: 40_000)
+
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: cmTime(1_120_000),
+                frontFrameIntervalUs: nil,
+                playheadUs: 1_100_000
+            ),
+            .stallEnded(endUs: 1_160_000)
+        )
+        XCTAssertFalse(horizon.isStalled)
+
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: cmTime(1_120_000),
+                frontFrameIntervalUs: nil,
+                playheadUs: 1_100_000
+            ),
+            .ignored
+        )
+    }
+
+    func testCoverageResetPreservesActiveStallUntilFutureSubmission() throws {
+        var horizon = try makeStalledHorizon()
+        let sample = try makeSampleBuffer(durationUs: 40_000)
+
+        horizon.resetCoverage()
+
+        XCTAssertNil(horizon.submittedHorizonEndUs)
+        XCTAssertTrue(horizon.isStalled)
+        XCTAssertEqual(horizon.evaluateStallStart(at: 1_100_000), .alreadyStalled)
+        XCTAssertEqual(
+            horizon.recordSubmittedSample(
+                sampleBuffer: sample,
+                presentationTime: cmTime(1_120_000),
+                frontFrameIntervalUs: nil,
+                playheadUs: 1_100_000
+            ),
+            .stallEnded(endUs: 1_160_000)
+        )
+    }
+
+    func testFullResetClearsCoverageAndStall() throws {
+        var horizon = try makeStalledHorizon()
 
         horizon.reset()
 
-        XCTAssertNil(horizon.lastVisibleFramePTSUs)
-        XCTAssertNil(horizon.lastVisibleFrameEndUs)
-        XCTAssertFalse(horizon.hasPendingStallMarker)
+        XCTAssertNil(horizon.submittedHorizonEndUs)
         XCTAssertFalse(horizon.isStalled)
+        XCTAssertEqual(horizon.evaluateStallStart(at: 1_100_000), .buffering)
     }
+
+    func testWallDelayAccountsForMaximumClockRate() {
+        XCTAssertEqual(
+            VideoPresentationHorizon.conservativeWallDelayUs(
+                mediaDelayUs: 100_000,
+                maxClockRate: 0.95
+            ),
+            100_000
+        )
+        XCTAssertEqual(
+            VideoPresentationHorizon.conservativeWallDelayUs(
+                mediaDelayUs: 100_000,
+                maxClockRate: 1.0
+            ),
+            100_000
+        )
+        XCTAssertEqual(
+            VideoPresentationHorizon.conservativeWallDelayUs(
+                mediaDelayUs: 100_000,
+                maxClockRate: 1.05
+            ),
+            95_238
+        )
+    }
+
+    func testWallDelayHandlesZeroAndInvalidClockRates() {
+        XCTAssertEqual(
+            VideoPresentationHorizon.conservativeWallDelayUs(
+                mediaDelayUs: 0,
+                maxClockRate: 1.05
+            ),
+            0
+        )
+        XCTAssertEqual(
+            VideoPresentationHorizon.conservativeWallDelayUs(
+                mediaDelayUs: 100_000,
+                maxClockRate: .nan
+            ),
+            100_000
+        )
+    }
+}
+
+private func makeStalledHorizon() throws -> VideoPresentationHorizon {
+    var horizon = VideoPresentationHorizon()
+    let sample = try makeSampleBuffer(durationUs: 40_000)
+    horizon.recordSubmittedSample(
+        sampleBuffer: sample,
+        presentationTime: cmTime(1_000_000),
+        frontFrameIntervalUs: nil,
+        playheadUs: 1_000_000
+    )
+    XCTAssertEqual(horizon.evaluateStallStart(at: 1_100_000), .beginStall)
+    return horizon
 }
 
 private func cmTime(_ microseconds: UInt64) -> CMTime {
