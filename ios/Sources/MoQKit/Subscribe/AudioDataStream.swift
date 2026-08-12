@@ -94,7 +94,8 @@ public struct AudioTrackRequest: Sendable, Equatable {
             sampleRate: sampleRate,
             channelCount: channelCount,
             bitrate: bitrate,
-            container: media.container.rawContainer
+            container: media.container.rawContainer,
+            timeline: nil
         )
     }
 }

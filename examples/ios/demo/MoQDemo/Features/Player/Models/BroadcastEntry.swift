@@ -24,6 +24,11 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var startupDiagnostics = PlayerStartupDiagnostics()
     @Published var targetLatencyMs: Double
     @Published var volume: Double = 1.0
+    @Published var dvrPlayer: DVR.Player?
+    @Published var isDVRPresented = false
+    @Published var isDVRLoading = false
+    @Published var isDVRAvailable = false
+    @Published var dvrError: String?
 
     var videoLayer: AVSampleBufferDisplayLayer? {
         player?.videoLayer
@@ -37,6 +42,8 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     private var statsSubscription: PlayerEventSubscription?
     private var pendingVideoTrackName: String?
     private var lastNonZeroVolume: Double = 1.0
+    private var dvrTimelineResolver: DVR.TimelineResolver?
+    private var dvrIndexGeneration = 0
 
     var selectedVideoTrack: VideoTrackInfo? {
         guard let selectedVideoTrackName else { return nil }
@@ -98,7 +105,7 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         if clampedVolume > 0 {
             lastNonZeroVolume = clampedVolume
         }
-        player?.setVolume(Float(clampedVolume))
+        applySelectedVolume()
     }
 
     func toggleMute() {
@@ -107,6 +114,101 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         } else {
             updateVolume(lastNonZeroVolume)
         }
+    }
+
+    func startDVRIndexing() async {
+        guard dvrTimelineResolver == nil else {
+            broadcastEntryLogger.debug(
+                "DVR indexing already active path=\(self.broadcastPath, privacy: .public)"
+            )
+            return
+        }
+        guard let videoTrackName = selectedVideoTrackName, let audioTrackName = selectedAudioTrackName else {
+            broadcastEntryLogger.warning(
+                "DVR indexing skipped because selected tracks are missing path=\(self.broadcastPath, privacy: .public) video=\(self.selectedVideoTrackName ?? "none", privacy: .public) audio=\(self.selectedAudioTrackName ?? "none", privacy: .public)"
+            )
+            return
+        }
+
+        broadcastEntryLogger.debug(
+            "DVR indexing starting path=\(self.broadcastPath, privacy: .public) video=\(videoTrackName, privacy: .public) audio=\(audioTrackName, privacy: .public)"
+        )
+
+        do {
+            let resolver = try DVR.TimelineResolver(
+                catalog: catalog,
+                videoTrackName: videoTrackName,
+                audioTrackName: audioTrackName
+            )
+            try await resolver.start()
+            dvrTimelineResolver = resolver
+            isDVRAvailable = true
+            dvrError = nil
+            broadcastEntryLogger.debug(
+                "DVR indexing started path=\(self.broadcastPath, privacy: .public)"
+            )
+        } catch {
+            isDVRAvailable = false
+            dvrError = error.localizedDescription
+            broadcastEntryLogger.warning(
+                "DVR indexing unavailable path=\(self.broadcastPath, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    func rewindLast15Seconds() async {
+        guard let dvrTimelineResolver else {
+            broadcastEntryLogger.warning(
+                "DVR rewind ignored because timeline resolver is unavailable path=\(self.broadcastPath, privacy: .public)"
+            )
+            return
+        }
+        guard !isDVRLoading else {
+            broadcastEntryLogger.debug(
+                "DVR rewind ignored because another rewind is loading path=\(self.broadcastPath, privacy: .public)"
+            )
+            return
+        }
+        broadcastEntryLogger.debug(
+            "DVR rewind requested path=\(self.broadcastPath, privacy: .public) durationSeconds=15"
+        )
+        isDVRLoading = true
+        dvrError = nil
+        defer { isDVRLoading = false }
+
+        do {
+            let selection = try await dvrTimelineResolver.selection(for: .seconds(15))
+            broadcastEntryLogger.debug(
+                "DVR rewind selection path=\(self.broadcastPath, privacy: .public) video=\(selection.video.name, privacy: .public) videoBoundaries=\(selection.video.timeline.count) audio=\(selection.audio.name, privacy: .public) audioBoundaries=\(selection.audio.timeline.count)"
+            )
+            let dvrPlayer = try await DVR.Player(
+                catalog: catalog,
+                selection: selection
+            )
+            self.dvrPlayer?.stop()
+            self.dvrPlayer = dvrPlayer
+            isDVRPresented = true
+            applySelectedVolume()
+            dvrPlayer.player.play()
+            broadcastEntryLogger.debug(
+                "DVR rewind playback requested path=\(self.broadcastPath, privacy: .public) volume=\(dvrPlayer.player.volume) itemStatus=\(dvrPlayer.item.status.rawValue)"
+            )
+        } catch {
+            dvrError = error.localizedDescription
+            broadcastEntryLogger.error(
+                "DVR rewind failed path=\(self.broadcastPath, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    func dismissDVR() {
+        broadcastEntryLogger.debug(
+            "DVR presentation dismissed path=\(self.broadcastPath, privacy: .public)"
+        )
+        dvrPlayer?.stop()
+        dvrPlayer = nil
+        isDVRPresented = false
+        applySelectedVolume()
     }
 
     func stop(reason: String = "entry stop requested") async {
@@ -119,10 +221,25 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         statsSubscription?.cancel()
         statsSubscription = nil
         playbackStats = nil
-        await player?.stopAll(reason: reason)
-        player = nil
+        dvrIndexGeneration += 1
+        let timelineResolver = dvrTimelineResolver
+        dvrTimelineResolver = nil
+        let player = player
+        self.player = nil
+        dvrPlayer?.stop()
+        dvrPlayer = nil
+        isDVRPresented = false
+        isDVRAvailable = false
         isPlaying = false
         isPaused = false
+        await timelineResolver?.stop()
+        await player?.stopAll(reason: reason)
+    }
+
+    private func applySelectedVolume() {
+        let selectedVolume = Float(volume)
+        dvrPlayer?.player.volume = selectedVolume
+        player?.setVolume(isDVRPresented ? 0 : selectedVolume)
     }
 
     private func handleEvent(_ event: PlayerEvent) {
@@ -153,12 +270,16 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             isPaused = false
         case .trackSwitch(let track):
             if track.kind == .video {
+                let previousTrackName = selectedVideoTrackName
                 if let trackName = track.trackName {
                     selectedVideoTrackName = trackName
                     self.pendingVideoTrackName = nil
                 } else if let pendingVideoTrackName {
                     selectedVideoTrackName = pendingVideoTrackName
                     self.pendingVideoTrackName = nil
+                }
+                if selectedVideoTrackName != previousTrackName {
+                    restartDVRIndexing()
                 }
             }
         case .playbackEnd(_):
@@ -171,6 +292,20 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             playbackStats = nil
         default:
             break
+        }
+    }
+
+    private func restartDVRIndexing() {
+        dvrIndexGeneration += 1
+        let generation = dvrIndexGeneration
+        let previousResolver = dvrTimelineResolver
+        dvrTimelineResolver = nil
+        isDVRAvailable = false
+
+        Task { [weak self] in
+            await previousResolver?.stop()
+            guard let self, self.dvrIndexGeneration == generation else { return }
+            await self.startDVRIndexing()
         }
     }
 

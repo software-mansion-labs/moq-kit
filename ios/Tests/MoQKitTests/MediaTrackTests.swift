@@ -74,7 +74,8 @@ final class CatalogTrackValidationTests: XCTestCase {
                         sampleRate: 48_000,
                         channelCount: 2,
                         bitrate: nil,
-                        container: .legacy
+                        container: .legacy,
+                        timeline: nil
                     )
                 ],
                 display: nil,

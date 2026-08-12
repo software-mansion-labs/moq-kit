@@ -29,7 +29,8 @@ final class VideoCodecSupportTests: XCTestCase {
                 displayAspect: nil,
                 bitrate: nil,
                 framerate: nil,
-                container: .legacy
+                container: .legacy,
+                timeline: nil
             )
         )
     }

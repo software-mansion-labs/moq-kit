@@ -78,6 +78,7 @@
 		A10000000000000000000017 /* BoyDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyDemoView.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* PlayerDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerDemoView.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* BroadcastEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastEntry.swift; sourceTree = "<group>"; };
+		A1000000000000000000001A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000032 /* MoQDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MoQDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000091 /* BoyModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyModels.swift; sourceTree = "<group>"; };
 		A10000000000000000000092 /* BoyDemoViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyDemoViewModel.swift; sourceTree = "<group>"; };
@@ -136,6 +137,7 @@
 			children = (
 				A10000000000000000000024 /* App */,
 				A10000000000000000000025 /* Features */,
+				A1000000000000000000001A /* Info.plist */,
 				C1000000000000000000001D /* MoQDemo.entitlements */,
 			);
 			path = MoQDemo;
@@ -572,7 +574,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = J5FM626PE2;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MoQDemo/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "MoQ Demo";
 				INFOPLIST_KEY_NSCameraUsageDescription = "MoQ Demo needs camera access to broadcast video.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MoQ Demo connects to local MoQ relays on your network.";
@@ -601,7 +604,8 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = J5FM626PE2;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
-				GENERATE_INFOPLIST_FILE = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MoQDemo/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "MoQ Demo";
 				INFOPLIST_KEY_NSCameraUsageDescription = "MoQ Demo needs camera access to broadcast video.";
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "MoQ Demo connects to local MoQ relays on your network.";
