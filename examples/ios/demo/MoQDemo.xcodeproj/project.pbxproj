@@ -20,6 +20,9 @@
 		A10000000000000000000008 /* BoyDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* BoyDemoView.swift */; };
 		A10000000000000000000009 /* PlayerDemoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* PlayerDemoView.swift */; };
 		A1000000000000000000000A /* BroadcastEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* BroadcastEntry.swift */; };
+		D7A000000000000000000001 /* PlayerStartupDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A000000000000000000011 /* PlayerStartupDiagnostics.swift */; };
+		D7A000000000000000000002 /* PlayerEventMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A000000000000000000012 /* PlayerEventMonitor.swift */; };
+		D7A000000000000000000003 /* DVRPlaybackController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7A000000000000000000013 /* DVRPlaybackController.swift */; };
 		A10000000000000000000081 /* BoyModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000091 /* BoyModels.swift */; };
 		A10000000000000000000082 /* BoyDemoViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000092 /* BoyDemoViewModel.swift */; };
 		A10000000000000000000083 /* BoyConnectionCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000093 /* BoyConnectionCardView.swift */; };
@@ -78,6 +81,9 @@
 		A10000000000000000000017 /* BoyDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyDemoView.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* PlayerDemoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerDemoView.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* BroadcastEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BroadcastEntry.swift; sourceTree = "<group>"; };
+		D7A000000000000000000011 /* PlayerStartupDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerStartupDiagnostics.swift; sourceTree = "<group>"; };
+		D7A000000000000000000012 /* PlayerEventMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerEventMonitor.swift; sourceTree = "<group>"; };
+		D7A000000000000000000013 /* DVRPlaybackController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DVRPlaybackController.swift; sourceTree = "<group>"; };
 		A1000000000000000000001A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000032 /* MoQDemo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MoQDemo.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000091 /* BoyModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoyModels.swift; sourceTree = "<group>"; };
@@ -199,6 +205,9 @@
 			children = (
 				3B6C2D6C2F72B7D70087267B /* BroadcastAudioAnalysis.swift */,
 				A10000000000000000000019 /* BroadcastEntry.swift */,
+				D7A000000000000000000013 /* DVRPlaybackController.swift */,
+				D7A000000000000000000012 /* PlayerEventMonitor.swift */,
+				D7A000000000000000000011 /* PlayerStartupDiagnostics.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -412,6 +421,9 @@
 				B10000000000000000000003 /* ChatDemoViewModel.swift in Sources */,
 				A10000000000000000000009 /* PlayerDemoView.swift in Sources */,
 				A1000000000000000000000A /* BroadcastEntry.swift in Sources */,
+				D7A000000000000000000003 /* DVRPlaybackController.swift in Sources */,
+				D7A000000000000000000002 /* PlayerEventMonitor.swift in Sources */,
+				D7A000000000000000000001 /* PlayerStartupDiagnostics.swift in Sources */,
 				3B6C2D6D2F72B7D70087267B /* BroadcastAudioAnalysis.swift in Sources */,
 				A10000000000000000000003 /* VideoLayerView.swift in Sources */,
 				A10000000000000000000005 /* PlayerDemoViewModel.swift in Sources */,
