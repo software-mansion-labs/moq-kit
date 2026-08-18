@@ -11,14 +11,19 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.5"),
         .package(url: "https://github.com/apple/swift-atomics", from: "1.2.0"),
-        .package(url: "https://github.com/moq-dev/moq-swift", from: "0.4.4")
+        .package(url: "https://github.com/moq-dev/moq-swift", from: "0.4.4"),
+        .package(
+            url: "https://github.com/moq-dev/moq-swift-ffi",
+            .upToNextMinor(from: "0.3.11")
+        )
     ],
     targets: [
         .target(
             name: "MoQKit",
             dependencies: [
                 .product(name: "Atomics", package: "swift-atomics"),
-                .product(name: "Moq", package: "moq-swift")
+                .product(name: "Moq", package: "moq-swift"),
+                .product(name: "MoqFFI", package: "moq-swift-ffi")
             ],
             path: "ios/Sources/MoQKit"
         ),
@@ -26,7 +31,8 @@ let package = Package(
             name: "MoQKitTests",
             dependencies: [
                 "MoQKit",
-                .product(name: "Moq", package: "moq-swift")
+                .product(name: "Moq", package: "moq-swift"),
+                .product(name: "MoqFFI", package: "moq-swift-ffi")
             ],
             path: "ios/Tests/MoQKitTests"
         )
