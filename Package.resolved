@@ -5,8 +5,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/moq-dev/moq-swift",
       "state" : {
-        "revision" : "21bda2642005647d9184bd6c03def36f27f2024f",
-        "version" : "0.4.1"
+        "revision" : "82b606d7f5cbb4e9bdd36fe9b6278fdca16d09c7",
+        "version" : "0.4.4"
       }
     },
     {
@@ -14,8 +14,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/moq-dev/moq-swift-ffi",
       "state" : {
-        "revision" : "c12634fc6ab4bf65cc158082d6d17ce3bca379a5",
-        "version" : "0.3.3"
+        "revision" : "8fd6caf5061241bf458c9dfbfbc903ee1bfc33fb",
+        "version" : "0.3.11"
       }
     },
     {
