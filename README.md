@@ -160,7 +160,9 @@ you. Camera publishing requires `NSCameraUsageDescription`. Microphone publishin
 `NSMicrophoneUsageDescription`, and your app is responsible for configuring
 `AVAudioSession` before starting `MicrophoneCapture`. ReplayKit Broadcast Upload
 integrations also need a Broadcast Upload Extension target plus an App Group shared by the
-host app and the extension.
+host app and the extension. `DVR.Player` serves its private HLS presentation from an
+in-process `localhost` server, so host apps using it must set
+`NSAppTransportSecurity.NSAllowsLocalNetworking` to `true` in their Info.plist.
 
 ### Android
 
@@ -242,6 +244,28 @@ On iOS, the `PipelineContext.dropDiagnostics` value on `frameDropped` events cau
 `staleVsPlayback` or `backlogOverflow` captures the playhead, the timestamp reference and
 exact microsecond delta used by the decision, buffer occupancy before and after the drop,
 and applicable buffer limits. The typed event retains exact values for telemetry.
+
+### Play a recent DVR window in Swift
+
+Start a `DVR.TimelineResolver` while live playback is active, then turn one of its immutable
+timeline selections into an `AVPlayer`-backed DVR item:
+
+```swift
+let resolver = try DVR.TimelineResolver(
+    catalog: catalog,
+    videoTrackName: videoTrack,
+    audioTrackName: audioTrack
+)
+try await resolver.start()
+
+let selection = try await resolver.selection(for: .seconds(15))
+let dvr = try await DVR.Player(catalog: catalog, selection: selection)
+dvr.player.play()
+```
+
+The selection publishes the complete VOD duration immediately. Video groups define the
+segment boundaries; matching audio groups are combined per interval. Media groups are
+FETCHed, remuxed, and cached only when `AVPlayer` requests the corresponding segment.
 
 ### Publish camera and microphone in Swift
 
