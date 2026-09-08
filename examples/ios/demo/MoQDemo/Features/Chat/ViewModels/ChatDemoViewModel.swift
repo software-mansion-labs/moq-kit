@@ -134,7 +134,7 @@ final class ChatDemoViewModel: ObservableObject {
 
                 let emitter = DataTrackEmitter()
                 let publisher = try Publisher()
-                publisher.addDataTrack(name: "chat", source: emitter)
+                try publisher.addDataTrack(name: "chat", source: emitter)
                 try await session.publish(path: path, publisher: publisher)
                 try await publisher.start()
                 guard self.connectionToken == token else {

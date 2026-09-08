@@ -117,6 +117,7 @@ public actor Session {
 
     // Background tasks
     private var sessionMonitorTask: Task<Void, Never>?
+    private var closeTask: Task<Void, Never>?
 
     /// Creates a new session.
     ///
@@ -187,18 +188,18 @@ public actor Session {
             let sessionError = SessionError.connectionFailed(error.moqKitMessage)
             KitLogger.session.error("Connection failed: \(sessionError)")
             transition(to: .error(sessionError))
-            tearDown()
+            await tearDown()
             throw sessionError
         } catch let error as SessionError {
             KitLogger.session.error("Connection failed: \(error)")
             transition(to: .error(error))
-            tearDown()
+            await tearDown()
             throw error
         } catch {
             let sessionError = SessionError.connectionFailed(error.localizedDescription)
             KitLogger.session.error("Connection failed: \(sessionError)")
             transition(to: .error(sessionError))
-            tearDown()
+            await tearDown()
             throw error
         }
     }
@@ -285,10 +286,10 @@ public actor Session {
     ///
     /// If a publisher is registered for that path, this calls ``Publisher/stop()`` and
     /// removes it from the session. Other subscriptions and publish paths continue running.
-    public func unpublish(path: String) {
+    public func unpublish(path: String) async {
         guard let publisher = activePublishers.removeValue(forKey: path) else { return }
         KitLogger.publish.debug("Unpublishing broadcast at path: \(path)")
-        publisher.stop()
+        await publisher.stop()
     }
 
     /// Closes the relay connection and releases all resources.
@@ -296,11 +297,14 @@ public actor Session {
     /// Transitions the session to `.closed` and completes ``state``.
     /// Safe to call multiple times — subsequent calls are no-ops.
     public func close() async {
-        guard currentState != .closed else { return }
-        KitLogger.session.debug("Closing session")
-        tearDown()
+        if let closeTask { await closeTask.value; return }
         transition(to: .closed)
-        stateContinuation.finish()
+        let task = Task {
+            await tearDown()
+            stateContinuation.finish()
+        }
+        closeTask = task
+        await task.value
     }
 
     deinit {
@@ -313,7 +317,7 @@ public actor Session {
         }
 
         for (_, publisher) in activePublishers {
-            publisher.stop()
+            PublishControl.sync { publisher.stopOwned() }
         }
         activePublishers.removeAll()
 
@@ -352,7 +356,7 @@ public actor Session {
         }
     }
 
-    private func tearDown() {
+    private func tearDown() async {
         KitLogger.session.debug("Tearing down session")
 
         sessionMonitorTask?.cancel()
@@ -364,8 +368,9 @@ public actor Session {
             subscription.cancel()
         }
 
-        for (_, publisher) in activePublishers { publisher.stop() }
+        let publishers = Array(activePublishers.values)
         activePublishers.removeAll()
+        for publisher in publishers { await publisher.stop() }
 
         moqSession?.shutdown()
         moqSession = nil

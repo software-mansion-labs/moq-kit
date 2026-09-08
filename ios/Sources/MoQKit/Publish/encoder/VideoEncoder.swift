@@ -6,6 +6,7 @@ final class VideoEncoder: @unchecked Sendable {
     private var session: VTCompressionSession?
     private var handler: ((EncodedVideoFrame) -> Void)?
     private var sentInitData = false
+    private var onError: (Error) -> Void = { _ in }
 
     var config: VideoEncoderConfig
 
@@ -13,8 +14,9 @@ final class VideoEncoder: @unchecked Sendable {
         self.config = config
     }
 
-    func start(handler: @escaping (EncodedVideoFrame) -> Void) throws {
+    func start(onError: @escaping (Error) -> Void = { _ in }, handler: @escaping (EncodedVideoFrame) -> Void) throws {
         self.handler = handler
+        self.onError = onError
         sentInitData = false
 
         let codecType: CMVideoCodecType
@@ -27,8 +29,13 @@ final class VideoEncoder: @unchecked Sendable {
 
         var sessionRef: VTCompressionSession?
         let callback: VTCompressionOutputCallback = { refcon, _, status, _, sampleBuffer in
-            guard let refcon, status == noErr, let sampleBuffer else { return }
+            guard let refcon else { return }
             let encoder = Unmanaged<VideoEncoder>.fromOpaque(refcon).takeUnretainedValue()
+            guard status == noErr else {
+                encoder.onError(SessionError.invalidConfiguration("Video encoding failed: \(status)"))
+                return
+            }
+            guard let sampleBuffer else { return }
             encoder.handleEncodedFrame(sampleBuffer)
         }
         let status = VTCompressionSessionCreate(
@@ -80,7 +87,10 @@ final class VideoEncoder: @unchecked Sendable {
                 value: kVTProfileLevel_H264_High_AutoLevel)
         }
 
-        VTCompressionSessionPrepareToEncodeFrames(session)
+        let prepared = VTCompressionSessionPrepareToEncodeFrames(session)
+        guard prepared == noErr else {
+            throw SessionError.invalidConfiguration("Could not prepare video encoder: \(prepared)")
+        }
     }
 
     func encode(_ sampleBuffer: CMSampleBuffer) {
@@ -90,7 +100,7 @@ final class VideoEncoder: @unchecked Sendable {
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         let duration = CMSampleBufferGetDuration(sampleBuffer)
 
-        VTCompressionSessionEncodeFrame(
+        let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: pts,
@@ -99,6 +109,7 @@ final class VideoEncoder: @unchecked Sendable {
             sourceFrameRefcon: nil,
             infoFlagsOut: nil
         )
+        if status != noErr { onError(SessionError.invalidConfiguration("Video encoding failed: \(status)")) }
     }
 
     func stop() {
@@ -117,7 +128,7 @@ final class VideoEncoder: @unchecked Sendable {
         stop()
         config.width = width
         config.height = height
-        try start(handler: handler)
+        try start(onError: onError, handler: handler)
     }
 
     // MARK: - Private

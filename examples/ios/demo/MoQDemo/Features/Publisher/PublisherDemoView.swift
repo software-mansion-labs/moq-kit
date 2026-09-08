@@ -1,4 +1,5 @@
 import SwiftUI
+import MoQKit
 
 struct PublisherDemoView: View {
     @State private var relayURL: String
@@ -97,8 +98,41 @@ struct PublisherDemoView: View {
                     .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
                 }
 
+                if isPublishing {
+                    VStack(alignment: .leading) {
+                        if viewModel.cameraSourceMode == .singleCamera {
+                            Button(viewModel.isCameraCapturing ? "Stop camera capture" : "Start camera capture",
+                                   action: viewModel.toggleCameraCapture)
+                            Button("Switch camera", action: viewModel.flipCamera)
+                        }
+                        Button(viewModel.isMicrophoneCapturing ? "Stop microphone capture" : "Start microphone capture",
+                               action: viewModel.toggleMicrophoneCapture)
+                        ForEach(viewModel.publishedTracks.compactMap { $0 as? PublishedMediaTrack }, id: \.name) { track in
+                            Button("\(viewModel.publicationEnabled[track.name] == true ? "Disable" : "Enable") \(track.name) publication") {
+                                viewModel.togglePublication(track)
+                            }
+                        }
+                        if viewModel.isChangingMedia { ProgressView("Updating media…") }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(viewModel.isChangingMedia)
+                }
+
+                if isPublishing {
+                    Button(action: viewModel.toggleMicrophoneMute) {
+                        Label(
+                            viewModel.isMicrophoneMuted ? "Unmute microphone" : "Mute microphone",
+                            systemImage: viewModel.isMicrophoneMuted ? "mic.slash.fill" : "mic.fill"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(viewModel.isMicrophoneMuted ? .red : .accentColor)
+                    .disabled(!viewModel.canMuteMicrophone)
+                    .accessibilityValue(viewModel.isMicrophoneMuted ? "Muted" : "Unmuted")
+                }
+
                 // Camera preview
-                if viewModel.cameraEnabled && viewModel.isPreviewRunning {
+                if viewModel.isPreviewRunning {
                     switch viewModel.cameraSourceMode {
                     case .singleCamera:
                         if let previewSession = viewModel.previewSession {
@@ -138,11 +172,11 @@ struct PublisherDemoView: View {
                     micEnabled: $viewModel.micEnabled,
                     screenAudioEnabled: $viewModel.screenAudioEnabled,
                     cameraPosition: $viewModel.cameraPosition,
-                    isPublishing: isPublishing,
+                    isPublishing: isPublishing || viewModel.isChangingMedia,
                     onFlipCamera: viewModel.flipCamera
                 )
 
-                if !isPublishing {
+                if !isPublishing && !viewModel.isChangingMedia {
                     CodecConfigView(
                         videoCodec: $viewModel.videoCodec,
                         videoResolution: $viewModel.videoResolution,

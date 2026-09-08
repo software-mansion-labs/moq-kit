@@ -222,20 +222,20 @@ public actor ReplayKitBroadcastPipeline {
             let videoEncoderConfig = await resolvedScreenVideoEncoderConfig()
 
             let publisher = try Publisher()
-            _ = publisher.addVideoTrack(
+            _ = try publisher.addVideoTrack(
                 name: configuration.videoTrackName,
                 source: videoSource,
                 config: videoEncoderConfig
             )
             if let appAudioTrackName = configuration.appAudioTrackName {
-                _ = publisher.addAudioTrack(
+                _ = try publisher.addAudioTrack(
                     name: appAudioTrackName,
                     source: appAudioSource,
                     config: configuration.appAudioEncoder
                 )
             }
             if let micAudioTrackName = configuration.micAudioTrackName {
-                _ = publisher.addAudioTrack(
+                _ = try publisher.addAudioTrack(
                     name: micAudioTrackName,
                     source: micAudioSource,
                     config: configuration.micAudioEncoder
@@ -289,7 +289,7 @@ public actor ReplayKitBroadcastPipeline {
         appAudioSource.onFrame = nil
         micAudioSource.onFrame = nil
 
-        publisher?.stop()
+        await publisher?.stop()
         if let session {
             await session.close()
         }

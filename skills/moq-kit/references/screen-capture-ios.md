@@ -9,8 +9,8 @@ Captures the app's own screen via `RPScreenRecorder`:
 ```swift
 let screen = ScreenCapture()
 try await screen.start()
-publisher.addVideoTrack(name: "screen", source: screen.videoSource)
-publisher.addAudioTrack(name: "screen-audio", source: screen.audioSource)
+try publisher.addVideoTrack(name: "screen", source: screen.videoSource)
+try publisher.addAudioTrack(name: "screen-audio", source: screen.audioSource)
 // … session.publish + publisher.start() as usual; later: await screen.stop()
 ```
 

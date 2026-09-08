@@ -175,7 +175,7 @@ final class BoyDemoViewModel: ObservableObject {
             if let viewerPath, let session {
                 await session.unpublish(path: viewerPath)
             } else {
-                publisher?.stop()
+                await publisher?.stop()
             }
             await entry?.stop()
             subscription?.cancel()
@@ -333,7 +333,7 @@ final class BoyDemoViewModel: ObservableObject {
         if let viewerPath, let session {
             await session.unpublish(path: viewerPath)
         } else {
-            commandPublisher?.stop()
+            await commandPublisher?.stop()
         }
 
         viewerPath = nil
@@ -351,7 +351,7 @@ final class BoyDemoViewModel: ObservableObject {
         let emitter = DataTrackEmitter()
         do {
             let publisher = try Publisher()
-            publisher.addDataTrack(name: "command", source: emitter)
+            try publisher.addDataTrack(name: "command", source: emitter)
 
             let viewerId = Self.makeViewerId()
             let viewerPath = "\(Self.viewerPrefix)/\(game.viewerPathComponent)/\(viewerId)"

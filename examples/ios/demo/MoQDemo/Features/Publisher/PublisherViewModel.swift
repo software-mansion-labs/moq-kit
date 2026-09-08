@@ -13,6 +13,13 @@ final class PublisherViewModel: ObservableObject {
     @Published var cameraEnabled = true
     @Published var screenEnabled = false
     @Published var micEnabled = true
+    @Published private(set) var isMicrophoneMuted = false
+    @Published private(set) var isChangingMedia = false
+    @Published private(set) var isCameraCapturing = false
+    @Published private(set) var isMicrophoneCapturing = false
+    @Published private(set) var publicationEnabled: [String: Bool] = [:]
+    private var operationTask: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
     @Published var screenAudioEnabled = false
     @Published var replayKitAppGroupIdentifier = "group.com.swmansion.moqdemo"
     @Published var replayKitExtensionBundleIdentifier = "com.swmansion.moqdemo.broadcastupload"
@@ -56,8 +63,7 @@ final class PublisherViewModel: ObservableObject {
             return false
         }
         if case .publishing = publisherState { return false }
-        return (cameraEnabled || screenEnabled || micEnabled || screenAudioEnabled)
-            && publishUnsupportedReason(videoConfig: currentVideoConfig(), audioConfig: currentAudioConfig()) == nil
+        return !isChangingMedia && publishUnsupportedReason(videoConfig: currentVideoConfig(), audioConfig: currentAudioConfig()) == nil
     }
 
     var hasReplayKitTracks: Bool {
@@ -65,7 +71,53 @@ final class PublisherViewModel: ObservableObject {
     }
 
     var hasLocalTracks: Bool {
-        cameraEnabled || micEnabled
+        cameraSourceMode == .singleCamera || cameraEnabled || micEnabled
+    }
+
+    var canMuteMicrophone: Bool {
+        publisherState == .publishing && microphone != nil && !isChangingMedia
+    }
+
+    func toggleMicrophoneMute() {
+        guard canMuteMicrophone, let microphone else { return }
+        microphone.isMuted.toggle()
+        isMicrophoneMuted = microphone.isMuted
+    }
+
+    func toggleCameraCapture() {
+        guard let camera = cameraCapture else { return }
+        changeMedia {
+            if camera.isCapturing { await camera.stop() }
+            else { try await camera.start() }
+            self.isCameraCapturing = camera.isCapturing
+            self.isPreviewRunning = camera.isCapturing
+        }
+    }
+
+    func toggleMicrophoneCapture() {
+        guard let microphone else { return }
+        changeMedia {
+            if microphone.isCapturing { await microphone.stop() }
+            else { try await microphone.start() }
+            self.isMicrophoneCapturing = microphone.isCapturing
+        }
+    }
+
+    func togglePublication(_ track: PublishedMediaTrack) {
+        changeMedia {
+            try await track.setEnabled(!track.isEnabled)
+            self.publicationEnabled[track.name] = track.isEnabled
+        }
+    }
+
+    private func changeMedia(_ action: @escaping @MainActor () async throws -> Void) {
+        guard !isChangingMedia else { return }
+        isChangingMedia = true
+        operationTask = Task {
+            defer { isChangingMedia = false }
+            do { try await action() }
+            catch { lastError = error.localizedDescription }
+        }
     }
 
     var canStop: Bool {
@@ -145,22 +197,18 @@ final class PublisherViewModel: ObservableObject {
 
     private func startSingleCameraPreview() {
         stopMultiCameraPreview()
-        guard cameraCapture == nil else {
-            isPreviewRunning = true
-            return
-        }
-
-        let cam = CameraCapture(camera: Camera(position: cameraPosition))
+        let cam = cameraCapture ?? CameraCapture(camera: Camera(position: cameraPosition))
         cameraCapture = cam
         isPreviewRunning = true
 
-        Task {
+        previewTask?.cancel()
+        previewTask = Task {
             do {
                 try await cam.start()
+                isCameraCapturing = cam.isCapturing
             } catch {
                 lastError = "Camera preview failed: \(error.localizedDescription)"
-                cameraCapture = nil
-                isPreviewRunning = false
+                if cameraCapture === cam { isPreviewRunning = false }
             }
         }
     }
@@ -213,8 +261,15 @@ final class PublisherViewModel: ObservableObject {
     }
 
     private func stopSingleCameraPreview() {
-        cameraCapture?.stop()
+        let cam = cameraCapture
         cameraCapture = nil
+        let pending = previewTask
+        pending?.cancel()
+        previewTask = Task {
+            await pending?.value
+            await cam?.close()
+            isCameraCapturing = false
+        }
     }
 
     private func stopMultiCameraPreview() {
@@ -342,14 +397,17 @@ final class PublisherViewModel: ObservableObject {
             }
         }
 
-        Task {
+        isChangingMedia = true
+        operationTask = Task {
+            defer { isChangingMedia = false }
             do {
                 try await s.connect()
+                try Task.checkCancellation()
 
                 let pub = try Publisher()
                 self.publisher = pub
 
-                if self.cameraEnabled {
+                if self.cameraEnabled || self.cameraSourceMode == .singleCamera {
                     switch self.cameraSourceMode {
                     case .singleCamera:
                         // Reuse the preview CameraCapture, or create one if preview wasn't started
@@ -359,11 +417,10 @@ final class PublisherViewModel: ObservableObject {
                         } else {
                             cam = CameraCapture(camera: Camera(position: self.cameraPosition))
                             self.cameraCapture = cam
-                            try await cam.start()
                         }
                         self.camera = cam
 
-                        let track = pub.addVideoTrack(name: "camera", source: cam, config: videoEncoderConfig)
+                        let track = try pub.addVideoTrack(name: "camera", source: cam, config: videoEncoderConfig)
                         self.publishedTracks.append(track)
                         self.trackStates["camera"] = .idle
 
@@ -372,7 +429,7 @@ final class PublisherViewModel: ObservableObject {
                             videoConfig: videoEncoderConfig
                         )
 
-                        let frontTrack = pub.addVideoTrack(
+                        let frontTrack = try pub.addVideoTrack(
                             name: "front-camera",
                             source: multi.frontSource,
                             config: videoEncoderConfig
@@ -380,7 +437,7 @@ final class PublisherViewModel: ObservableObject {
                         self.publishedTracks.append(frontTrack)
                         self.trackStates["front-camera"] = .idle
 
-                        let backTrack = pub.addVideoTrack(
+                        let backTrack = try pub.addVideoTrack(
                             name: "back-camera",
                             source: multi.backSource,
                             config: videoEncoderConfig
@@ -390,12 +447,11 @@ final class PublisherViewModel: ObservableObject {
                     }
                 }
 
-                if self.micEnabled {
+                do {
                     let mic = MicrophoneCapture()
                     self.microphone = mic
-                    try await mic.start()
 
-                    let track = pub.addAudioTrack(name: "mic", source: mic, config: audioEncoderConfig)
+                    let track = try pub.addAudioTrack(name: "mic", source: mic, config: audioEncoderConfig)
                     self.publishedTracks.append(track)
                     self.trackStates["mic"] = .idle
                 }
@@ -404,66 +460,59 @@ final class PublisherViewModel: ObservableObject {
                 try await pub.start()
 
                 self.observePublisher(pub)
+                for track in self.publishedTracks {
+                    if let media = track as? PublishedMediaTrack {
+                        self.publicationEnabled[track.name] = media.isEnabled
+                    }
+                }
+                if self.cameraEnabled { try await self.cameraCapture?.start() }
+                if self.micEnabled { try await self.microphone?.start() }
+                self.isCameraCapturing = self.cameraCapture?.isCapturing ?? false
+                self.isPreviewRunning = self.isCameraCapturing || self.multiCamera != nil
+                self.isMicrophoneCapturing = self.microphone?.isCapturing ?? false
             } catch {
                 self.lastError = error.localizedDescription
                 self.publisherState = .error(error.localizedDescription)
-                self.cleanupCaptureSources()
+                await self.publisher?.stop()
+                await s.close()
+                await self.cleanupCaptureSources()
             }
         }
     }
 
     func stop() {
-        let logger = Logger(subsystem: "viewing", category: "PublisherModel")
-
-        logger.info("cancelling tasks")
-        publisherStateTask?.cancel()
-        publisherStateTask = nil
-        publisherEventsTask?.cancel()
-        publisherEventsTask = nil
-        stateObserverTask?.cancel()
-        stateObserverTask = nil
-        logger.info("tasks cancelled")
-
-        // Capture references before clearing — the detached task needs them.
-        let pub = publisher
-        publisher = nil
-        session = nil
-        publishedTracks = []
-        trackStates = [:]
-        publisherState = .idle
-        sessionState = .idle
-
-        // Stop publisher and close session off the main thread.
-        // publisher.stop() flushes encoders synchronously — with @MainActor
-        // removed from Publisher, this now actually runs off-main.
-        Task.detached {
-            logger.info("stopping publisher")
-            pub?.stop()
-            logger.info("publisher stopped")
-            logger.info("closing session")
-            // await sess?.close()
-            logger.info("session closed")
-        }
-
-        logger.info("cleaning up capture sources")
-        cleanupCaptureSources()
-        logger.info("capture sources cleaned up")
-        Self.configurePlaybackAudioSession()
-
-        do {
-            let store = ReplayKitBroadcastDescriptorStore(
-                appGroupIdentifier: replayKitAppGroupIdentifier
-            )
-            try store.clear()
-            replayKitPrepared = false
-        } catch {
-            lastError = "ReplayKit cleanup failed: \(error.localizedDescription)"
+        let pending = operationTask
+        pending?.cancel()
+        isChangingMedia = true
+        operationTask = Task {
+            await pending?.value
+            publisherStateTask?.cancel()
+            publisherEventsTask?.cancel()
+            stateObserverTask?.cancel()
+            await publisher?.stop()
+            await session?.close()
+            await cleanupCaptureSources()
+            publisher = nil
+            session = nil
+            publishedTracks = []
+            trackStates = [:]
+            publicationEnabled = [:]
+            publisherState = .idle
+            sessionState = .idle
+            isChangingMedia = false
+            Self.configurePlaybackAudioSession()
+            do {
+                try ReplayKitBroadcastDescriptorStore(
+                    appGroupIdentifier: replayKitAppGroupIdentifier
+                ).clear()
+                replayKitPrepared = false
+            } catch { lastError = error.localizedDescription }
         }
     }
 
     // MARK: - Private
 
-    private func cleanupCaptureSources() {
+    private func cleanupCaptureSources() async {
         // Don't stop the camera — it's shared with preview via cameraCapture
         camera = nil
         if cameraEnabled && cameraSourceMode == .multiCamera && multiCamera != nil {
@@ -475,8 +524,10 @@ final class PublisherViewModel: ObservableObject {
                 isPreviewRunning = false
             }
         }
-        microphone?.stop()
+        await microphone?.close()
         microphone = nil
+        isMicrophoneMuted = false
+        isMicrophoneCapturing = false
     }
 
     private func runningMultiCameraCapture(
@@ -591,12 +642,9 @@ final class PublisherViewModel: ObservableObject {
         publisherEventsTask = Task {
             for await event in pub.events {
                 switch event {
-                case .trackStarted(let name):
-                    self.trackStates[name] = .active
-                case .trackStopped(let name):
-                    self.trackStates[name] = .stopped
+                case .trackStarted, .trackStopped:
+                    break
                 case .error(let name, let msg):
-                    self.trackStates[name] = .stopped
                     self.lastError = "\(name): \(msg)"
                 }
             }
