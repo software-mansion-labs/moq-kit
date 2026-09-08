@@ -21,11 +21,17 @@ struct PublisherConnectionControlsView: View {
                 .disableAutocorrection(true)
 
             HStack(spacing: 12) {
-                Button("Publish") { onConnect() }
+                Button(action: onConnect) {
+                    Label("Publish", systemImage: "dot.radiowaves.left.and.right")
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
                     .buttonStyle(.borderedProminent)
                     .disabled(!canConnect)
 
-                Button("Stop") { onStop() }
+                Button(action: onStop) {
+                    Label("Stop", systemImage: "stop.fill")
+                        .frame(maxWidth: .infinity, minHeight: 32)
+                }
                     .buttonStyle(.bordered)
                     .disabled(!canStop)
             }

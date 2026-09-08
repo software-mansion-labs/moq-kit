@@ -98,39 +98,6 @@ struct PublisherDemoView: View {
                     .background(.fill.quinary, in: RoundedRectangle(cornerRadius: 10))
                 }
 
-                if isPublishing {
-                    VStack(alignment: .leading) {
-                        if viewModel.cameraSourceMode == .singleCamera {
-                            Button(viewModel.isCameraCapturing ? "Stop camera capture" : "Start camera capture",
-                                   action: viewModel.toggleCameraCapture)
-                            Button("Switch camera", action: viewModel.flipCamera)
-                        }
-                        Button(viewModel.isMicrophoneCapturing ? "Stop microphone capture" : "Start microphone capture",
-                               action: viewModel.toggleMicrophoneCapture)
-                        ForEach(viewModel.publishedTracks.compactMap { $0 as? PublishedMediaTrack }, id: \.name) { track in
-                            Button("\(viewModel.publicationEnabled[track.name] == true ? "Disable" : "Enable") \(track.name) publication") {
-                                viewModel.togglePublication(track)
-                            }
-                        }
-                        if viewModel.isChangingMedia { ProgressView("Updating media…") }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(viewModel.isChangingMedia)
-                }
-
-                if isPublishing {
-                    Button(action: viewModel.toggleMicrophoneMute) {
-                        Label(
-                            viewModel.isMicrophoneMuted ? "Unmute microphone" : "Mute microphone",
-                            systemImage: viewModel.isMicrophoneMuted ? "mic.slash.fill" : "mic.fill"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(viewModel.isMicrophoneMuted ? .red : .accentColor)
-                    .disabled(!viewModel.canMuteMicrophone)
-                    .accessibilityValue(viewModel.isMicrophoneMuted ? "Muted" : "Unmuted")
-                }
-
                 // Camera preview
                 if viewModel.isPreviewRunning {
                     switch viewModel.cameraSourceMode {
@@ -140,14 +107,18 @@ struct PublisherDemoView: View {
                                 .aspectRatio(16 / 9, contentMode: .fit)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                                 .overlay(alignment: .bottomTrailing) {
-                                    Button(action: viewModel.flipCamera) {
-                                        Image(systemName: "camera.rotate")
-                                            .font(.title2)
-                                            .padding(10)
-                                            .background(.ultraThinMaterial)
-                                            .clipShape(Circle())
+                                    if !isPublishing {
+                                        Button(action: viewModel.flipCamera) {
+                                            Image(systemName: "camera.rotate")
+                                                .font(.title2)
+                                                .padding(10)
+                                                .background(.ultraThinMaterial)
+                                                .clipShape(Circle())
+                                        }
+                                        .accessibilityLabel("Switch camera")
+                                        .disabled(viewModel.isChangingMedia)
+                                        .padding(12)
                                     }
-                                    .padding(12)
                                 }
                         }
 
@@ -164,17 +135,20 @@ struct PublisherDemoView: View {
                     }
                 }
 
-                // Source configuration
-                SourceConfigView(
-                    cameraEnabled: $viewModel.cameraEnabled,
-                    cameraSourceMode: $viewModel.cameraSourceMode,
-                    screenEnabled: $viewModel.screenEnabled,
-                    micEnabled: $viewModel.micEnabled,
-                    screenAudioEnabled: $viewModel.screenAudioEnabled,
-                    cameraPosition: $viewModel.cameraPosition,
-                    isPublishing: isPublishing || viewModel.isChangingMedia,
-                    onFlipCamera: viewModel.flipCamera
-                )
+                if isPublishing {
+                    mediaControls
+                } else {
+                    SourceConfigView(
+                        cameraEnabled: $viewModel.cameraEnabled,
+                        cameraSourceMode: $viewModel.cameraSourceMode,
+                        screenEnabled: $viewModel.screenEnabled,
+                        micEnabled: $viewModel.micEnabled,
+                        screenAudioEnabled: $viewModel.screenAudioEnabled,
+                        cameraPosition: $viewModel.cameraPosition,
+                        isPublishing: viewModel.isChangingMedia,
+                        onFlipCamera: viewModel.flipCamera
+                    )
+                }
 
                 if !isPublishing && !viewModel.isChangingMedia {
                     CodecConfigView(
@@ -215,5 +189,104 @@ struct PublisherDemoView: View {
             PublisherViewModel.configurePlaybackAudioSession()
         }
         .navigationTitle("Publisher")
+    }
+
+    private var mediaControls: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            GroupBox {
+                VStack(spacing: 8) {
+                    if viewModel.cameraSourceMode == .singleCamera {
+                        mediaToggle("Camera", systemImage: "camera", isOn: viewModel.isCameraCapturing,
+                                    action: viewModel.toggleCameraCapture)
+                        Divider()
+                    }
+                    mediaToggle("Microphone", systemImage: "mic", isOn: viewModel.isMicrophoneCapturing,
+                                action: viewModel.toggleMicrophoneCapture)
+                    Divider()
+                    mediaToggle("Mute microphone", systemImage: "mic.slash", isOn: viewModel.isMicrophoneMuted,
+                                action: viewModel.toggleMicrophoneMute)
+                        .tint(.orange)
+                        .disabled(!viewModel.canMuteMicrophone)
+                        .accessibilityHint("Sends silence while keeping the microphone active.")
+                }
+                .padding(.top, 8)
+            } label: {
+                HStack {
+                    Text("Capture")
+                    Spacer()
+                    if viewModel.cameraSourceMode == .singleCamera {
+                        Button(action: viewModel.flipCamera) {
+                            Label(viewModel.cameraPosition == .front ? "Front" : "Back", systemImage: "camera.rotate")
+                                .font(.subheadline)
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Switch camera")
+                        .accessibilityValue(viewModel.cameraPosition == .front ? "Front" : "Back")
+                    }
+                }
+            }
+
+            GroupBox("Publication") {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(viewModel.publishedTracks.compactMap { $0 as? PublishedMediaTrack }, id: \.name) { track in
+                        mediaToggle(
+                            publicationTitle(for: track),
+                            systemImage: publicationIcon(for: track),
+                            isOn: viewModel.publicationEnabled[track.name] == true
+                        ) {
+                            viewModel.togglePublication(track)
+                        }
+                        .accessibilityLabel("Publish \(publicationTitle(for: track))")
+                    }
+                    Text("Turning publication off keeps capture and preview running. Enabled tracks resume when capture restarts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 8)
+            }
+
+            if viewModel.isChangingMedia {
+                ProgressView("Updating media…")
+                    .font(.subheadline)
+            }
+        }
+        .disabled(viewModel.isChangingMedia)
+    }
+
+    private func mediaToggle(
+        _ title: String,
+        systemImage: String,
+        isOn: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Toggle(isOn: Binding(get: { isOn }, set: { if $0 != isOn { action() } })) {
+            HStack(spacing: 10) {
+                Image(systemName: systemImage)
+                    .frame(width: 24)
+                    .foregroundStyle(.secondary)
+                Text(title)
+            }
+            .font(.subheadline)
+        }
+        .frame(minHeight: 44)
+    }
+
+    private func publicationTitle(for track: PublishedMediaTrack) -> String {
+        switch track.name {
+        case "camera": return "Camera"
+        case "front-camera": return "Front camera"
+        case "back-camera": return "Back camera"
+        case "mic": return "Microphone"
+        default: return track.name
+        }
+    }
+
+    private func publicationIcon(for track: PublishedMediaTrack) -> String {
+        switch track.codecInfo {
+        case .video: return "video"
+        case .audio: return "waveform"
+        case .data: return "dot.radiowaves.left.and.right"
+        }
     }
 }
