@@ -74,7 +74,7 @@ public struct Camera: Sendable {
 public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     /// The underlying capture session, exposed for preview UI or advanced camera setup.
     public let captureSession = AVCaptureSession()
-    private let queue = DispatchQueue(label: "com.swmansion.MoQKit.CameraCapture")
+    private let queue = PublishControl.queue
     /// Advanced frame callback used by ``Publisher``.
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
 
@@ -84,6 +84,14 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     private var currentOutput: AVCaptureVideoDataOutput?
     private var isConfigured = false
     private var isRunning = false
+    let captureLifecycle = CaptureLifecycle()
+    private var requestedRunning = false
+    private var notificationTokens: [NSObjectProtocol] = []
+    private var notificationRun: UUID?
+
+    /// Whether hardware is currently providing frames.
+    public var isCapturing: Bool { PublishControl.sync { captureLifecycle.snapshot.running } }
+
 
     /// Creates a camera capture source with the requested device and format preferences.
     public init(camera: Camera = Camera()) {
@@ -96,35 +104,85 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     /// The session is configured on an internal queue. After this succeeds, frames begin
     /// arriving through ``FrameSource/onFrame`` when a publisher track is attached.
     public func start() async throws {
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, Error>) in
-            queue.async { [self] in
-                do {
-                    if !isConfigured {
-                        try configureSession()
-                    }
+        try Task.checkCancellation()
+        try await PublishControl.run {
+            guard !self.captureLifecycle.snapshot.closed else { throw SessionError.alreadyClosed }
+            if self.captureLifecycle.snapshot.running { return }
+            if !self.isConfigured { try self.configureSession() }
+            self.installNotifications()
+            self.requestedRunning = true
+            self.captureSession.startRunning()
+            self.isRunning = self.captureSession.isRunning
+            guard self.isRunning else {
+                self.requestedRunning = false
+                throw SessionError.invalidConfiguration("Could not start camera capture")
+            }
+            self.captureLifecycle.setRunning(true)
+        }
+        if Task.isCancelled {
+            await stop()
+            throw CancellationError()
+        }
+    }
 
-                    if !isRunning {
-                        captureSession.startRunning()
-                        isRunning = true
-                    }
+    /// Release hardware and await attached publication teardown. This object can restart.
+    public func stop() async {
+        await PublishControl.finish { self.stopOwned() }
+    }
 
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
+    /// Permanently dispose this capture and its publication attachment.
+    public func close() async {
+        await PublishControl.finish {
+            self.stopOwned()
+            self.captureLifecycle.close()
+            self.resetSession()
+            self.removeNotifications()
+        }
+    }
+
+    private func stopOwned() {
+        requestedRunning = false
+        notificationRun = nil
+        removeNotifications()
+        captureLifecycle.setRunning(false)
+        if captureSession.isRunning { captureSession.stopRunning() }
+        isRunning = false
+    }
+
+    private func installNotifications() {
+        guard notificationTokens.isEmpty else { return }
+        let run = UUID()
+        notificationRun = run
+        let names: [Notification.Name] = [
+            AVCaptureSession.wasInterruptedNotification,
+            AVCaptureSession.didStopRunningNotification,
+            AVCaptureSession.runtimeErrorNotification,
+            AVCaptureSession.interruptionEndedNotification,
+            AVCaptureSession.didStartRunningNotification,
+        ]
+        notificationTokens = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: captureSession, queue: nil) {
+                [weak self] notification in
+                PublishControl.queue.async { [weak self] in
+                    guard let self, self.requestedRunning, self.notificationRun == run else { return }
+                    let available = notification.name == AVCaptureSession.interruptionEndedNotification
+                        || notification.name == AVCaptureSession.didStartRunningNotification
+                    self.captureLifecycle.setRunning(available && self.captureSession.isRunning)
                 }
             }
         }
     }
 
-    /// Stops camera capture and detaches any active frame consumer.
-    public func stop() {
-        onFrame = nil
-        queue.async { [self] in
-            if isRunning {
-                captureSession.stopRunning()
-                isRunning = false
-            }
+    private func removeNotifications() {
+        notificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
+        notificationTokens.removeAll()
+    }
+
+    deinit {
+        PublishControl.sync {
+            stopOwned()
+            captureLifecycle.close()
+            removeNotifications()
         }
     }
 
@@ -133,8 +191,10 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     /// Use this for front/back camera changes or resolution/orientation updates without
     /// recreating the capture source.
     public func `switch`(to newCamera: Camera) throws {
-        try queue.sync {
-            guard isConfigured else {
+        try PublishControl.sync {
+            guard !captureLifecycle.snapshot.closed else { throw SessionError.alreadyClosed }
+            guard requestedRunning, isConfigured else {
+                resetSession()
                 camera = newCamera
                 return
             }
@@ -232,6 +292,7 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     }
 
     private func resetSession() {
+        captureLifecycle.setRunning(false)
         guard currentInput != nil || currentOutput != nil else { return }
 
         if isRunning {

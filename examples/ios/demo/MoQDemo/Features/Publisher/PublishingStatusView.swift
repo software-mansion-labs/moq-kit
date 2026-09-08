@@ -65,6 +65,8 @@ struct PublishingStatusView: View {
 
     private func trackStateColor(_ state: PublishedTrackState) -> Color {
         switch state {
+        case .disabled: return .gray
+        case .failed: return .red
         case .idle: return .gray
         case .starting: return .orange
         case .active: return .green
@@ -74,6 +76,8 @@ struct PublishingStatusView: View {
 
     private func trackStateLabel(_ state: PublishedTrackState) -> String {
         switch state {
+        case .disabled: return "disabled"
+        case .failed(let message): return "failed: \(message)"
         case .idle: return "idle"
         case .starting: return "starting"
         case .active: return "active"

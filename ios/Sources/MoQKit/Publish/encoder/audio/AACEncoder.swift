@@ -13,7 +13,7 @@ final class AACEncoder: AudioEncoding {
         self.config = config
     }
 
-    func encode(_ sampleBuffer: CMSampleBuffer) -> [EncodedAudioFrame] {
+    func encode(_ sampleBuffer: CMSampleBuffer) throws -> [EncodedAudioFrame] {
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
             let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)
         else { return [] }
@@ -22,12 +22,7 @@ final class AACEncoder: AudioEncoding {
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if converter == nil {
-            do {
-                try createConverter(inputASBD: inputASBD)
-            } catch {
-                KitLogger.publish.error("Failed to create AAC audio converter: \(error)")
-                return []
-            }
+            try createConverter(inputASBD: inputASBD)
         }
 
         guard let converter else { return [] }
@@ -63,8 +58,7 @@ final class AACEncoder: AudioEncoding {
 
             if status == .error {
                 let message = error?.localizedDescription ?? "unknown"
-                KitLogger.publish.error("AAC conversion failed: \(message)")
-                break
+                throw SessionError.invalidConfiguration("AAC conversion failed: \(message)")
             }
 
             guard outputBuffer.byteLength > 0, outputBuffer.packetCount > 0 else { break }

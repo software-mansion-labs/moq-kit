@@ -7,13 +7,30 @@ import AVFoundation
 public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable {
     /// The underlying capture session for advanced configuration if needed.
     public let captureSession = AVCaptureSession()
-    private let queue = DispatchQueue(label: "com.swmansion.MoQKit.MicrophoneCapture")
+    private let queue = PublishControl.queue
     /// Advanced frame callback used by ``Publisher``.
     public var onFrame: (@Sendable (CMSampleBuffer) -> Bool)?
     private var currentInput: AVCaptureDeviceInput?
     private var currentOutput: AVCaptureAudioDataOutput?
     private var isConfigured = false
     private var isRunning = false
+    let captureLifecycle = CaptureLifecycle()
+    private let muteLock = NSLock()
+    private var muted = false
+
+    /// Send silence without stopping capture, encoding, or the media track.
+    public var isMuted: Bool {
+        get { muteLock.lock(); defer { muteLock.unlock() }; return muted }
+        set { muteLock.lock(); muted = newValue; muteLock.unlock() }
+    }
+
+    private var requestedRunning = false
+    private var notificationTokens: [NSObjectProtocol] = []
+    private var notificationRun: UUID?
+
+    /// Whether hardware is currently providing frames.
+    public var isCapturing: Bool { PublishControl.sync { captureLifecycle.snapshot.running } }
+
 
     /// Creates a microphone capture source for the current system input route.
     public override init() {
@@ -25,36 +42,110 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
     /// The source captures raw PCM audio and begins forwarding frames once a publisher
     /// track attaches an ``FrameSource/onFrame`` callback.
     public func start() async throws {
-        try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<Void, Error>) in
-            queue.async { [self] in
-                do {
-                    if !isConfigured {
-                        try configureSession()
-                    }
+        try Task.checkCancellation()
+        try await PublishControl.run {
+            guard !self.captureLifecycle.snapshot.closed else { throw SessionError.alreadyClosed }
+            if self.captureLifecycle.snapshot.running { return }
+            if !self.isConfigured { try self.configureSession() }
+            self.installNotifications()
+            self.requestedRunning = true
+            self.captureSession.startRunning()
+            self.isRunning = self.captureSession.isRunning
+            guard self.isRunning else {
+                self.requestedRunning = false
+                throw SessionError.invalidConfiguration("Could not start microphone capture")
+            }
+            self.captureLifecycle.setRunning(true)
+        }
+        if Task.isCancelled {
+            await stop()
+            throw CancellationError()
+        }
+    }
 
-                    if !isRunning {
-                        captureSession.startRunning()
-                        isRunning = true
-                    }
+    /// Release hardware and await attached publication teardown. This object can restart.
+    public func stop() async {
+        await PublishControl.finish { self.stopOwned() }
+    }
 
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
+    /// Permanently dispose this capture and its publication attachment.
+    public func close() async {
+        await PublishControl.finish {
+            self.stopOwned()
+            self.captureLifecycle.close()
+            self.resetSession()
+            self.removeNotifications()
+        }
+    }
+
+    private func stopOwned() {
+        requestedRunning = false
+        notificationRun = nil
+        removeNotifications()
+        captureLifecycle.setRunning(false)
+        if captureSession.isRunning { captureSession.stopRunning() }
+        isRunning = false
+    }
+
+    private func installNotifications() {
+        guard notificationTokens.isEmpty else { return }
+        let run = UUID()
+        notificationRun = run
+        let names: [Notification.Name] = [
+            AVCaptureSession.wasInterruptedNotification,
+            AVCaptureSession.didStopRunningNotification,
+            AVCaptureSession.runtimeErrorNotification,
+            AVCaptureSession.interruptionEndedNotification,
+            AVCaptureSession.didStartRunningNotification,
+        ]
+        notificationTokens = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: captureSession, queue: nil) {
+                [weak self] notification in
+                PublishControl.queue.async { [weak self] in
+                    guard let self, self.requestedRunning, self.notificationRun == run else { return }
+                    let available = notification.name == AVCaptureSession.interruptionEndedNotification
+                        || notification.name == AVCaptureSession.didStartRunningNotification
+                    self.captureLifecycle.setRunning(available && self.captureSession.isRunning)
                 }
             }
         }
     }
 
-    /// Stops microphone capture and detaches any active frame consumer.
-    public func stop() {
-        onFrame = nil
-        queue.async { [self] in
-            if isRunning {
-                captureSession.stopRunning()
-                isRunning = false
-            }
+    private func removeNotifications() {
+        notificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
+        notificationTokens.removeAll()
+    }
+
+    deinit {
+        PublishControl.sync {
+            stopOwned()
+            captureLifecycle.close()
+            removeNotifications()
         }
+    }
+
+
+    /// Copy PCM storage before silencing; preserve layout, timing, and attachments.
+    static func silenced(_ sample: CMSampleBuffer) -> CMSampleBuffer? {
+        guard let block = CMSampleBufferGetDataBuffer(sample),
+              let format = CMSampleBufferGetFormatDescription(sample) else { return nil }
+        let length = CMBlockBufferGetDataLength(block)
+        var silence: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: length,
+            blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0,
+            dataLength: length, flags: 0, blockBufferOut: &silence) == noErr,
+            let silence,
+            CMBlockBufferFillDataBytes(with: 0, blockBuffer: silence, offsetIntoDestination: 0,
+                                      dataLength: length) == noErr else { return nil }
+        var copy: CMSampleBuffer?
+        guard CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault, dataBuffer: silence, formatDescription: format,
+            sampleCount: CMSampleBufferGetNumSamples(sample),
+            presentationTimeStamp: CMSampleBufferGetPresentationTimeStamp(sample),
+            packetDescriptions: nil, sampleBufferOut: &copy) == noErr, let copy else { return nil }
+        CMPropagateAttachments(sample, destination: copy)
+        return copy
     }
 
     private func configureSession() throws {
@@ -94,6 +185,7 @@ public final class MicrophoneCapture: NSObject, FrameSource, @unchecked Sendable
     }
 
     private func resetSession() {
+        captureLifecycle.setRunning(false)
         guard currentInput != nil || currentOutput != nil else { return }
 
         if isRunning {
@@ -125,8 +217,9 @@ extension MicrophoneCapture: AVCaptureAudioDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        if let onFrame, !onFrame(sampleBuffer) {
-            stop()
+        guard let sample = isMuted ? Self.silenced(sampleBuffer) : sampleBuffer else { return }
+        if let onFrame, !onFrame(sample) {
+            self.onFrame = nil
         }
     }
 }

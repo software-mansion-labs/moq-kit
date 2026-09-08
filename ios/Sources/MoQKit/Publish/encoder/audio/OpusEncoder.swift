@@ -13,7 +13,7 @@ final class OpusEncoder: AudioEncoding {
         self.config = config
     }
 
-    func encode(_ sampleBuffer: CMSampleBuffer) -> [EncodedAudioFrame] {
+    func encode(_ sampleBuffer: CMSampleBuffer) throws -> [EncodedAudioFrame] {
         guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
             let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)
         else { return [] }
@@ -22,12 +22,7 @@ final class OpusEncoder: AudioEncoding {
         let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         if converter == nil {
-            do {
-                try createConverter(inputASBD: inputASBD)
-            } catch {
-                KitLogger.publish.error("Failed to create Opus audio converter: \(error)")
-                return []
-            }
+            try createConverter(inputASBD: inputASBD)
         }
 
         guard let converter else { return [] }
@@ -63,7 +58,10 @@ final class OpusEncoder: AudioEncoding {
                 return pcmBuffer
             }
 
-            guard status != .error, outputBuffer.byteLength > 0 else { break }
+            if status == .error {
+                throw error ?? NSError(domain: "MoQKit.OpusEncoder", code: -1)
+            }
+            guard outputBuffer.byteLength > 0 else { break }
 
             let offsetSeconds = Double(packetsDrained * outputSamplesPerPacket) / config.sampleRate
             let currentPTS = CMTimeAdd(pts, CMTime(seconds: offsetSeconds, preferredTimescale: pts.timescale))

@@ -7,7 +7,7 @@ Shared semantics (names agreed out of band, `TrackDelivery` modes, self-broadcas
 ```swift
 let emitter = DataTrackEmitter()               // retain it — it's your send handle
 let publisher = try Publisher()
-publisher.addDataTrack(name: "chat", source: emitter)
+try publisher.addDataTrack(name: "chat", source: emitter)
 try await session.publish(path: "chat/room-1", publisher: publisher)
 try await publisher.start()
 try emitter.send(JSONEncoder().encode(message)) // silent no-op before start / after stop; throws only on a live write failure

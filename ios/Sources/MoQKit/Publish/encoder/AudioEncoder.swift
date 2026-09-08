@@ -3,7 +3,7 @@ import Foundation
 
 /// Common interface for codec-specific audio encoders.
 protocol AudioEncoding {
-    func encode(_ sampleBuffer: CMSampleBuffer) -> [EncodedAudioFrame]
+    func encode(_ sampleBuffer: CMSampleBuffer) throws -> [EncodedAudioFrame]
     func buildInitData() -> Data
     func stop()
 }
@@ -13,6 +13,7 @@ final class AudioEncoder: @unchecked Sendable {
     private var encoder: AudioEncoding?
     private var handler: ((EncodedAudioFrame) -> Void)?
     private var sentInitData = false
+    private var onError: (Error) -> Void = { _ in }
 
     let config: AudioEncoderConfig
 
@@ -20,8 +21,9 @@ final class AudioEncoder: @unchecked Sendable {
         self.config = config
     }
 
-    func start(handler: @escaping (EncodedAudioFrame) -> Void) throws {
+    func start(onError: @escaping (Error) -> Void = { _ in }, handler: @escaping (EncodedAudioFrame) -> Void) throws {
         self.handler = handler
+        self.onError = onError
         sentInitData = false
 
         switch config.codec {
@@ -33,14 +35,16 @@ final class AudioEncoder: @unchecked Sendable {
     }
 
     func encode(_ sampleBuffer: CMSampleBuffer) {
-        let frames = encoder?.encode(sampleBuffer) ?? []
-        for var frame in frames {
-            if !sentInitData {
-                frame.initData = encoder?.buildInitData()
-                sentInitData = true
+        do {
+            let frames = try encoder?.encode(sampleBuffer) ?? []
+            for var frame in frames {
+                if !sentInitData {
+                    frame.initData = encoder?.buildInitData()
+                    sentInitData = true
+                }
+                handler?(frame)
             }
-            handler?(frame)
-        }
+        } catch { onError(error) }
     }
 
     func stop() {

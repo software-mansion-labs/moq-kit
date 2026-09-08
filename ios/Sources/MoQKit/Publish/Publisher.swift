@@ -8,9 +8,9 @@ import Moq
 public enum PublisherState: Sendable, Equatable {
     /// Created, no tracks publishing yet.
     case idle
-    /// At least one track is actively sending.
+    /// Broadcast is open; capture tracks may be running or waiting for their sources.
     case publishing
-    /// All tracks stopped, broadcast finalized.
+    /// Broadcast explicitly ended and finalized.
     case stopped
     /// An error occurred. The associated string contains a description.
     case error(String)
@@ -29,10 +29,14 @@ public enum PublisherEvent: Sendable {
 // MARK: - Published Track State
 
 /// The lifecycle state of a single published track.
-public enum PublishedTrackState: Sendable {
-    /// Added but not yet started.
+public enum PublishedTrackState: Sendable, Equatable {
+    /// Added, or waiting for a stopped capture source to restart.
     case idle
-    /// Source started, waiting for first encoded frame.
+    /// Publication is disabled and owns no encoder or media producer.
+    case disabled
+    /// Activation or output failed; setEnabled(true) retries.
+    case failed(String)
+    /// Encoder started, waiting for first encoded frame.
     case starting
     /// Encoding and publishing frames.
     case active
@@ -58,46 +62,66 @@ public enum TrackCodecInfo: Sendable {
 ///
 /// Use `PublishedTrack` to observe per-track state or stop one track without stopping
 /// the entire publisher.
-public final class PublishedTrack: @unchecked Sendable {
-    /// The track name.
+public class PublishedTrack: @unchecked Sendable {
     public let name: String
-    /// Codec information for the track.
     public let codecInfo: TrackCodecInfo
-    /// A stream of ``PublishedTrackState`` transitions.
     public let state: AsyncStream<PublishedTrackState>
-
     internal let stateContinuation: AsyncStream<PublishedTrackState>.Continuation
     internal var currentState: PublishedTrackState = .idle
     internal var stopAction: (() -> Void)?
+    internal var releaseAction: (() -> Void)?
 
     init(name: String, codecInfo: TrackCodecInfo) {
         self.name = name
         self.codecInfo = codecInfo
-        var cont: AsyncStream<PublishedTrackState>.Continuation!
-        self.state = AsyncStream { cont = $0 }
-        self.stateContinuation = cont
-        stateContinuation.yield(.idle)
+        var continuation: AsyncStream<PublishedTrackState>.Continuation!
+        state = AsyncStream { continuation = $0 }
+        stateContinuation = continuation
+        continuation.yield(.idle)
     }
 
-    /// Stops this track only.
-    ///
-    /// Other tracks continue publishing. If this was the last active track, the publisher
-    /// transitions to ``PublisherState/stopped``.
-    public func stop() {
+    /// Permanently detach this track. The broadcast and capture remain independent.
+    public func stop() async {
+        await PublishControl.finish { self.stopOwned() }
+    }
+
+    internal func stopOwned() {
         guard currentState != .stopped else { return }
         stopAction?()
+        stopAction = nil
+        releaseAction?()
+        releaseAction = nil
+        transition(to: .stopped)
     }
 
-    internal func transition(to newState: PublishedTrackState) {
-        currentState = newState
-        stateContinuation.yield(newState)
-        if newState == .stopped {
-            stateContinuation.finish()
+    internal func transition(to state: PublishedTrackState) {
+        guard currentState != .stopped, currentState != state else { return }
+        currentState = state
+        stateContinuation.yield(state)
+        if state == .stopped { stateContinuation.finish() }
+    }
+
+    deinit { stateContinuation.finish() }
+}
+
+/// Reusable publication attachment shared by audio and video. Capture is started explicitly.
+public final class PublishedMediaTrack: PublishedTrack, @unchecked Sendable {
+    internal var enabledValue = true
+    internal var binding: CaptureTrackBinding?
+    internal var outputID: UUID?
+
+    /// Requested publication setting, independent of capture availability.
+    public var isEnabled: Bool { PublishControl.sync { enabledValue } }
+
+    /// Await encoder setup or teardown. Enabling a stopped source only records intent.
+    public func setEnabled(_ enabled: Bool) async throws {
+        try Task.checkCancellation()
+        try await PublishControl.run {
+            guard self.currentState != .stopped else { throw SessionError.alreadyClosed }
+            self.enabledValue = enabled
+            if let binding = self.binding { try binding.setEnabled(enabled) }
+            else { self.transition(to: enabled ? .idle : .disabled) }
         }
-    }
-
-    deinit {
-        stateContinuation.finish()
     }
 }
 
@@ -105,14 +129,14 @@ public final class PublishedTrack: @unchecked Sendable {
 
 /// Describes a video track to be started when `start()` is called.
 private struct VideoTrackDescriptor {
-    let track: PublishedTrack
+    let track: PublishedMediaTrack
     let source: any FrameSource
     let config: VideoEncoderConfig
 }
 
 /// Describes an audio track to be started when `start()` is called.
 private struct AudioTrackDescriptor {
-    let track: PublishedTrack
+    let track: PublishedMediaTrack
     let source: any FrameSource
     let config: AudioEncoderConfig
 }
@@ -124,20 +148,6 @@ private struct DataTrackDescriptor {
 }
 
 // MARK: - Active Track State (internal)
-
-/// Holds the runtime objects for an active video track.
-private final class VideoTrack {
-    var source: (any FrameSource)?
-    var encoder: VideoEncoder?
-    var mediaProducer: Moq.MediaProducer?
-}
-
-/// Holds the runtime objects for an active audio track.
-private final class AudioTrack {
-    var source: (any FrameSource)?
-    var encoder: AudioEncoder?
-    var mediaProducer: Moq.MediaProducer?
-}
 
 /// Holds the runtime objects for an active object track.
 private final class DataTrack {
@@ -162,14 +172,14 @@ private final class DataTrack {
 /// try await camera.start()
 ///
 /// let publisher = try Publisher()
-/// let video = publisher.addVideoTrack(name: "video", source: camera)
+/// let video = try publisher.addVideoTrack(name: "video", source: camera)
 /// try session.publish(path: "live/stream", publisher: publisher)
 /// try await publisher.start()
 /// ```
 ///
 /// A `Publisher` is single-use. After ``stop()`` completes, create a new instance for the
 /// next broadcast.
-public final class Publisher {
+public final class Publisher: @unchecked Sendable {
     /// Emits ``PublisherState`` values for the lifetime of the publisher.
     public let state: AsyncStream<PublisherState>
     /// Emits ``PublisherEvent`` values as tracks start, stop, or fail.
@@ -182,10 +192,12 @@ public final class Publisher {
     internal let clock = PublisherClock()
 
     internal func attachBroadcast(_ broadcast: Moq.BroadcastProducer) throws {
-        guard self.broadcast == nil else {
-            throw SessionError.invalidConfiguration("Publisher is already registered with a session")
+        try PublishControl.sync {
+            guard currentState == .idle, self.broadcast == nil else {
+                throw SessionError.invalidConfiguration("Publisher is already registered with a session")
+            }
+            self.broadcast = broadcast
         }
-        self.broadcast = broadcast
     }
 
     private let stateContinuation: AsyncStream<PublisherState>.Continuation
@@ -195,11 +207,9 @@ public final class Publisher {
     // Track descriptors (added before start)
     private var videoDescriptors: [VideoTrackDescriptor] = []
     private var audioDescriptors: [AudioTrackDescriptor] = []
-    private var datatDescriptors: [DataTrackDescriptor] = []
+    private var dataDescriptors: [DataTrackDescriptor] = []
 
     // Active runtime state
-    private var activeVideoTracks: [String: VideoTrack] = [:]
-    private var activeAudioTracks: [String: AudioTrack] = [:]
     private var activeDataTracks: [String: DataTrack] = [:]
 
     /// Create a publisher. Does not start publishing until ``start()`` is called.
@@ -230,15 +240,28 @@ public final class Publisher {
     public func addVideoTrack(
         name: String = "video",
         source: any FrameSource,
-        config: VideoEncoderConfig = VideoEncoderConfig()
-    ) -> PublishedTrack {
-        let track = PublishedTrack(
-            name: name,
-            codecInfo: .video(
-                codec: config.codec, width: config.width, height: config.height,
-                frameRate: config.maxFrameRate))
-        videoDescriptors.append(VideoTrackDescriptor(track: track, source: source, config: config))
-        return track
+        config: VideoEncoderConfig = VideoEncoderConfig(),
+        enabled: Bool = true
+    ) throws -> PublishedMediaTrack {
+        try PublishControl.sync {
+            try validateRegistration(name)
+            let lifecycle = captureLifecycle(for: source)
+            let reservation = UUID()
+            try lifecycle?.reserve(reservation)
+            let track = PublishedMediaTrack(name: name, codecInfo: .video(codec: config.codec, width: config.width, height: config.height, frameRate: config.maxFrameRate))
+            track.enabledValue = enabled
+            if !enabled { track.transition(to: .disabled) }
+            track.releaseAction = { lifecycle?.release(reservation) }
+            let events = eventsContinuation
+            track.stopAction = { [weak track] in
+                track?.outputID = nil
+                track?.binding?.stop()
+                track?.binding = nil
+                events.yield(.trackStopped(name))
+            }
+            videoDescriptors.append(VideoTrackDescriptor(track: track, source: source, config: config))
+            return track
+        }
     }
 
     /// Adds an audio track backed by a frame source.
@@ -255,13 +278,28 @@ public final class Publisher {
     public func addAudioTrack(
         name: String = "audio",
         source: any FrameSource,
-        config: AudioEncoderConfig = AudioEncoderConfig()
-    ) -> PublishedTrack {
-        let track = PublishedTrack(
-            name: name,
-            codecInfo: .audio(codec: config.codec, sampleRate: config.sampleRate))
-        audioDescriptors.append(AudioTrackDescriptor(track: track, source: source, config: config))
-        return track
+        config: AudioEncoderConfig = AudioEncoderConfig(),
+        enabled: Bool = true
+    ) throws -> PublishedMediaTrack {
+        try PublishControl.sync {
+            try validateRegistration(name)
+            let lifecycle = captureLifecycle(for: source)
+            let reservation = UUID()
+            try lifecycle?.reserve(reservation)
+            let track = PublishedMediaTrack(name: name, codecInfo: .audio(codec: config.codec, sampleRate: config.sampleRate))
+            track.enabledValue = enabled
+            if !enabled { track.transition(to: .disabled) }
+            track.releaseAction = { lifecycle?.release(reservation) }
+            let events = eventsContinuation
+            track.stopAction = { [weak track] in
+                track?.outputID = nil
+                track?.binding?.stop()
+                track?.binding = nil
+                events.yield(.trackStopped(name))
+            }
+            audioDescriptors.append(AudioTrackDescriptor(track: track, source: source, config: config))
+            return track
+        }
     }
 
     /// Adds a data track for app-defined binary payloads.
@@ -271,13 +309,23 @@ public final class Publisher {
     ///   - source: Emitter the app uses to push objects after ``start()`` succeeds.
     /// - Returns: A handle to control the track independently.
     @discardableResult
-    public func addDataTrack(
-        name: String = "data",
-        source: DataTrackEmitter
-    ) -> PublishedTrack {
-        let track = PublishedTrack(name: name, codecInfo: .data)
-        datatDescriptors.append(DataTrackDescriptor(track: track, emitter: source))
-        return track
+    public func addDataTrack(name: String = "data", source: DataTrackEmitter) throws -> PublishedTrack {
+        try PublishControl.sync {
+            try validateRegistration(name)
+            let track = PublishedTrack(name: name, codecInfo: .data)
+            dataDescriptors.append(DataTrackDescriptor(track: track, emitter: source))
+            return track
+        }
+    }
+
+    private func validateRegistration(_ name: String) throws {
+        guard currentState == .idle else {
+            throw SessionError.invalidConfiguration("Add tracks before Publisher.start()")
+        }
+        guard !(videoDescriptors.map { $0.track.name } + audioDescriptors.map { $0.track.name }
+                + dataDescriptors.map { $0.track.name }).contains(name) else {
+            throw SessionError.invalidConfiguration("Track '\(name)' already added")
+        }
     }
 
     /// Starts publishing all registered tracks.
@@ -286,105 +334,52 @@ public final class Publisher {
     /// start `CameraCapture`, `MicrophoneCapture`, or any custom source for you; it only
     /// binds those sources to encoders and the relay-facing producers.
     public func start() async throws {
-        guard currentState == .idle else {
-            throw SessionError.invalidConfiguration("Publisher already started")
+        try Task.checkCancellation()
+        try await PublishControl.run {
+            guard self.currentState == .idle else {
+                throw SessionError.invalidConfiguration("Publisher already started")
+            }
+            guard let broadcast = self.broadcast else {
+                throw SessionError.invalidConfiguration("Register Publisher with Session.publish() before start()")
+            }
+            do {
+                for desc in self.videoDescriptors where desc.track.currentState != .stopped {
+                    try self.startVideoTrack(desc, broadcast: broadcast)
+                }
+                for desc in self.audioDescriptors where desc.track.currentState != .stopped {
+                    try self.startAudioTrack(desc, broadcast: broadcast)
+                }
+                for desc in self.dataDescriptors where desc.track.currentState != .stopped {
+                    try self.startObjectTrack(desc, broadcast: broadcast)
+                }
+                self.transition(to: .publishing)
+            } catch {
+                self.stopOwned(finalState: .error(error.localizedDescription))
+                throw error
+            }
         }
-        guard let broadcast else {
-            throw SessionError.invalidConfiguration(
-                "Publisher must be registered with Session.publish() before start()")
-        }
-
-        KitLogger.publish.debug(
-            "Starting publisher with \(self.videoDescriptors.count) video + \(self.audioDescriptors.count) audio tracks"
-        )
-
-        try validateCodecSupport()
-
-        // Start video tracks
-        for desc in videoDescriptors {
-            try startVideoTrack(desc, broadcast: broadcast)
-        }
-
-        // Start audio tracks
-        for desc in audioDescriptors {
-            try startAudioTrack(desc, broadcast: broadcast)
-        }
-
-        // Start object tracks
-        for desc in datatDescriptors {
-            try startObjectTrack(desc, broadcast: broadcast)
-        }
-
-        transition(to: .publishing)
     }
 
-    /// Stops all tracks and finalizes the broadcast.
-    ///
-    /// After calling this, the publisher cannot be started again.
-    public func stop() {
+    /// End the broadcast and await publication teardown. Capture and preview continue.
+    public func stop() async {
+        await PublishControl.finish { self.stopOwned() }
+    }
+
+    internal func stopOwned(finalState: PublisherState = .stopped) {
         guard currentState == .publishing || currentState == .idle else { return }
-        KitLogger.publish.debug("Stopping publisher")
-
-        for (_, active) in activeVideoTracks {
-            active.source?.onFrame = { (_: CMSampleBuffer) in false }
-            active.encoder?.stop()
-            try? active.mediaProducer?.finish()
-        }
-        activeVideoTracks.removeAll()
-
-        for (_, active) in activeAudioTracks {
-            active.source?.onFrame = { (_: CMSampleBuffer) in false }
-            active.encoder?.stop()
-            try? active.mediaProducer?.finish()
-        }
-        activeAudioTracks.removeAll()
-
-        for (_, active) in activeDataTracks {
-            active.emitter?.detach()
-        }
+        for desc in videoDescriptors { desc.track.stopOwned() }
+        for desc in audioDescriptors { desc.track.stopOwned() }
+        for desc in dataDescriptors { desc.track.stopOwned() }
         activeDataTracks.removeAll()
-
         try? broadcast?.finish()
+        broadcast = nil
         clock.reset()
-
-        // Transition all tracks to stopped
-        for desc in videoDescriptors {
-            desc.track.transition(to: .stopped)
-            eventsContinuation.yield(.trackStopped(desc.track.name))
-        }
-        for desc in audioDescriptors {
-            desc.track.transition(to: .stopped)
-            eventsContinuation.yield(.trackStopped(desc.track.name))
-        }
-        for desc in datatDescriptors {
-            desc.track.transition(to: .stopped)
-            eventsContinuation.yield(.trackStopped(desc.track.name))
-        }
-
-        transition(to: .stopped)
+        transition(to: finalState)
         stateContinuation.finish()
         eventsContinuation.finish()
     }
 
-    deinit {
-        // Best-effort cleanup
-        for (_, active) in activeVideoTracks {
-            active.source?.onFrame = { (_: CMSampleBuffer) in false }
-            active.encoder?.stop()
-            try? active.mediaProducer?.finish()
-        }
-        for (_, active) in activeAudioTracks {
-            active.source?.onFrame = { (_: CMSampleBuffer) in false }
-            active.encoder?.stop()
-            try? active.mediaProducer?.finish()
-        }
-        for (_, active) in activeDataTracks {
-            active.emitter?.detach()
-        }
-        try? broadcast?.finish()
-        stateContinuation.finish()
-        eventsContinuation.finish()
-    }
+    deinit { PublishControl.sync { stopOwned() } }
 
     // MARK: - Private: State
 
@@ -398,167 +393,120 @@ public final class Publisher {
 
     // MARK: - Private: Video Track Wiring
 
-    private func validateCodecSupport() throws {
-        for desc in videoDescriptors {
-            if let reason = desc.config.unsupportedReason {
-                throw SessionError.unsupportedCodec(
-                    "Video track '\(desc.track.name)' is not supported: \(reason)")
-            }
-        }
+    private func captureLifecycle(for source: any FrameSource) -> CaptureLifecycle? {
+        if let camera = source as? CameraCapture { return camera.captureLifecycle }
+        if let microphone = source as? MicrophoneCapture { return microphone.captureLifecycle }
+        return nil
+    }
 
-        for desc in audioDescriptors {
-            if let reason = desc.config.unsupportedReason {
-                throw SessionError.unsupportedCodec(
-                    "Audio track '\(desc.track.name)' is not supported: \(reason)")
+    private func mediaOutput(
+        for track: PublishedMediaTrack, broadcast: Moq.BroadcastProducer, format: String
+    ) -> MediaTrackOutput {
+        let events = eventsContinuation
+        let id = UUID()
+        track.outputID = id
+        return MediaTrackOutput(
+            broadcast: broadcast, format: format,
+            onActive: { [weak track] in
+                PublishControl.queue.async {
+                    guard let track, track.outputID == id, track.currentState != .stopped else { return }
+                    track.transition(to: .active)
+                    events.yield(.trackStarted(track.name))
+                }
+            },
+            onError: { [weak track] error in
+                PublishControl.queue.async {
+                    guard let track, track.outputID == id else { return }
+                    track.binding?.fail(error)
+                }
             }
-        }
+        )
     }
 
     private func startVideoTrack(_ desc: VideoTrackDescriptor, broadcast: Moq.BroadcastProducer) throws {
-        let active = VideoTrack()
-        let encoder = VideoEncoder(config: desc.config)
-        active.encoder = encoder
-        active.source = desc.source
-
-        let trackHandle = desc.track
+        let track = desc.track
         let clock = self.clock
-        let eventsContinuation = self.eventsContinuation
-        let formatString = desc.config.format
-
-        // Encoder output: lazily creates the media producer on the first keyframe
-        // that carries init data (parameter sets), then writes frames to it.
-        try encoder.start { [weak active] frame in
-            guard let active else { return }
-
-            if active.mediaProducer == nil {
-                guard let initData = frame.initData else { return }
+        let events = eventsContinuation
+        let binding = CaptureTrackBinding(
+            enabled: track.enabledValue,
+            start: { [weak self] in
+                guard let self else { throw SessionError.alreadyClosed }
+                if let reason = desc.config.unsupportedReason {
+                    throw SessionError.unsupportedCodec(reason)
+                }
+                let encoder = VideoEncoder(config: desc.config)
+                let gate = CaptureFrameGate()
+                let output = self.mediaOutput(for: track, broadcast: broadcast, format: desc.config.format)
+                track.transition(to: .starting)
                 do {
-                    let producer = try broadcast.publishMedia(
-                        format: formatString,
-                        initData: initData
-                    )
-                    active.mediaProducer = producer
-                    KitLogger.publish.debug(
-                        "Video track '\(trackHandle.name)' media producer created")
-                    Task { @MainActor in
-                        trackHandle.transition(to: .active)
-                        eventsContinuation.yield(.trackStarted(trackHandle.name))
+                    try encoder.start(onError: output.fail) { frame in
+                        output.write(frame.data, initData: frame.initData,
+                                     timestampUs: clock.timestampUs(from: frame.presentationTime))
                     }
                 } catch {
-                    KitLogger.publish.error("Failed to create video media producer: \(error)")
-                    Task { @MainActor in
-                        trackHandle.transition(to: .stopped)
-                        eventsContinuation.yield(
-                            .error(trackHandle.name, error.localizedDescription))
-                    }
-                    return
+                    output.finish()
+                    encoder.stop()
+                    throw error
                 }
-            }
-
-            let timestampUs = clock.timestampUs(from: frame.presentationTime)
-            do {
-                try active.mediaProducer?.writeFrame(frame.data, timestampUs: timestampUs)
-            } catch {
-                KitLogger.publish.error("Failed to write video frame: \(error)")
-            }
-        }
-
-        trackHandle.transition(to: .starting)
-
-        // Bind source → encoder
-        desc.source.onFrame = { [weak encoder] sampleBuffer in
-            guard let encoder else { return false }
-            encoder.encode(sampleBuffer)
-            return true
-        }
-
-        // Set up individual track stop
-        trackHandle.stopAction = { [weak self, weak active] in
-            guard let self, let active else { return }
-            active.source?.onFrame = { (_: CMSampleBuffer) in false }
-            active.encoder?.stop()
-            try? active.mediaProducer?.finish()
-            self.activeVideoTracks.removeValue(forKey: trackHandle.name)
-            trackHandle.transition(to: .stopped)
-            self.eventsContinuation.yield(.trackStopped(trackHandle.name))
-            self.checkAllTracksStopped()
-        }
-
-        activeVideoTracks[desc.track.name] = active
+                desc.source.onFrame = { sample in
+                    gate.send { encoder.encode(sample) }
+                }
+                return {
+                    track.outputID = nil
+                    output.finish()
+                    desc.source.onFrame = nil
+                    gate.close { encoder.stop() }
+                }
+            },
+            onState: { track.transition(to: $0) },
+            onError: { error in events.yield(.error(track.name, error.localizedDescription)) },
+            onClosed: { track.stopOwned() }
+        )
+        track.binding = binding
+        try binding.attach(to: captureLifecycle(for: desc.source))
     }
 
-    // MARK: - Private: Audio Track Wiring
-
     private func startAudioTrack(_ desc: AudioTrackDescriptor, broadcast: Moq.BroadcastProducer) throws {
-        let active = AudioTrack()
-        let encoder = AudioEncoder(config: desc.config)
-        active.encoder = encoder
-        active.source = desc.source
-
-        let trackHandle = desc.track
+        let track = desc.track
         let clock = self.clock
-        let eventsContinuation = self.eventsContinuation
-        let formatString = desc.config.format
-
-        // Encoder output
-        try encoder.start { [weak active] frame in
-            guard let active else { return }
-
-            if active.mediaProducer == nil {
-                guard let initData = frame.initData else { return }
+        let events = eventsContinuation
+        let binding = CaptureTrackBinding(
+            enabled: track.enabledValue,
+            start: { [weak self] in
+                guard let self else { throw SessionError.alreadyClosed }
+                if let reason = desc.config.unsupportedReason {
+                    throw SessionError.unsupportedCodec(reason)
+                }
+                let encoder = AudioEncoder(config: desc.config)
+                let gate = CaptureFrameGate()
+                let output = self.mediaOutput(for: track, broadcast: broadcast, format: desc.config.format)
+                track.transition(to: .starting)
                 do {
-                    let producer = try broadcast.publishMedia(
-                        format: formatString,
-                        initData: initData
-                    )
-                    active.mediaProducer = producer
-                    KitLogger.publish.debug(
-                        "Audio track '\(trackHandle.name)' media producer created")
-                    Task { @MainActor in
-                        trackHandle.transition(to: .active)
-                        eventsContinuation.yield(.trackStarted(trackHandle.name))
+                    try encoder.start(onError: output.fail) { frame in
+                        output.write(frame.data, initData: frame.initData,
+                                     timestampUs: clock.timestampUs(from: frame.presentationTime))
                     }
                 } catch {
-                    KitLogger.publish.error("Failed to create audio media producer: \(error)")
-                    Task { @MainActor in
-                        trackHandle.transition(to: .stopped)
-                        eventsContinuation.yield(
-                            .error(trackHandle.name, error.localizedDescription))
-                    }
-                    return
+                    output.finish()
+                    encoder.stop()
+                    throw error
                 }
-            }
-
-            let timestampUs = clock.timestampUs(from: frame.presentationTime)
-            do {
-                try active.mediaProducer?.writeFrame(frame.data, timestampUs: timestampUs)
-            } catch {
-                KitLogger.publish.error("Failed to write audio frame: \(error)")
-            }
-        }
-
-        trackHandle.transition(to: .starting)
-
-        // Bind source → encoder
-        desc.source.onFrame = { [weak encoder] sampleBuffer in
-            guard let encoder else { return false }
-            encoder.encode(sampleBuffer)
-            return true
-        }
-
-        // Set up individual track stop
-        trackHandle.stopAction = { [weak self, weak active] in
-            guard let self, let active else { return }
-            active.source?.onFrame = { (_: CMSampleBuffer) in false }
-            active.encoder?.stop()
-            try? active.mediaProducer?.finish()
-            self.activeAudioTracks.removeValue(forKey: trackHandle.name)
-            trackHandle.transition(to: .stopped)
-            self.eventsContinuation.yield(.trackStopped(trackHandle.name))
-            self.checkAllTracksStopped()
-        }
-
-        activeAudioTracks[desc.track.name] = active
+                desc.source.onFrame = { sample in
+                    gate.send { encoder.encode(sample) }
+                }
+                return {
+                    track.outputID = nil
+                    output.finish()
+                    desc.source.onFrame = nil
+                    gate.close { encoder.stop() }
+                }
+            },
+            onState: { track.transition(to: $0) },
+            onError: { error in events.yield(.error(track.name, error.localizedDescription)) },
+            onClosed: { track.stopOwned() }
+        )
+        track.binding = binding
+        try binding.attach(to: captureLifecycle(for: desc.source))
     }
 
     // MARK: - Private: Object Track Wiring
@@ -574,10 +522,10 @@ public final class Publisher {
         trackHandle.stopAction = { [weak self, weak active] in
             guard let self, let active else { return }
             active.emitter?.detach()
+            try? active.producer?.finish()
             self.activeDataTracks.removeValue(forKey: trackHandle.name)
             trackHandle.transition(to: .stopped)
             self.eventsContinuation.yield(.trackStopped(trackHandle.name))
-            self.checkAllTracksStopped()
         }
 
         trackHandle.transition(to: .active)
@@ -585,15 +533,4 @@ public final class Publisher {
         activeDataTracks[desc.track.name] = active
     }
 
-    // MARK: - Private: Lifecycle
-
-    private func checkAllTracksStopped() {
-        if activeVideoTracks.isEmpty && activeAudioTracks.isEmpty && activeDataTracks.isEmpty
-            && currentState == .publishing
-        {
-            transition(to: .stopped)
-            stateContinuation.finish()
-            eventsContinuation.finish()
-        }
-    }
 }
