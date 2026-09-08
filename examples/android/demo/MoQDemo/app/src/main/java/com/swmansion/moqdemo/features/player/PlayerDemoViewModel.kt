@@ -412,7 +412,8 @@ class PlayerDemoViewModel(application: Application) : AndroidViewModel(applicati
         super.onCleared()
         cancelCatalogJobs()
         subscription?.close()
-        viewModelScope.launch { session?.close() }
+        val closingSession = session
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate).launch { closingSession?.close() }
     }
 
     private fun preferredVideoTrack(catalog: Catalog, preferredName: String?): VideoTrackInfo? {

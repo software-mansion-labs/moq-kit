@@ -49,7 +49,7 @@ producers. Registering a publisher with `Session.publish` creates the Moq broadc
 producer at the chosen path, so registration must happen before `Publisher.start`. Camera, multi-camera capture, microphone, screen capture, and raw data emitters
 are platform-specific sources feeding the same publish shape.
 
-On iOS, camera and microphone hardware have explicit reusable start/stop lifetimes, independent
+Camera and microphone hardware have explicit reusable start/stop lifetimes, independent
 of preview and publication. Audio/video registration returns `PublishedMediaTrack`;
 `setEnabled(bool)` awaits encoder/media-producer setup or teardown without starting capture.
 `PublishedTrack.stop`, `Publisher.stop`, and capture `close` are terminal and await cleanup.
@@ -62,10 +62,14 @@ encoder. `MediaTrackOutput` fences callbacks per encoder run and lazily creates 
 rendition with initialization data. Finishing removes the rendition from the hang catalog.
 An empty publisher stays announced until explicit stop/session end.
 
-iOS control transitions use one serial queue. Frame and codec callbacks never
-synchronously wait for control work; errors enqueue notifications. iOS keeps the native
-capture session/preview layer integration. Custom, screen, and multi-camera source
-contracts remain unchanged; only camera/microphone automatically propagate availability.
+Control transitions use one serial queue on iOS and a coroutine mutex on Android. Frame
+and codec callbacks never synchronously wait for control work; errors enqueue notifications.
+Android capture owns the GL fanout and CameraX input, and borrows one preview surface and
+one encoder surface. Publication owns the encoder surface. GL detach completes before
+the surface owner releases it; CameraX input release waits for its SurfaceRequest result
+callback. Camera capture only unbinds its own use case. iOS keeps the native capture
+session/preview layer integration. Custom, screen, and multi-camera source contracts
+remain unchanged; only camera/microphone automatically propagate availability.
 
 Subscription and discovery are centered on `BroadcastSubscription`, `Broadcast`, `Catalog`,
 and `TrackSubscription`. A session subscribes to announced broadcast paths by prefix. A

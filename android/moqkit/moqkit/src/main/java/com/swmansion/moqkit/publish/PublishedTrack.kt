@@ -2,6 +2,10 @@ package com.swmansion.moqkit.publish
 
 import com.swmansion.moqkit.publish.encoder.AudioCodec
 import com.swmansion.moqkit.publish.encoder.VideoCodec
+import com.swmansion.moqkit.publish.source.CaptureTrackBinding
+import com.swmansion.moqkit.publish.source.PublishControl
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,29 +38,57 @@ sealed class TrackCodecInfo {
  * @property name Local SDK label used by publisher state and events.
  * @property codecInfo Media or data kind configured for this track.
  */
-class PublishedTrack internal constructor(
+open class PublishedTrack internal constructor(
     val name: String,
     val codecInfo: TrackCodecInfo,
 ) {
-    private val _state = MutableStateFlow(PublishedTrackState.Idle)
+    private val _state = MutableStateFlow<PublishedTrackState>(PublishedTrackState.Idle)
 
     /** Current lifecycle state for this track. */
     val state: StateFlow<PublishedTrackState> = _state.asStateFlow()
 
     internal var stopAction: (() -> Unit)? = null
+    internal var releaseAction: (() -> Unit)? = null
 
     /**
-     * Stops this track if it is active.
-     *
-     * Calling this before [Publisher.start] has no effect because no native producer has
-     * been attached yet.
+     * Permanently detaches this track and awaits resource teardown, including before start.
+     * Capture and the broadcast remain independently owned.
      */
-    fun stop() {
+    suspend fun stop() = PublishControl.run { stopOwned() }
+
+    internal fun stopOwned() {
         if (_state.value == PublishedTrackState.Stopped) return
         stopAction?.invoke()
+        stopAction = null
+        releaseAction?.invoke()
+        releaseAction = null
+        transition(PublishedTrackState.Stopped)
     }
 
     internal fun transition(to: PublishedTrackState) {
-        _state.value = to
+        if (_state.value != PublishedTrackState.Stopped) _state.value = to
+    }
+}
+
+/** Audio/video publication settings; capture hardware remains explicitly controlled by the app. */
+class PublishedMediaTrack internal constructor(name: String, codecInfo: TrackCodecInfo, enabled: Boolean) :
+    PublishedTrack(name, codecInfo) {
+    @Volatile var isEnabled: Boolean = enabled
+        private set
+    internal var binding: CaptureTrackBinding? = null
+    internal var outputID: Any? = null
+
+    init { if (!enabled) transition(PublishedTrackState.Disabled) }
+
+    /** Await local encoder setup/teardown; enabling an unavailable source records intent only. */
+    suspend fun setEnabled(enabled: Boolean) {
+        currentCoroutineContext().ensureActive()
+        PublishControl.run {
+            check(state.value != PublishedTrackState.Stopped) { "Track is stopped" }
+            isEnabled = enabled
+            val current = binding
+            if (current != null) current.setEnabled(enabled)
+            else transition(if (enabled) PublishedTrackState.Idle else PublishedTrackState.Disabled)
+        }
     }
 }

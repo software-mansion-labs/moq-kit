@@ -13,6 +13,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.viewModelScope
 import com.swmansion.moqkit.Session
 import com.swmansion.moqkit.publish.Publisher
+import com.swmansion.moqkit.publish.PublishedMediaTrack
 import com.swmansion.moqkit.publish.PublishedTrack
 import com.swmansion.moqkit.publish.PublishedTrackState
 import com.swmansion.moqkit.publish.PublisherEvent
@@ -28,6 +29,10 @@ import com.swmansion.moqkit.publish.source.MicrophoneCapture
 import com.swmansion.moqkit.publish.source.MultiCameraCapture
 import com.swmansion.moqkit.publish.source.ScreenCapture
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
@@ -57,6 +62,19 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     // Source toggles
     var cameraEnabled by mutableStateOf(true)
     var micEnabled by mutableStateOf(true)
+    var isMicrophoneMuted by mutableStateOf(false)
+        private set
+    var isChangingMedia by mutableStateOf(false)
+        private set
+    var isCameraCapturing by mutableStateOf(false)
+        private set
+    var isMicrophoneCapturing by mutableStateOf(false)
+        private set
+    val publicationEnabled = mutableStateMapOf<String, Boolean>()
+    private var operationJob: Job? = null
+    private var previewJob: Job? = null
+    private var captureOwner: LifecycleOwner? = null
+
     var screenEnabled by mutableStateOf(false)
     var cameraSourceMode by mutableStateOf(CameraSourceMode.SingleCamera)
     var cameraPosition by mutableStateOf(CameraPosition.Front)
@@ -86,9 +104,48 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
         private set
 
     val isPublishing get() = publisherState == PublisherState.Publishing
+    val canMuteMicrophone get() = isPublishing && sessionState == Session.State.Connected
+            && microphone != null && trackStates["mic"] != PublishedTrackState.Stopped
+
+    fun toggleMicrophoneMute() {
+        if (!canMuteMicrophone || isChangingMedia) return
+        val mic = microphone ?: return
+        mic.isMuted = !mic.isMuted
+        isMicrophoneMuted = mic.isMuted
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    fun toggleMicrophoneCapture() = changeMedia {
+        val mic = microphone ?: return@changeMedia
+        if (mic.isCapturing) mic.stop() else mic.start()
+        isMicrophoneCapturing = mic.isCapturing
+    }
+
+    fun toggleCameraCapture() = changeMedia {
+        val cam = camera ?: return@changeMedia
+        val owner = captureOwner ?: return@changeMedia
+        if (cam.isCapturing) cam.stop() else cam.start(getApplication(), owner)
+        isCameraCapturing = cam.isCapturing
+    }
+
+    fun togglePublication(track: PublishedMediaTrack) = changeMedia {
+        track.setEnabled(!track.isEnabled)
+        publicationEnabled[track.name] = track.isEnabled
+    }
+
+    private fun changeMedia(action: suspend () -> Unit) {
+        if (isChangingMedia) return
+        isChangingMedia = true
+        operationJob = viewModelScope.launch {
+            try { action() }
+            catch (e: Exception) { lastError = e.message }
+            finally { isChangingMedia = false }
+        }
+    }
+
     val canPublish get() = sessionState == Session.State.Idle
             && publisherState == PublisherState.Idle
-            && (cameraEnabled || micEnabled || screenEnabled)
+            && !isChangingMedia
             && publishUnsupportedReason() == null
     val canStop get() = isPublishing || sessionState == Session.State.Connecting
             || sessionState == Session.State.Connected
@@ -174,6 +231,7 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun startCamera(lifecycleOwner: LifecycleOwner) {
+        captureOwner = lifecycleOwner
         if (!cameraEnabled) return
 
         when (cameraSourceMode) {
@@ -184,14 +242,14 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun startSingleCamera(lifecycleOwner: LifecycleOwner) {
         stopMultiCamera()
-        if (camera != null) return
-
-        val cam = CameraCapture(position = cameraPosition)
+        val cam = camera ?: CameraCapture(position = cameraPosition)
         camera = cam
-        viewModelScope.launch {
+        previewJob?.cancel()
+        previewJob = viewModelScope.launch {
             try {
                 cam.start(getApplication(), lifecycleOwner)
                 cam.setPreviewSurface(previewSurface)
+                isCameraCapturing = cam.isCapturing
             } catch (e: Exception) {
                 lastError = "Camera start failed: ${e.message}"
                 camera = null
@@ -283,6 +341,7 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun publish(lifecycleOwner: LifecycleOwner, relayUrl: String) {
+        captureOwner = lifecycleOwner
         lastError = null
         trackStates.clear()
         publishedTracks = emptyList()
@@ -305,7 +364,8 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
 
         sessionJob = s.state.onEach { sessionState = it }.launchIn(viewModelScope)
 
-        viewModelScope.launch {
+        isChangingMedia = true
+        operationJob = viewModelScope.launch {
             try {
                 s.connect()
 
@@ -314,11 +374,10 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
 
                 val tracks = mutableListOf<PublishedTrack>()
 
-                if (cameraEnabled) {
+                if (cameraEnabled || cameraSourceMode == CameraSourceMode.SingleCamera) {
                     when (cameraSourceMode) {
                         CameraSourceMode.SingleCamera -> {
                             val cam = camera ?: CameraCapture(position = cameraPosition).also {
-                                it.start(getApplication(), lifecycleOwner)
                                 it.setPreviewSurface(previewSurface)
                                 camera = it
                             }
@@ -345,10 +404,9 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
                     }
                 }
 
-                if (micEnabled) {
+                run {
                     val mic = MicrophoneCapture(sampleRate = audioSampleRate)
                     microphone = mic
-                    mic.start()
                     tracks += pub.addAudioTrack(name = "mic", source = mic, config = audioConfig)
                     trackStates["mic"] = PublishedTrackState.Idle
                 }
@@ -381,10 +439,15 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
                 pub.start()
 
                 observePublisher(pub, tracks)
+                tracks.filterIsInstance<PublishedMediaTrack>().forEach { publicationEnabled[it.name] = it.isEnabled }
+                if (cameraEnabled) camera?.start(getApplication(), lifecycleOwner)
+                if (micEnabled) microphone?.start()
+                isCameraCapturing = camera?.isCapturing == true
+                isMicrophoneCapturing = microphone?.isCapturing == true
             } catch (e: Exception) {
                 lastError = e.message ?: "Unknown error"
                 resetAfterPublishFailure()
-            }
+            } finally { isChangingMedia = false }
         }
     }
 
@@ -393,78 +456,67 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     private fun stopPublishing(keepCameraPreview: Boolean) {
-        publisherJobs.forEach { it.cancel() }
-        publisherJobs.clear()
-        sessionJob?.cancel()
-        sessionJob = null
-
-        val pub = publisher
-        val sess = session
-
-        publisher = null
-        session = null
-        publishedTracks = emptyList()
-        trackStates.clear()
-        publisherState = PublisherState.Idle
-        sessionState = Session.State.Idle
-
-        viewModelScope.launch {
-            pub?.stop()
-            sess?.close()
+        val pending = operationJob
+        pending?.cancel()
+        isChangingMedia = true
+        // This cleanup also runs after viewModelScope is cancelled by onCleared.
+        operationJob = CoroutineScope(Dispatchers.Main.immediate).launch {
+            pending?.join()
+            finishPublishing(keepCameraPreview)
+            isChangingMedia = false
         }
-
-        cleanupSources(keepCameraPreview = keepCameraPreview)
     }
 
     override fun onCleared() {
-        super.onCleared()
         stopPublishing(keepCameraPreview = false)
+        super.onCleared()
     }
 
-    private fun resetAfterPublishFailure() {
+    private suspend fun resetAfterPublishFailure() = withContext(NonCancellable) {
+        finishPublishing(keepCameraPreview = false)
+    }
+
+    private suspend fun finishPublishing(keepCameraPreview: Boolean) {
         publisherJobs.forEach { it.cancel() }
         publisherJobs.clear()
         sessionJob?.cancel()
         sessionJob = null
-
-        val pub = publisher
-        val sess = session
-
+        publisher?.stop()
+        session?.close()
         publisher = null
         session = null
         publishedTracks = emptyList()
         trackStates.clear()
+        publicationEnabled.clear()
         publisherState = PublisherState.Idle
         sessionState = Session.State.Idle
-
-        viewModelScope.launch {
-            try {
-                pub?.stop()
-            } catch (_: Exception) {}
-            try {
-                sess?.close()
-            } catch (_: Exception) {}
-        }
-
-        cleanupSources(keepCameraPreview = false)
-    }
-
-    private fun cleanupSources(keepCameraPreview: Boolean) {
-        microphone?.stop()
+        microphone?.close()
         microphone = null
+        isMicrophoneMuted = false
+        isMicrophoneCapturing = false
         screenCapture?.stop()
         screenCapture = null
-        getApplication<Application>().stopService(
-            Intent(getApplication(), ScreenCaptureService::class.java)
-        )
+        getApplication<Application>().stopService(Intent(getApplication(), ScreenCaptureService::class.java))
         if (!keepCameraPreview) {
-            stopCamera()
+            previewJob?.cancel()
+            previewJob?.join()
+            camera?.close()
+            camera = null
+            isCameraCapturing = false
+            stopMultiCamera()
         }
     }
 
     private fun stopSingleCamera() {
-        camera?.stop()
+        val cam = camera
         camera = null
+        val pending = previewJob
+        pending?.cancel()
+        previewJob = viewModelScope.launch(NonCancellable) {
+            pending?.join()
+            cam?.close()
+            isCameraCapturing = false
+        }
     }
 
     private fun stopMultiCamera() {
@@ -571,10 +623,8 @@ class PublisherViewModel(application: Application) : AndroidViewModel(applicatio
 
         publisherJobs += pub.events.onEach { event ->
             when (event) {
-                is PublisherEvent.TrackStarted -> trackStates[event.name] = PublishedTrackState.Active
-                is PublisherEvent.TrackStopped -> trackStates[event.name] = PublishedTrackState.Stopped
+                is PublisherEvent.TrackStarted, is PublisherEvent.TrackStopped -> Unit
                 is PublisherEvent.TrackError -> {
-                    trackStates[event.name] = PublishedTrackState.Stopped
                     lastError = "${event.name}: ${event.message}"
                 }
             }

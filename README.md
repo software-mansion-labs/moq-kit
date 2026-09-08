@@ -290,12 +290,12 @@ The `name` passed to `addVideoTrack` and `addAudioTrack` is a local SDK label us
 underlying muxer, so subscribers should discover actual media track names from
 `Catalog.videoTracks` and `Catalog.audioTracks`.
 
-On iOS, capture and publication have separate controls. `microphone.isMuted = true` sends
+Capture and publication have separate controls. `microphone.isMuted = true` sends
 silence while keeping capture and publication active. Audio/video registration returns
 a `PublishedMediaTrack`: await `setEnabled(false)` to release its encoder and remove
 its catalog entry while camera preview continues. Await capture `stop()` to release
 hardware and suspend preview; `start()` resumes the same capture and any enabled track.
-Enabling publication never starts capture. Both controls are async.
+Enabling publication never starts capture. Both controls are async/suspend.
 
 Capture `close()`, track `stop()`, and publisher `stop()` are terminal. A publisher with
 no active media remains open. Capture restart republishes under fresh wire track names,
@@ -393,6 +393,10 @@ lifecycleScope.launch {
 
     session.publish(path = "live/android", publisher = publisher)
     publisher.start()
+
+    // Mute/unmute without stopping capture or the audio track:
+    // microphone.isMuted = true
+    // microphone.isMuted = false
 
     // When the broadcast ends, stop the publisher, captures, and session.
     // publisher.stop()
