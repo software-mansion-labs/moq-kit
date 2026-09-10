@@ -170,6 +170,8 @@ Android native logs land in **logcat under the tag `MoQNative`**, but only when 
 
 iOS also logs through `os_log` under subsystem `com.swmansion.MoQKit` (categories `session`, `transport`, `catalog`, `media`, `player`, `publish`) — filter Console.app on it. Per-frame drop/stall detail is on the player's diagnostics channel, not in these logs.
 
+The iOS `publish` category logs track state and enable changes, camera/microphone start and stop, capture notifications, and runtime errors. The iOS demo logs publisher errors under subsystem `com.swmansion.MoQDemo`, category `publisher-demo`.
+
 ## Testing against a relay
 
 From a moq-kit checkout (needs Rust + [mise](https://mise.jdx.dev)): `mise run relay:run` starts a local moq-lite relay at `http://localhost:4443/anon`; `mise run media:to-fmp4` converts a video to CMAF fMP4 and `mise run stream:file --input file.mp4` loops it into the relay as a broadcast. Use the machine's LAN IP instead of `localhost` from physical devices, and `10.0.2.2` from the Android emulator (the emulator's fixed alias for the host's loopback — its own `localhost` is itself; the iOS simulator shares the host's). The relay URL must include the namespace path (`/anon` locally) — with it wrong or missing, broadcasts simply never appear (relay `NotFound`, `code=13`). The demo apps (`examples/ios/demo/MoQDemo`, `examples/android/demo/MoQDemo`) are the canonical integration references.

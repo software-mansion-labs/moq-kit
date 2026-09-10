@@ -96,6 +96,11 @@ public class PublishedTrack: @unchecked Sendable {
 
     internal func transition(to state: PublishedTrackState) {
         guard currentState != .stopped, currentState != state else { return }
+        if case .failed(let message) = state {
+            KitLogger.publish.error("Track '\(self.name)' failed: \(message)")
+        } else {
+            KitLogger.publish.info("Track '\(self.name)' state: \(String(describing: self.currentState)) -> \(String(describing: state))")
+        }
         currentState = state
         stateContinuation.yield(state)
         if state == .stopped { stateContinuation.finish() }
@@ -118,6 +123,7 @@ public final class PublishedMediaTrack: PublishedTrack, @unchecked Sendable {
         try Task.checkCancellation()
         try await PublishControl.run {
             guard self.currentState != .stopped else { throw SessionError.alreadyClosed }
+            KitLogger.publish.info("Track '\(self.name)' setEnabled(\(enabled))")
             self.enabledValue = enabled
             if let binding = self.binding { try binding.setEnabled(enabled) }
             else { self.transition(to: enabled ? .idle : .disabled) }

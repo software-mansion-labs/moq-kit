@@ -108,6 +108,7 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
         try await PublishControl.run {
             guard !self.captureLifecycle.snapshot.closed else { throw SessionError.alreadyClosed }
             if self.captureLifecycle.snapshot.running { return }
+            KitLogger.publish.info("Camera capture starting")
             if !self.isConfigured { try self.configureSession() }
             self.installNotifications()
             self.requestedRunning = true
@@ -118,6 +119,7 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
                 throw SessionError.invalidConfiguration("Could not start camera capture")
             }
             self.captureLifecycle.setRunning(true)
+            KitLogger.publish.info("Camera capture started, generation=\(self.captureLifecycle.snapshot.generation)")
         }
         if Task.isCancelled {
             await stop()
@@ -141,6 +143,7 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
     }
 
     private func stopOwned() {
+        KitLogger.publish.info("Camera capture stopping, generation=\(self.captureLifecycle.snapshot.generation)")
         requestedRunning = false
         notificationRun = nil
         removeNotifications()
@@ -164,7 +167,17 @@ public final class CameraCapture: NSObject, FrameSource, @unchecked Sendable {
             NotificationCenter.default.addObserver(forName: name, object: captureSession, queue: nil) {
                 [weak self] notification in
                 PublishControl.queue.async { [weak self] in
-                    guard let self, self.requestedRunning, self.notificationRun == run else { return }
+                    guard let self, self.notificationRun == run else { return }
+                    if notification.name == AVCaptureSession.runtimeErrorNotification {
+                        if let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError {
+                            KitLogger.publish.error("Camera capture runtime error: domain=\(error.domain), code=\(error.code), \(error.localizedDescription)")
+                        } else {
+                            KitLogger.publish.error("Camera capture runtime error without error details")
+                        }
+                    }
+                    let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue
+                    KitLogger.publish.info("Camera capture notification=\(notification.name.rawValue), running=\(self.captureSession.isRunning), requested=\(self.requestedRunning), generation=\(self.captureLifecycle.snapshot.generation), interruptionReason=\(String(describing: reason))")
+                    guard self.requestedRunning else { return }
                     let available = notification.name == AVCaptureSession.interruptionEndedNotification
                         || notification.name == AVCaptureSession.didStartRunningNotification
                     self.captureLifecycle.setRunning(available && self.captureSession.isRunning)

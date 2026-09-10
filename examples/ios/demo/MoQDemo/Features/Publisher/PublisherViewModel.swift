@@ -3,6 +3,11 @@ import MoQKit
 import SwiftUI
 import os
 
+private let publisherDemoLogger = Logger(
+    subsystem: "com.swmansion.MoQDemo",
+    category: "publisher-demo"
+)
+
 @MainActor
 final class PublisherViewModel: ObservableObject {
     // MARK: - Published State
@@ -33,7 +38,13 @@ final class PublisherViewModel: ObservableObject {
     @Published var audioCodec: MoQKit.AudioCodec = PublisherViewModel.defaultAudioCodec()
     @Published var audioSampleRate: AudioSampleRate = .khz48
     @Published var trackStates: [String: PublishedTrackState] = [:]
-    @Published var lastError: String?
+    @Published var lastError: String? {
+        didSet {
+            if let lastError {
+                publisherDemoLogger.error("\(lastError)")
+            }
+        }
+    }
 
     // MARK: - Camera Preview
 
