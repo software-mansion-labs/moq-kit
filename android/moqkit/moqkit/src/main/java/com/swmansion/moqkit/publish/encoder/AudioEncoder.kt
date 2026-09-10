@@ -1,5 +1,8 @@
 package com.swmansion.moqkit.publish.encoder
 
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.util.Log
@@ -20,14 +23,21 @@ internal class AudioEncoder(val config: AudioEncoderConfig) {
     private val pcmQueue = LinkedBlockingDeque<PcmChunk>(64)
     private val inputBufferQueue = LinkedBlockingDeque<Int>(32)
     private val codecDetails = audioCodecDetails(config.codec)
+    private var callbackThread: HandlerThread? = null
+    @Volatile private var accepting = false
+    private var errorHandler: ((Exception) -> Unit)? = null
     private var codec: MediaCodec? = null
     private var handler: ((EncodedAudioFrame) -> Unit)? = null
     private var sentInitData = false
     private var outputFormat: MediaFormat? = null
     private var codecConfigData: ByteArray? = null
 
-    fun start(source: AudioFrameSource, onEncodedFrame: (EncodedAudioFrame) -> Unit) {
+    fun start(source: AudioFrameSource, onError: (Exception) -> Unit = {}, onEncodedFrame: (EncodedAudioFrame) -> Unit) {
         handler = onEncodedFrame
+        errorHandler = onError
+        accepting = true
+        val callbacks = HandlerThread("AudioEncoder").apply { start() }
+        callbackThread = callbacks
         sentInitData = false
         outputFormat = null
         codecConfigData = null
@@ -37,8 +47,10 @@ internal class AudioEncoder(val config: AudioEncoderConfig) {
         codecDetails.configureFormat(format, config)
 
         val newCodec = MediaCodec.createEncoderByType(mimeType)
+        codec = newCodec
         newCodec.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                if (!accepting) return
                 inputBufferQueue.offer(index)
                 tryFeed(codec)
             }
@@ -46,6 +58,7 @@ internal class AudioEncoder(val config: AudioEncoderConfig) {
             override fun onOutputBufferAvailable(
                 codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo
             ) {
+                if (!accepting) return
                 try {
                     val buf = codec.getOutputBuffer(index) ?: run {
                         codec.releaseOutputBuffer(index, false)
@@ -74,38 +87,43 @@ internal class AudioEncoder(val config: AudioEncoderConfig) {
                         )
                     )
                 } catch (e: Exception) {
-                    Log.e(TAG, "Output buffer error: $e")
+                    if (accepting) errorHandler?.invoke(e)
                 }
             }
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-                Log.e(TAG, "Codec error: $e")
+                if (accepting) errorHandler?.invoke(e)
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
                 outputFormat = format
             }
-        })
+        }, Handler(callbacks.looper))
 
         newCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         newCodec.start()
         codec = newCodec
 
-        source.onPcmData = { data, size, timestampUs ->
+        source.onPcmData = callback@{ data, size, timestampUs ->
+            if (!accepting) return@callback
             pcmQueue.offer(PcmChunk(data.copyOf(size), size, timestampUs))
             codec?.let { tryFeed(it) }
         }
     }
 
     fun stop() {
-        try {
-            codec?.stop()
-            codec?.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error stopping codec: $e")
-        }
+        synchronized(this) { accepting = false }
+        val oldCodec = codec
         codec = null
+        try { oldCodec?.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping codec", e) }
+        try { oldCodec?.release() } catch (e: Exception) { Log.w(TAG, "Error releasing codec", e) }
+        callbackThread?.let {
+            it.quitSafely()
+            if (Looper.myLooper() != it.looper) it.join()
+        }
+        callbackThread = null
         handler = null
+        errorHandler = null
         pcmQueue.clear()
         inputBufferQueue.clear()
         outputFormat = null
@@ -114,6 +132,7 @@ internal class AudioEncoder(val config: AudioEncoderConfig) {
 
     @Synchronized
     private fun tryFeed(codec: MediaCodec) {
+        if (!accepting) return
         while (true) {
             val chunk = pcmQueue.peek() ?: return
             val index = inputBufferQueue.poll() ?: return

@@ -1,12 +1,18 @@
 package com.swmansion.moqkit.publish
 
-import android.util.Log
+import com.swmansion.moqkit.publish.source.PublishControl
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.swmansion.moqkit.UnsupportedCodecException
 import com.swmansion.moqkit.publish.encoder.AudioEncoder
 import com.swmansion.moqkit.publish.encoder.AudioEncoderConfig
 import com.swmansion.moqkit.publish.encoder.VideoEncoder
 import com.swmansion.moqkit.publish.encoder.VideoEncoderConfig
 import com.swmansion.moqkit.publish.source.AudioFrameSource
+import com.swmansion.moqkit.publish.source.CaptureLifecycle
+import com.swmansion.moqkit.publish.source.CaptureTrackBinding
+import com.swmansion.moqkit.publish.source.CameraCapture
+import com.swmansion.moqkit.publish.source.MicrophoneCapture
 import com.swmansion.moqkit.publish.source.VideoFrameSource
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,12 +20,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import dev.moq.BroadcastProducer
-import dev.moq.Frame
-import dev.moq.Init
-import dev.moq.MediaProducer
 import dev.moq.TrackProducer
-
-private const val TAG = "Publisher"
 
 /**
  * Collects tracks and publishes them as one broadcast.
@@ -39,6 +40,7 @@ private const val TAG = "Publisher"
  * create a new [Publisher] for the next broadcast.
  */
 class Publisher {
+    private var registrationClosed = false
     private val _state = MutableStateFlow<PublisherState>(PublisherState.Idle)
 
     /** Current publishing state. */
@@ -56,8 +58,9 @@ class Publisher {
         private set
     internal val clock = Clock()
 
+    @Synchronized
     internal fun attachBroadcast(broadcast: BroadcastProducer) {
-        check(this.broadcast == null) { "Publisher is already registered with a session" }
+        check(_state.value == PublisherState.Idle && this.broadcast == null) { "Publisher is already registered with a session" }
         this.broadcast = broadcast
     }
 
@@ -67,8 +70,6 @@ class Publisher {
     private val dataDescriptors = mutableListOf<DataTrackDescriptor>()
 
     // Active runtime state
-    private val activeVideoTracks = mutableMapOf<String, ActiveVideoTrack>()
-    private val activeAudioTracks = mutableMapOf<String, ActiveAudioTrack>()
     private val activeDataTracks = mutableMapOf<String, ActiveDataTrack>()
 
     /**
@@ -87,16 +88,20 @@ class Publisher {
      * @return A handle for observing or stopping this track.
      * @throws IllegalArgumentException if another video track already uses [name].
      */
+    @Synchronized
     fun addVideoTrack(
         name: String = "video",
         source: VideoFrameSource,
         config: VideoEncoderConfig = VideoEncoderConfig(),
-    ): PublishedTrack {
-        require(videoDescriptors.none { it.track.name == name }) { "Video track '$name' already added" }
-        val track = PublishedTrack(
+        enabled: Boolean = true,
+    ): PublishedMediaTrack {
+        validateRegistration(name)
+        val track = PublishedMediaTrack(
+            enabled = enabled,
             name = name,
             codecInfo = TrackCodecInfo.Video(config.codec, config.width, config.height, config.frameRate),
         )
+        reserveSource(source, track)
         videoDescriptors.add(VideoTrackDescriptor(track, source, config))
         return track
     }
@@ -115,16 +120,20 @@ class Publisher {
      * @return A handle for observing or stopping this track.
      * @throws IllegalArgumentException if another audio track already uses [name].
      */
+    @Synchronized
     fun addAudioTrack(
         name: String = "audio",
         source: AudioFrameSource,
         config: AudioEncoderConfig = AudioEncoderConfig(),
-    ): PublishedTrack {
-        require(audioDescriptors.none { it.track.name == name }) { "Audio track '$name' already added" }
-        val track = PublishedTrack(
+        enabled: Boolean = true,
+    ): PublishedMediaTrack {
+        validateRegistration(name)
+        val track = PublishedMediaTrack(
+            enabled = enabled,
             name = name,
             codecInfo = TrackCodecInfo.Audio(config.codec, config.sampleRate),
         )
+        reserveSource(source, track)
         audioDescriptors.add(AudioTrackDescriptor(track, source, config))
         return track
     }
@@ -141,203 +150,183 @@ class Publisher {
      * @return A handle for observing or stopping this track.
      * @throws IllegalArgumentException if another data track already uses [name].
      */
+    @Synchronized
     fun addDataTrack(
         name: String = "data",
         emitter: DataTrackEmitter,
     ): PublishedTrack {
-        require(dataDescriptors.none { it.track.name == name }) { "Data track '$name' already added" }
+        validateRegistration(name)
         val track = PublishedTrack(name = name, codecInfo = TrackCodecInfo.Data)
         dataDescriptors.add(DataTrackDescriptor(track, emitter))
         return track
     }
 
     /**
-     * Starts all configured tracks.
-     *
-     * This validates codec support before any track is started. If a selected codec is not
-     * available on the current device, [UnsupportedCodecException] is thrown and publishing
-     * does not begin.
+     * Attaches registered tracks. Enabled camera/microphone tracks wait for source availability.
+     * Codec support is checked when each encoder is needed; unsupported disabled/stopped
+     * sources do not prevent other media from publishing.
      *
      * @throws IllegalStateException if this publisher has already been started or has not
      *   been registered with [com.swmansion.moqkit.Session.publish] yet.
      * @throws UnsupportedCodecException if any configured media track cannot be encoded on
      *   this device.
      */
-    fun start() {
-        check(_state.value == PublisherState.Idle) { "Publisher already started" }
-        val broadcast = checkNotNull(broadcast) {
-            "Publisher must be registered with Session.publish() before start()"
+    suspend fun start() {
+        currentCoroutineContext().ensureActive()
+        PublishControl.run {
+            val broadcast = synchronized(this) {
+                check(!registrationClosed && _state.value == PublisherState.Idle) { "Publisher already started" }
+                checkNotNull(broadcast) { "Register with Session.publish() before start()" }
+                    .also { registrationClosed = true }
+            }
+            try {
+                videoDescriptors.filter { it.track.state.value != PublishedTrackState.Stopped }
+                    .forEach { startVideoTrack(it, broadcast) }
+                audioDescriptors.filter { it.track.state.value != PublishedTrackState.Stopped }
+                    .forEach { startAudioTrack(it, broadcast) }
+                dataDescriptors.filter { it.track.state.value != PublishedTrackState.Stopped }
+                    .forEach { startDataTrack(it, broadcast) }
+                _state.value = PublisherState.Publishing
+            } catch (e: Exception) {
+                stopOwned()
+                _state.value = PublisherState.Error(e.message ?: "Publisher start failed")
+                throw e
+            }
         }
-        Log.d(TAG, "Starting publisher: ${videoDescriptors.size} video, ${audioDescriptors.size} audio, ${dataDescriptors.size} data tracks")
-
-        validateCodecSupport()
-
-        for (desc in videoDescriptors) startVideoTrack(desc, broadcast)
-        for (desc in audioDescriptors) startAudioTrack(desc, broadcast)
-        for (desc in dataDescriptors) startDataTrack(desc, broadcast)
-
-        _state.value = PublisherState.Publishing
-        checkAllTracksStopped()
     }
 
-    /**
-     * Stops all active tracks and finishes the broadcast.
-     *
-     * Safe to call more than once. Stopping emits [PublisherEvent.TrackStopped] for each
-     * configured track and moves [state] to [PublisherState.Stopped].
-     */
-    fun stop() {
-        val current = _state.value
-        if (current == PublisherState.Stopped || current is PublisherState.Error) return
-        Log.d(TAG, "Stopping publisher")
+    /** End the broadcast and await encoder teardown. Capture and preview continue. */
+    suspend fun stop() = PublishControl.run { stopOwned() }
 
-        for ((_, active) in activeVideoTracks) tearDownVideoTrack(active)
-        activeVideoTracks.clear()
-
-        for ((_, active) in activeAudioTracks) tearDownAudioTrack(active)
-        activeAudioTracks.clear()
-
-        for ((_, active) in activeDataTracks) tearDownDataTrack(active)
+    private fun stopOwned() {
+        if (_state.value == PublisherState.Stopped) return
+        synchronized(this) { registrationClosed = true }
+        videoDescriptors.forEach { it.track.stopOwned() }
+        audioDescriptors.forEach { it.track.stopOwned() }
+        dataDescriptors.forEach { it.track.stopOwned() }
         activeDataTracks.clear()
-
         try { broadcast?.finish() } catch (_: Exception) {}
+        broadcast?.close()
+        broadcast = null
         clock.reset()
-
-        for (desc in videoDescriptors) emitTrackStopped(desc.track)
-        for (desc in audioDescriptors) emitTrackStopped(desc.track)
-        for (desc in dataDescriptors) emitTrackStopped(desc.track)
-
         _state.value = PublisherState.Stopped
     }
 
-    // MARK: - Video
+    private fun validateRegistration(name: String) {
+        check(!registrationClosed && _state.value == PublisherState.Idle) { "Add tracks before Publisher.start()" }
+        require((videoDescriptors.map { it.track.name } + audioDescriptors.map { it.track.name } +
+            dataDescriptors.map { it.track.name }).none { it == name }) { "Duplicate track name: $name" }
+    }
 
-    private fun validateCodecSupport() {
-        for (desc in videoDescriptors) {
-            val reason = desc.config.unsupportedReason
-            if (reason != null) {
-                throw UnsupportedCodecException("Video track '${desc.track.name}' is not supported: $reason")
-            }
+    private fun reserveSource(source: Any, track: PublishedMediaTrack) {
+        val lifecycle = captureLifecycle(source)
+        val owner = Any()
+        lifecycle?.reserve(owner)
+        track.releaseAction = { lifecycle?.release(owner) }
+        track.stopAction = {
+            track.outputID = null
+            track.binding?.stop()
+            track.binding = null
+            _events.tryEmit(PublisherEvent.TrackStopped(track.name))
         }
-        for (desc in audioDescriptors) {
-            val reason = desc.config.unsupportedReason
-            if (reason != null) {
-                throw UnsupportedCodecException("Audio track '${desc.track.name}' is not supported: $reason")
-            }
-        }
+    }
+
+    private fun captureLifecycle(source: Any): CaptureLifecycle? = when (source) {
+        is CameraCapture -> source.captureLifecycle
+        is MicrophoneCapture -> source.captureLifecycle
+        else -> null
+    }
+
+    private fun mediaOutput(track: PublishedMediaTrack, broadcast: BroadcastProducer, format: String): MediaTrackOutput {
+        val id = Any()
+        track.outputID = id
+        return MediaTrackOutput(
+            broadcast, format,
+            onActive = {
+                PublishControl.post {
+                    if (track.outputID === id) {
+                        track.transition(PublishedTrackState.Active)
+                        _events.tryEmit(PublisherEvent.TrackStarted(track.name))
+                    }
+                }
+            },
+            onError = { error ->
+                PublishControl.post { if (track.outputID === id) track.binding?.fail(error) }
+            },
+        )
     }
 
     private fun startVideoTrack(desc: VideoTrackDescriptor, broadcast: BroadcastProducer) {
-        val active = ActiveVideoTrack()
-        val encoder = VideoEncoder(desc.config)
-        active.encoder = encoder
-        active.source = desc.source
-        val trackHandle = desc.track
-        val clock = clock
-
-        encoder.start { frame ->
-            if (active.mediaProducer == null) {
-                val initData = frame.initData ?: return@start
+        val track = desc.track
+        val binding = CaptureTrackBinding(
+            enabled = track.isEnabled,
+            start = {
+                desc.config.unsupportedReason?.let { throw UnsupportedCodecException(it) }
+                val encoder = VideoEncoder(desc.config)
+                val output = mediaOutput(track, broadcast, desc.config.format)
+                track.transition(PublishedTrackState.Starting)
                 try {
-                    active.mediaProducer = broadcast.publishMedia(
-                        Init(format = desc.config.format, data = initData, video = null),
-                    )
-                    Log.d(TAG, "Video track '${trackHandle.name}' active")
-                    trackHandle.transition(PublishedTrackState.Active)
-                    _events.tryEmit(PublisherEvent.TrackStarted(trackHandle.name))
+                    encoder.start(onError = output::fail) { frame ->
+                        output.write(frame.data, frame.initData, clock.timestampUs(frame.timestampUs))
+                    }
+                    encoder.encoderInputSurface?.let { desc.source.attachEncoderSurface(it) }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to create video producer: $e")
-                    trackHandle.transition(PublishedTrackState.Stopped)
-                    _events.tryEmit(PublisherEvent.TrackError(trackHandle.name, e.message ?: "unknown"))
-                    return@start
+                    output.finish()
+                    try { desc.source.detachEncoderSurface() } finally { encoder.stop() }
+                    throw e
                 }
-            }
-            try {
-                active.mediaProducer?.writeFrame(
-                    Frame(payload = frame.data, timestampUs = clock.timestampUs(frame.timestampUs).toULong()),
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "writeFrame error: $e")
-            }
-        }
-
-        val encoderSurface = encoder.encoderInputSurface
-        if (encoderSurface != null) {
-            desc.source.attachEncoderSurface(encoderSurface)
-        }
-
-        trackHandle.transition(PublishedTrackState.Starting)
-
-        trackHandle.stopAction = {
-            tearDownVideoTrack(active)
-            activeVideoTracks.remove(trackHandle.name)
-            trackHandle.transition(PublishedTrackState.Stopped)
-            _events.tryEmit(PublisherEvent.TrackStopped(trackHandle.name))
-            checkAllTracksStopped()
-        }
-
-        activeVideoTracks[desc.track.name] = active
+                val stop: () -> Unit = {
+                    track.outputID = null
+                    output.finish()
+                    try { desc.source.detachEncoderSurface() } finally { encoder.stop() }
+                }
+                stop
+            },
+            onState = { track.transition(it) },
+            onClosed = { track.stopOwned() },
+            onError = { error ->
+                _events.tryEmit(PublisherEvent.TrackError(track.name, error.message ?: "encoder start failed"))
+            },
+        )
+        track.binding = binding
+        binding.attach(captureLifecycle(desc.source))
     }
-
-    private fun tearDownVideoTrack(active: ActiveVideoTrack) {
-        active.source?.detachEncoderSurface()
-        active.encoder?.stop()
-        try { active.mediaProducer?.finish() } catch (_: Exception) {}
-    }
-
-    // MARK: - Audio
 
     private fun startAudioTrack(desc: AudioTrackDescriptor, broadcast: BroadcastProducer) {
-        val active = ActiveAudioTrack()
-        val encoder = AudioEncoder(desc.config)
-        active.encoder = encoder
-        active.source = desc.source
-        val trackHandle = desc.track
-        val clock = clock
-
-        encoder.start(desc.source) { frame ->
-            if (active.mediaProducer == null) {
-                val initData = frame.initData ?: return@start
+        val track = desc.track
+        val binding = CaptureTrackBinding(
+            enabled = track.isEnabled,
+            start = {
+                desc.config.unsupportedReason?.let { throw UnsupportedCodecException(it) }
+                val encoder = AudioEncoder(desc.config)
+                val output = mediaOutput(track, broadcast, desc.config.format)
+                track.transition(PublishedTrackState.Starting)
                 try {
-                    active.mediaProducer = broadcast.publishMedia(
-                        Init(format = desc.config.format, data = initData, video = null),
-                    )
-                    Log.d(TAG, "Audio track '${trackHandle.name}' active")
-                    trackHandle.transition(PublishedTrackState.Active)
-                    _events.tryEmit(PublisherEvent.TrackStarted(trackHandle.name))
+                    encoder.start(desc.source, onError = output::fail) { frame ->
+                        output.write(frame.data, frame.initData, clock.timestampUs(frame.timestampUs))
+                    }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to create audio producer: $e")
-                    trackHandle.transition(PublishedTrackState.Stopped)
-                    _events.tryEmit(PublisherEvent.TrackError(trackHandle.name, e.message ?: "unknown"))
-                    return@start
+                    output.finish()
+                    desc.source.onPcmData = null
+                    encoder.stop()
+                    throw e
                 }
-            }
-            try {
-                active.mediaProducer?.writeFrame(
-                    Frame(payload = frame.data, timestampUs = clock.timestampUs(frame.timestampUs).toULong()),
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "writeFrame error: $e")
-            }
-        }
-
-        trackHandle.transition(PublishedTrackState.Starting)
-
-        trackHandle.stopAction = {
-            tearDownAudioTrack(active)
-            activeAudioTracks.remove(trackHandle.name)
-            trackHandle.transition(PublishedTrackState.Stopped)
-            _events.tryEmit(PublisherEvent.TrackStopped(trackHandle.name))
-            checkAllTracksStopped()
-        }
-
-        activeAudioTracks[desc.track.name] = active
-    }
-
-    private fun tearDownAudioTrack(active: ActiveAudioTrack) {
-        active.source?.onPcmData = null
-        active.encoder?.stop()
-        try { active.mediaProducer?.finish() } catch (_: Exception) {}
+                val stop: () -> Unit = {
+                    track.outputID = null
+                    output.finish()
+                    desc.source.onPcmData = null
+                    encoder.stop()
+                }
+                stop
+            },
+            onState = { track.transition(it) },
+            onClosed = { track.stopOwned() },
+            onError = { error ->
+                _events.tryEmit(PublisherEvent.TrackError(track.name, error.message ?: "encoder start failed"))
+            },
+        )
+        track.binding = binding
+        binding.attach(captureLifecycle(desc.source))
     }
 
     // MARK: - Data
@@ -353,7 +342,6 @@ class Publisher {
             activeDataTracks.remove(trackHandle.name)
             trackHandle.transition(PublishedTrackState.Stopped)
             _events.tryEmit(PublisherEvent.TrackStopped(trackHandle.name))
-            checkAllTracksStopped()
         }
 
         activeDataTracks[desc.track.name] = active
@@ -367,31 +355,16 @@ class Publisher {
         try { active.producer?.close() } catch (_: Exception) {}
     }
 
-    // MARK: - Lifecycle
-
-    private fun checkAllTracksStopped() {
-        if (activeVideoTracks.isEmpty() && activeAudioTracks.isEmpty() && activeDataTracks.isEmpty()
-            && _state.value == PublisherState.Publishing
-        ) {
-            _state.value = PublisherState.Stopped
-        }
-    }
-
-    private fun emitTrackStopped(track: PublishedTrack) {
-        track.transition(PublishedTrackState.Stopped)
-        _events.tryEmit(PublisherEvent.TrackStopped(track.name))
-    }
-
     // MARK: - Internal descriptor / runtime types
 
     private data class VideoTrackDescriptor(
-        val track: PublishedTrack,
+        val track: PublishedMediaTrack,
         val source: VideoFrameSource,
         val config: VideoEncoderConfig,
     )
 
     private data class AudioTrackDescriptor(
-        val track: PublishedTrack,
+        val track: PublishedMediaTrack,
         val source: AudioFrameSource,
         val config: AudioEncoderConfig,
     )
@@ -400,18 +373,6 @@ class Publisher {
         val track: PublishedTrack,
         val emitter: DataTrackEmitter,
     )
-
-    private class ActiveVideoTrack {
-        var source: VideoFrameSource? = null
-        var encoder: VideoEncoder? = null
-        var mediaProducer: MediaProducer? = null
-    }
-
-    private class ActiveAudioTrack {
-        var source: AudioFrameSource? = null
-        var encoder: AudioEncoder? = null
-        var mediaProducer: MediaProducer? = null
-    }
 
     private data class ActiveDataTrack(
         val emitter: DataTrackEmitter?,

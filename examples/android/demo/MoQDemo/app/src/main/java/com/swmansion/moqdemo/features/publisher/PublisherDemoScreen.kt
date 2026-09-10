@@ -22,6 +22,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -37,6 +39,7 @@ import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.swmansion.moqkit.Session
+import com.swmansion.moqkit.publish.PublishedMediaTrack
 import com.swmansion.moqkit.publish.PublishedTrackState
 import com.swmansion.moqkit.publish.PublisherState
 import com.swmansion.moqkit.publish.encoder.AudioCodec
@@ -52,11 +55,20 @@ fun PublisherDemoScreen(
     val context = LocalContext.current
     var relayUrl by rememberSaveable(initialRelayUrl) { mutableStateOf(initialRelayUrl) }
 
+    var afterPermission by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         val allGranted = results.values.all { it }
-        if (allGranted) vm.startCamera(lifecycleOwner)
+        val action = afterPermission
+        afterPermission = null
+        if (allGranted) action?.invoke()
+        else vm.lastError = "Camera and microphone permissions are required for capture"
+    }
+
+    val requestPermissions: (() -> Unit) -> Unit = { action ->
+        afterPermission = action
+        permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
     }
 
     LaunchedEffect(Unit) {
@@ -80,9 +92,7 @@ fun PublisherDemoScreen(
     // Start camera preview when screen appears or camera configuration changes.
     LaunchedEffect(vm.cameraEnabled, vm.cameraSourceMode, vm.videoResolution, vm.videoFrameRate) {
         if (vm.cameraEnabled) {
-            permissionLauncher.launch(
-                arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-            )
+            requestPermissions { vm.startCamera(lifecycleOwner) }
         } else {
             vm.stopCamera()
         }
@@ -112,9 +122,7 @@ fun PublisherDemoScreen(
             relayUrl = relayUrl,
             onRelayUrlChange = { relayUrl = it },
             lifecycleOwner = lifecycleOwner,
-            permissionLauncher = { permissions ->
-                permissionLauncher.launch(permissions)
-            },
+            onPublish = { requestPermissions { vm.publish(lifecycleOwner, relayUrl) } },
         )
 
         // Session state indicator
@@ -129,13 +137,54 @@ fun PublisherDemoScreen(
             Text(vm.stateLabel, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
+        if (vm.isPublishing) {
+            if (vm.cameraSourceMode == CameraSourceMode.SingleCamera) {
+                OutlinedButton(onClick = {
+                    if (vm.isCameraCapturing) vm.toggleCameraCapture()
+                    else requestPermissions { vm.toggleCameraCapture() }
+                }, enabled = !vm.isChangingMedia) {
+                    Text(if (vm.isCameraCapturing) "Stop camera capture" else "Start camera capture")
+                }
+            }
+            OutlinedButton(onClick = {
+                if (vm.isMicrophoneCapturing) vm.toggleMicrophoneCapture()
+                else requestPermissions { vm.toggleMicrophoneCapture() }
+            }, enabled = !vm.isChangingMedia) {
+                Text(if (vm.isMicrophoneCapturing) "Stop microphone capture" else "Start microphone capture")
+            }
+            vm.publishedTracks.filterIsInstance<PublishedMediaTrack>().forEach { track ->
+                OutlinedButton(onClick = { vm.togglePublication(track) }, enabled = !vm.isChangingMedia) {
+                    Text("${if (vm.publicationEnabled[track.name] == true) "Disable" else "Enable"} ${track.name} publication")
+                }
+            }
+            if (vm.isChangingMedia) Text("Updating media…")
+        }
+
+        if (vm.isPublishing) {
+            OutlinedButton(
+                onClick = vm::toggleMicrophoneMute,
+                enabled = vm.canMuteMicrophone && !vm.isChangingMedia,
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = if (vm.isMicrophoneMuted) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.primary,
+                ),
+            ) {
+                Icon(
+                    imageVector = if (vm.isMicrophoneMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                    contentDescription = null,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(if (vm.isMicrophoneMuted) "Unmute microphone" else "Mute microphone")
+            }
+        }
+
         // Camera preview
-        if (vm.cameraEnabled) {
+        if (vm.cameraEnabled || vm.isCameraCapturing) {
             CameraPreviewCard(vm = vm)
         }
 
         // Config (when not publishing)
-        if (!vm.isPublishing) {
+        if (!vm.isPublishing && !vm.isChangingMedia) {
             SourceConfigCard(vm = vm)
             CodecConfigCard(vm = vm)
         }
@@ -167,7 +216,7 @@ private fun ConnectionSection(
     relayUrl: String,
     onRelayUrlChange: (String) -> Unit,
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
-    permissionLauncher: (Array<String>) -> Unit,
+    onPublish: () -> Unit,
 ) {
     Card {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -192,10 +241,7 @@ private fun ConnectionSection(
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(
-                    onClick = {
-                        permissionLauncher(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO))
-                        vm.publish(lifecycleOwner, relayUrl)
-                    },
+                    onClick = onPublish,
                     enabled = vm.canPublish && relayUrl.trim().isNotEmpty(),
                     modifier = Modifier.weight(1f),
                 ) { Text("Publish") }
@@ -539,7 +585,7 @@ private fun PublishingStatusCard(vm: PublisherViewModel) {
                             modifier = Modifier.weight(1f),
                         )
                         Text(
-                            trackState.name.lowercase(),
+                            trackState.toString().lowercase(),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -574,6 +620,8 @@ private fun publisherStateColor(state: PublisherState): Color = when (state) {
 }
 
 private fun trackStateColor(state: PublishedTrackState): Color = when (state) {
+    PublishedTrackState.Disabled -> Color.Gray
+    is PublishedTrackState.Failed -> Color.Red
     PublishedTrackState.Idle -> Color.Gray
     PublishedTrackState.Starting -> Color(0xFFFFA500)
     PublishedTrackState.Active -> Color(0xFF4CAF50)

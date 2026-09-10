@@ -6,7 +6,7 @@
 val session = Session(url = relayURL, parentScope = viewModelScope)
 scope.launch { session.state.collect { … } }  // StateFlow: Idle/Connecting/Connected/Error(message)/Closed
 session.connect()                             // the only suspend call
-// later: session.close()                     // synchronous, idempotent
+// later: session.close()                     // suspend, idempotent
 ```
 
 - `connect()` is one-shot: reconnecting means a **new** `Session`. Guard stale async completions across reconnects with a connection token.

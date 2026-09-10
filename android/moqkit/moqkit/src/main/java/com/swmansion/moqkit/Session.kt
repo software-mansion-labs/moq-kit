@@ -69,6 +69,7 @@ class Session(
 
     private var connection: Moq? = null
     private var monitorJob: Job? = null
+    private val closeMutex = kotlinx.coroutines.sync.Mutex()
 
     private val activeSubscriptions = mutableMapOf<String, BroadcastSubscription>()
     private val activePublishers = mutableMapOf<String, Publisher>()
@@ -233,7 +234,7 @@ class Session(
      * If [path] is active, this calls [Publisher.stop] for the associated publisher. If the
      * path is not active, this method does nothing.
      */
-    fun unpublish(path: String) {
+    suspend fun unpublish(path: String) {
         val publisher = activePublishers.remove(path) ?: return
         Log.d(TAG, "Unpublishing broadcast at '$path'")
         publisher.stop()
@@ -246,37 +247,17 @@ class Session(
      * After this returns, [state] is [State.Closed] and background work owned by this
      * session is cancelled.
      */
-    fun close() {
-        val wasConnected = _state.compareAndSet(State.Connected, State.Closed)
-        val wasConnecting = if (!wasConnected) {
-            _state.compareAndSet(State.Connecting, State.Closed)
-        } else {
-            false
-        }
-        val wasError = if (!wasConnected && !wasConnecting) {
-            val current = _state.value
-            if (current is State.Error) {
-                _state.compareAndSet(current, State.Closed)
-            } else {
-                false
+    suspend fun close() = kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+        closeMutex.lock()
+        try {
+            if (_state.value != State.Closed) {
+                _state.value = State.Closed
+                tearDown()
             }
-        } else {
-            false
-        }
-
-        if (!wasConnected && !wasConnecting && !wasError) {
-            Log.d(TAG, "close() called but already in state ${_state.value}")
-            return
-        }
-
-        Log.d(
-            TAG,
-            "Closing session (was: connected=$wasConnected connecting=$wasConnecting error=$wasError)",
-        )
-        tearDown()
+        } finally { closeMutex.unlock() }
     }
 
-    private fun tearDown() {
+    private suspend fun tearDown() {
         val subscriptions = synchronized(activeSubscriptions) {
             activeSubscriptions.values.toList().also { activeSubscriptions.clear() }
         }

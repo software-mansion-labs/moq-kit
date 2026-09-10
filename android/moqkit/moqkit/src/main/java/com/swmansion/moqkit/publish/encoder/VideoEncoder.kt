@@ -1,5 +1,8 @@
 package com.swmansion.moqkit.publish.encoder
 
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -21,14 +24,21 @@ internal class VideoEncoder(val config: VideoEncoderConfig) {
     var encoderInputSurface: Surface? = null
         private set
 
+    private var callbackThread: HandlerThread? = null
+    @Volatile private var accepting = false
+    private var errorHandler: ((Exception) -> Unit)? = null
     private var codec: MediaCodec? = null
     private var handler: ((EncodedVideoFrame) -> Unit)? = null
     private var sentInitData = false
     private var sps: ByteArray? = null
     private var pps: ByteArray? = null
 
-    fun start(onEncodedFrame: (EncodedVideoFrame) -> Unit) {
+    fun start(onError: (Exception) -> Unit = {}, onEncodedFrame: (EncodedVideoFrame) -> Unit) {
         handler = onEncodedFrame
+        errorHandler = onError
+        accepting = true
+        val callbacks = HandlerThread("VideoEncoder").apply { start() }
+        callbackThread = callbacks
         sentInitData = false
         sps = null
         pps = null
@@ -47,6 +57,7 @@ internal class VideoEncoder(val config: VideoEncoderConfig) {
         }
 
         val newCodec = MediaCodec.createEncoderByType(mimeType)
+        codec = newCodec
         newCodec.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
                 // Not used for surface input mode
@@ -55,6 +66,7 @@ internal class VideoEncoder(val config: VideoEncoderConfig) {
             override fun onOutputBufferAvailable(
                 codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo
             ) {
+                if (!accepting) return
                 try {
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                         // CSD (codec-specific data): SPS/PPS for H.264, VPS+SPS+PPS for H.265
@@ -81,18 +93,18 @@ internal class VideoEncoder(val config: VideoEncoderConfig) {
                     codec.releaseOutputBuffer(index, false)
                     handleEncodedData(raw, info.presentationTimeUs, isKeyframe)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Output buffer error: $e")
+                    if (accepting) errorHandler?.invoke(e)
                 }
             }
 
             override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-                Log.e(TAG, "Codec error: $e")
+                if (accepting) errorHandler?.invoke(e)
             }
 
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
                 extractCsdFromFormat(format)
             }
-        })
+        }, Handler(callbacks.looper))
 
         newCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         encoderInputSurface = newCodec.createInputSurface()
@@ -101,16 +113,20 @@ internal class VideoEncoder(val config: VideoEncoderConfig) {
     }
 
     fun stop() {
-        try {
-            codec?.stop()
-            codec?.release()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error stopping codec: $e")
-        }
+        synchronized(this) { accepting = false }
+        val oldCodec = codec
         codec = null
+        try { oldCodec?.stop() } catch (e: Exception) { Log.w(TAG, "Error stopping codec", e) }
+        try { oldCodec?.release() } catch (e: Exception) { Log.w(TAG, "Error releasing codec", e) }
+        callbackThread?.let {
+            it.quitSafely()
+            if (Looper.myLooper() != it.looper) it.join()
+        }
+        callbackThread = null
+        handler = null
+        errorHandler = null
         encoderInputSurface?.release()
         encoderInputSurface = null
-        handler = null
     }
 
     private fun handleCsd(csd: ByteArray) {

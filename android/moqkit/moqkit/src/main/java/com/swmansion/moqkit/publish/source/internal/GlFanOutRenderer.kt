@@ -8,6 +8,7 @@ import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
+import android.os.Looper
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -32,6 +33,9 @@ internal class GlFanOutRenderer {
 
     private var previewEglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
     private var encoderEglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+
+    private var fallbackSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var released = false
 
     private var program: Int = 0
     private var positionHandle: Int = 0
@@ -84,53 +88,71 @@ internal class GlFanOutRenderer {
         return result ?: error("GL initialization failed")
     }
 
-    fun setEncoderSurface(surface: Surface?) {
-        handler.post {
-            if (encoderEglSurface != EGL14.EGL_NO_SURFACE) {
-                EGL14.eglDestroySurface(eglDisplay, encoderEglSurface)
-                encoderEglSurface = EGL14.EGL_NO_SURFACE
-            }
-            if (surface != null) {
-                encoderEglSurface = EGL14.eglCreateWindowSurface(
-                    eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0
-                )
-            }
-        }
+    private fun onGlThread(action: () -> Unit) {
+        if (Looper.myLooper() == thread.looper) { action(); return }
+        val done = CountDownLatch(1)
+        var failure: Throwable? = null
+        check(handler.post {
+            try { action() } catch (e: Throwable) { failure = e } finally { done.countDown() }
+        }) { "GL renderer is closed" }
+        done.await()
+        failure?.let { throw it }
     }
 
-    fun setPreviewSurface(surface: Surface?) {
-        handler.post {
-            if (previewEglSurface != EGL14.EGL_NO_SURFACE) {
-                EGL14.eglDestroySurface(eglDisplay, previewEglSurface)
-                previewEglSurface = EGL14.EGL_NO_SURFACE
-            }
-            if (surface != null) {
-                previewEglSurface = EGL14.eglCreateWindowSurface(
-                    eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0
-                )
-            }
-        }
+    fun setEncoderSurface(surface: Surface?) = onGlThread {
+        check(!released) { "GL renderer is closed" }
+        makeFallbackCurrent()
+        destroySurface(encoderEglSurface)
+        encoderEglSurface = EGL14.EGL_NO_SURFACE
+        if (surface != null) encoderEglSurface = createWindowSurface(surface)
+    }
+
+    fun setPreviewSurface(surface: Surface?) = onGlThread {
+        check(!released) { "GL renderer is closed" }
+        makeFallbackCurrent()
+        destroySurface(previewEglSurface)
+        previewEglSurface = EGL14.EGL_NO_SURFACE
+        if (surface != null) previewEglSurface = createWindowSurface(surface)
+    }
+
+    private fun createWindowSurface(surface: Surface): EGLSurface {
+        val result = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
+        check(result != EGL14.EGL_NO_SURFACE) { "Cannot attach GL destination: ${EGL14.eglGetError()}" }
+        return result
     }
 
     fun release() {
-        handler.post {
+        if (!::handler.isInitialized || released) return
+        onGlThread {
+            released = true
+            if (eglContext != EGL14.EGL_NO_CONTEXT) makeFallbackCurrent()
+            surfaceTexture?.setOnFrameAvailableListener(null)
             surfaceTexture?.release()
             surfaceTexture = null
-            destroySurface(previewEglSurface).also { previewEglSurface = EGL14.EGL_NO_SURFACE }
-            destroySurface(encoderEglSurface).also { encoderEglSurface = EGL14.EGL_NO_SURFACE }
-            if (program != 0) {
-                GLES20.glDeleteProgram(program)
-                program = 0
-            }
+            destroySurface(previewEglSurface)
+            destroySurface(encoderEglSurface)
+            previewEglSurface = EGL14.EGL_NO_SURFACE
+            encoderEglSurface = EGL14.EGL_NO_SURFACE
+            if (program != 0) GLES20.glDeleteProgram(program)
+            if (oesTextureId != 0) GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
+            program = 0
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+            destroySurface(fallbackSurface)
             EGL14.eglDestroyContext(eglDisplay, eglContext)
             EGL14.eglTerminate(eglDisplay)
+            EGL14.eglReleaseThread()
         }
         thread.quitSafely()
+        if (Looper.myLooper() != thread.looper) thread.join()
+    }
+
+    private fun makeFallbackCurrent() {
+        EGL14.eglMakeCurrent(eglDisplay, fallbackSurface, fallbackSurface, eglContext)
     }
 
     private fun renderFrame() {
         val st = surfaceTexture ?: return
+        makeFallbackCurrent()
         st.updateTexImage()
         st.getTransformMatrix(transformMatrix)
         renderToSurface(previewEglSurface)
@@ -191,8 +213,9 @@ internal class GlFanOutRenderer {
 
         // Dummy pbuffer surface so we can set up shaders before any window surface exists
         val pbAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-        val dummy = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbAttribs, 0)
-        EGL14.eglMakeCurrent(eglDisplay, dummy, dummy, eglContext)
+        fallbackSurface = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbAttribs, 0)
+        check(fallbackSurface != EGL14.EGL_NO_SURFACE) { "Could not create GL fallback surface" }
+        makeFallbackCurrent()
     }
 
     private fun setupShaders() {

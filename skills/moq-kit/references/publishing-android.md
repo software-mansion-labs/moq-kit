@@ -1,19 +1,52 @@
 # Publishing — Android (Kotlin)
 
-## Go-live order
+## Independent capture and publication
 
-Shared ordering and publisher states are in SKILL.md. Android specifics: `Publisher()` doesn't throw; `start()`/`stop()` are **not** suspend; `start()` validates every track's codec first and throws `UnsupportedCodecException` before starting anything; `start()` with zero tracks flips straight to `Stopped` (as does stopping the last track).
+`CameraCapture` and `MicrophoneCapture` own hardware. `start`, `stop`, and terminal
+`close` are suspend functions. Start/stop are idempotent; preview never starts capture.
+Audio/video registration returns `PublishedMediaTrack`, with `enabled = true` by default.
 
 ```kotlin
-camera.start(context, lifecycleOwner); microphone.start() // 1. captures first
-val publisher = Publisher()                               // 2. add ALL tracks before start
-publisher.addVideoTrack(name = "camera", source = camera, config = videoConfig)
-publisher.addAudioTrack(name = "mic", source = microphone, config = audioConfig)
-session.publish(path = "live/android", publisher = publisher) // 3. register
-publisher.start()                                         // 4. go live
+val camera = CameraCapture(position = CameraPosition.Front)
+val microphone = MicrophoneCapture()
+val publisher = Publisher()
+val video = publisher.addVideoTrack(source = camera)
+val audio = publisher.addAudioTrack(source = microphone, enabled = false)
+session.publish("live/android", publisher)
+publisher.start() // idle media handles; no camera/mic encoders yet
+
+camera.start(context, lifecycleOwner) // preview and enabled video publication
+microphone.start()                    // hardware only; audio is disabled
+audio.setEnabled(true)
+microphone.isMuted = true             // silence; encoder and catalog stay active
+video.setEnabled(false)               // release encoder; preview continues
+camera.stop()                         // release hardware and suspend preview
+video.setEnabled(true)                // records intent; does not start hardware
+camera.start(context, lifecycleOwner) // resume using the same objects
+
+video.stop()                          // terminal detach; capture may continue
+publisher.stop()                      // end broadcast; captures remain app-owned
+camera.close()
+microphone.close()
+session.close()
 ```
 
-Observe `publisher.state` (`StateFlow`), `publisher.events` (`SharedFlow`), and each `PublishedTrack.state` in coroutines on your scope. **Also observe `session.state`** — none of the publisher channels react to the session dying: when the transport drops, `publisher.state` stays `Publishing` and no event fires, while `session.state` goes `Error(message)` → `Closed`. A publish screen that watches only the publisher will keep claiming it is live long after the broadcast is gone.
+Disabling publication or stopping its capture finishes the media producer, removes its
+hang catalog entry and releases the encoder. Restart creates a new wire track name;
+subscribers must follow catalog updates. The logical handle stays the same.
+A publisher remains open with zero active tracks until explicitly stopped or its session ends.
+
+A built-in camera/microphone accepts one publication attachment. Disable and capture stop
+retain it; track stop, publisher stop, or capture close release it.
+`isEnabled` reports intent. States are `Idle` (waiting for capture), `Disabled`,
+`Starting`, `Active`, `Failed(message)`, and terminal `Stopped`.
+Await `setEnabled` for local setup/teardown; active follows the first publishable output.
+After failure, `setEnabled(true)` retries; a new capture run also retries.
+Calls on a terminal handle throw.
+
+To release this SDK's camera/microphone use, await capture `stop()`. Mute and publication
+disable leave explicitly started hardware active. Other consumers and the OS's recent-use
+indicator can still report use.
 
 ## Camera and preview
 
@@ -24,7 +57,14 @@ camera.switchCamera()                 // suspend
 camera.stop()
 ```
 
-Preview: `camera.setPreviewSurface(surface)` with a `SurfaceView`'s surface — same `SurfaceHolder.Callback` pattern as the player (null it on `surfaceDestroyed`).
+Preview: call `camera.setPreviewSurface(surface)` with one `SurfaceView` surface,
+including before start. Call `setPreviewSurface(null)` synchronously in
+`surfaceDestroyed` before the surface owner releases it. For a `TextureView`, release
+the app-created `Surface` wrapper after detaching it. The capture borrows preview surfaces.
+
+CameraX feeds one GL input texture, which fans out to preview and the publisher's encoder
+surface simultaneously. Capture owns GL; publication owns the codec surface. Disabling
+publication detaches that destination without affecting preview.
 
 ## Multi-camera
 
@@ -45,13 +85,21 @@ Two checks: `isSupported(context)` (cheap `PackageManager` feature check — gat
 
 ```kotlin
 val microphone = MicrophoneCapture(sampleRate = 48_000, channels = 1)
-microphone.start() // NOT suspend; silently no-ops if RECORD_AUDIO is missing or AudioRecord fails
+microphone.start() // suspend; throws if permission or AudioRecord startup fails
 microphone.stop()
 ```
 
-The silent no-op means a missing permission produces a broadcast with no audio and no error — request `RECORD_AUDIO` before starting. `start()` is annotated `@RequiresPermission(RECORD_AUDIO)`, so call sites need the permission proven to lint (a checked request, `@RequiresPermission` on the caller, or an explicit suppression). Keep `sampleRate` equal to `AudioEncoderConfig.sampleRate` (Opus wants 48 kHz).
+Request `RECORD_AUDIO` before starting. `start()` is annotated
+`@RequiresPermission(RECORD_AUDIO)`. Keep the capture and encoder sample rates equal
+(Opus requires 48 kHz). Failed startup releases partial resources and can be retried.
 
-Unlike iOS, `start()` is **not** idempotent: calling it twice without `stop()` leaves the first `AudioRecord` and its reader thread running while only the second is tracked, so `stop()` releases one of them and duplicate PCM keeps flowing. Gate re-publish on your own running flag. Stopping first, then starting again, is fine — a stopped capture can be handed to the next `Publisher` (only the `Publisher` is single-use).
+Set `microphone.isMuted = true` to send silence, and `false` to resume microphone audio.
+Muting keeps capture, the encoder, and the published audio track running with continuous
+timestamps. It does not release the microphone; use `stop()` to stop capture. The property
+is thread-safe, defaults to `false`, can be set before `start()`, and persists across
+stop/start. Changes affect subsequent captured buffers; audio already queued for encoding
+or playback is unaffected. Do not implement mute by replacing `onPcmData`: the publisher
+owns that callback and installs it when the track starts.
 
 ## Encoder configs and codec gating
 
@@ -78,3 +126,7 @@ Manifest: `INTERNET`, `CAMERA`, `RECORD_AUDIO` — declare **and** request at ru
 ## Teardown
 
 Cancel observer jobs → `publisher.stop()` → `camera.stop()` / `microphone.stop()` → `session.close()` if no longer needed. `session.unpublish(path)` is equivalent to `publisher.stop()` for that path.
+
+Automatic source availability propagation is specific to camera and microphone. Custom,
+screen and multi-camera sources keep their existing contracts. Data handles expose terminal
+`stop()` and state only; `setEnabled` belongs to `PublishedMediaTrack`.

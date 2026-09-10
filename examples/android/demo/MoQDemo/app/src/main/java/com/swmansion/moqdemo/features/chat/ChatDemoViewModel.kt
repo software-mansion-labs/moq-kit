@@ -210,10 +210,10 @@ class ChatDemoViewModel : ViewModel() {
         }
         statusMessage = "Not connected"
 
-        if (oldPath.isNotEmpty()) {
-            oldSession?.unpublish(oldPath)
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main.immediate).launch {
+            if (oldPath.isNotEmpty()) oldSession?.unpublish(oldPath)
+            oldSession?.close()
         }
-        oldSession?.close()
     }
 
     private fun observeBroadcasts(

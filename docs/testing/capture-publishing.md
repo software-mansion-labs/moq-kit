@@ -1,10 +1,11 @@
 # Capture and publication: physical-device acceptance
 
-Run the updated publisher demo on a physical iOS device. Use a second device's player
-demo as the subscriber. Exercise H.264 and supported AAC/Opus configurations.
+Run the updated publisher demo on one physical iOS device and one physical Android device.
+Use a second device's player demo as the subscriber. Exercise both publisher/subscriber
+platform combinations with H.264 and supported AAC/Opus configurations.
 
 This checklist is manual acceptance work; simulator tests and demo builds do not verify
-camera hardware, privacy indicators or audible playback.
+camera hardware, privacy indicators, CameraX surface lifetime or audible playback.
 
 ## Controls and expected behavior
 
@@ -33,6 +34,8 @@ camera hardware, privacy indicators or audible playback.
   compatible switch. Stop camera, select the other lens, start and verify the selection.
 - Toggle publication and hardware repeatedly, including while a transition is pending.
   Controls show progress and prevent overlapping UI commands; errors remain visible.
+- Recreate the Android preview surface (navigation/rotation as supported). Video publication
+  continues while the preview detaches/reattaches; no stale EGL surface is drawn.
 - Background/foreground the publisher and trigger a camera interruption. Verify unavailable
   media leaves the catalog, then returns when the capture resumes.
 - Deny camera/microphone permission, retry after granting it, and verify startup reports
@@ -46,10 +49,11 @@ camera hardware, privacy indicators or audible playback.
 
 ## Evidence to record
 
-Record device models, OS versions, codecs, publisher/subscriber platforms, failures and
+Record device models, OS versions, codecs, the two platform directions, failures and
 reproduction steps. Check catalog track names/counts in the player demo. Use platform
 profiling/logging to confirm codec instances are released when publication disables and
 camera/microphone resources release after capture stop. OS recent-use indicators may linger
 and other app/OS consumers can independently use the device.
 
-Automated gates: `mise run ios:check`, `mise run ios:test`, `mise run ios:demo:build`.
+Automated gates: `mise run ios:check`, `mise run ios:test`, `mise run android:check`,
+`mise run ios:demo:build`, `mise run android:demo:build`.

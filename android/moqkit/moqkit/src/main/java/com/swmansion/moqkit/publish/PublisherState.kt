@@ -7,7 +7,7 @@ sealed class PublisherState {
     /** Tracks can still be added and publishing has not started. */
     object Idle : PublisherState()
 
-    /** At least one track is actively publishing or starting. */
+    /** Broadcast is open, including while every media track is disabled or waiting for capture. */
     object Publishing : PublisherState()
 
     /** Publishing has ended and this publisher should not be reused. */
@@ -49,16 +49,11 @@ sealed class PublisherEvent {
 }
 
 /** Lifecycle state for an individual [PublishedTrack]. */
-enum class PublishedTrackState {
-    /** The publisher has not started this track yet. */
-    Idle,
-
-    /** The track is connecting its source and encoder. */
-    Starting,
-
-    /** The track is publishing. */
-    Active,
-
-    /** The track has stopped. */
-    Stopped,
+sealed class PublishedTrackState {
+    data object Idle : PublishedTrackState()
+    data object Disabled : PublishedTrackState()
+    data object Starting : PublishedTrackState()
+    data object Active : PublishedTrackState()
+    data class Failed(val message: String) : PublishedTrackState()
+    data object Stopped : PublishedTrackState()
 }
