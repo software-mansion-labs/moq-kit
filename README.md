@@ -152,8 +152,9 @@ Add the Swift package and depend on the `MoQKit` product:
 .product(name: "MoQKit", package: "moq-kit")
 ```
 
-The Swift package depends on `https://github.com/moq-dev/moq-swift` from `0.4.4` for its
-Swift abstractions, generated UniFFI bindings, and prebuilt XCFramework.
+The Swift package depends on `https://github.com/moq-dev/moq-swift` from `0.4.5` for its
+Swift abstractions and `moq-swift-ffi` from `0.3.16` (within `0.3.x`) for generated UniFFI
+bindings and the prebuilt XCFramework.
 
 The iOS SDK does not add permissions, entitlements, or audio-session configuration for
 you. Camera publishing requires `NSCameraUsageDescription`. Microphone publishing requires
