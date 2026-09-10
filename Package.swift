@@ -11,10 +11,10 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.5"),
         .package(url: "https://github.com/apple/swift-atomics", from: "1.2.0"),
-        .package(url: "https://github.com/moq-dev/moq-swift", from: "0.4.4"),
+        .package(url: "https://github.com/moq-dev/moq-swift", from: "0.4.5"),
         .package(
             url: "https://github.com/moq-dev/moq-swift-ffi",
-            .upToNextMinor(from: "0.3.11")
+            .upToNextMinor(from: "0.3.16")
         )
     ],
     targets: [
