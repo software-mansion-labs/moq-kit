@@ -1,3 +1,4 @@
+import AVKit
 import MoQKit
 import SwiftUI
 
@@ -250,6 +251,26 @@ private struct BroadcastPlayerView: View {
                     AudioWaveformCardView(entry: entry)
                 }
 
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        Task { await entry.rewindLast15Seconds() }
+                    } label: {
+                        Label(
+                            entry.isDVRLoading ? "Loading rewind…" : "Rewind 15 seconds",
+                            systemImage: "gobackward.15"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!entry.isDVRAvailable || entry.isDVRLoading || entry.offline)
+
+                    if let dvrError = entry.dvrError {
+                        Text(dvrError)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if entry.player != nil {
                     DiagnosticsCardView(entry: entry, connectionStats: connectionStats)
                 }
@@ -258,6 +279,27 @@ private struct BroadcastPlayerView: View {
         }
         .background(.background, in: RoundedRectangle(cornerRadius: 16))
         .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .sheet(isPresented: $entry.isDVRPresented, onDismiss: entry.dismissDVR) {
+            NavigationStack {
+                Group {
+                    if let player = entry.dvrPlayer?.player {
+                        VideoPlayer(player: player)
+                            .background(Color.black)
+                    } else {
+                        ProgressView()
+                    }
+                }
+                .navigationTitle("Last 15 seconds")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Live") {
+                            entry.isDVRPresented = false
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

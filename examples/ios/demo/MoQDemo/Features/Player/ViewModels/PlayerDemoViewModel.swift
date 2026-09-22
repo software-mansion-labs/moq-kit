@@ -302,6 +302,7 @@ final class PlayerDemoViewModel: ObservableObject {
                 await entry.stop(reason: "broadcast selection changed while starting \(entry.id)")
                 return
             }
+            await entry.startDVRIndexing()
         } catch {
             guard !Task.isCancelled, selectedBroadcastPath == entry.id else {
                 await entry.stop(reason: "broadcast selection changed while starting \(entry.id)")
