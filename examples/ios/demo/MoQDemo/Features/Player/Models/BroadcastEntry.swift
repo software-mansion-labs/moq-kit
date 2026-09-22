@@ -1,8 +1,9 @@
 import AVFoundation
+import Combine
 import MoQKit
 import os
 
-private let broadcastEntryLogger = Logger(
+let broadcastEntryLogger = Logger(
     subsystem: "com.swmansion.MoQDemo",
     category: "broadcast-entry"
 )
@@ -20,15 +21,37 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     @Published var offline = false
     @Published var isPlaying = false
     @Published var isPaused = false
-    @Published var playbackStats: PlaybackStats?
-    @Published var startupDiagnostics = PlayerStartupDiagnostics()
     @Published var targetLatencyMs: Double
     @Published var volume: Double = 1.0
-    @Published var dvrPlayer: DVR.Player?
-    @Published var isDVRPresented = false
-    @Published var isDVRLoading = false
-    @Published var isDVRAvailable = false
-    @Published var dvrError: String?
+
+    var playbackStats: PlaybackStats? {
+        playerEventMonitor.playbackStats
+    }
+
+    var startupDiagnostics: PlayerStartupDiagnostics {
+        playerEventMonitor.startupDiagnostics
+    }
+
+    var dvrPlayer: DVR.Player? {
+        dvrPlaybackController.player
+    }
+
+    var isDVRPresented: Bool {
+        get { dvrPlaybackController.isPresented }
+        set { dvrPlaybackController.setPresented(newValue) }
+    }
+
+    var isDVRLoading: Bool {
+        dvrPlaybackController.isLoading
+    }
+
+    var isDVRAvailable: Bool {
+        dvrPlaybackController.isAvailable
+    }
+
+    var dvrError: String? {
+        dvrPlaybackController.error
+    }
 
     var videoLayer: AVSampleBufferDisplayLayer? {
         player?.videoLayer
@@ -37,13 +60,6 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     var hasAudio: Bool {
         selectedAudioTrack != nil
     }
-
-    private var eventsSubscription: PlayerEventSubscription?
-    private var statsSubscription: PlayerEventSubscription?
-    private var pendingVideoTrackName: String?
-    private var lastNonZeroVolume: Double = 1.0
-    private var dvrTimelineResolver: DVR.TimelineResolver?
-    private var dvrIndexGeneration = 0
 
     var selectedVideoTrack: VideoTrackInfo? {
         guard let selectedVideoTrackName else { return nil }
@@ -59,18 +75,28 @@ final class BroadcastEntry: ObservableObject, Identifiable {
         selectedAudioTrack != nil && !offline
     }
 
+    private let playerEventMonitor: PlayerEventMonitor
+    private let dvrPlaybackController: DVRPlaybackController
+    private var childObservationCancellables: Set<AnyCancellable> = []
+    private var pendingVideoTrackName: String?
+    private var lastNonZeroVolume: Double = 1.0
+
     init(
         catalog: Catalog,
         initialVideoTrackName: String?,
         initialAudioTrackName: String?,
         initialLatencyMs: UInt64
     ) {
-        self.id = catalog.path
-        self.broadcastPath = catalog.path
-        self.selectedVideoTrackName = initialVideoTrackName
-        self.selectedAudioTrackName = initialAudioTrackName
+        id = catalog.path
+        broadcastPath = catalog.path
+        selectedVideoTrackName = initialVideoTrackName
+        selectedAudioTrackName = initialAudioTrackName
         self.catalog = catalog
-        self.targetLatencyMs = Double(initialLatencyMs)
+        targetLatencyMs = Double(initialLatencyMs)
+        playerEventMonitor = PlayerEventMonitor(broadcastPath: catalog.path)
+        dvrPlaybackController = DVRPlaybackController(broadcastPath: catalog.path)
+
+        forwardChildChanges()
     }
 
     func attach(player: Player) {
@@ -78,10 +104,19 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             "Attaching player path=\(self.broadcastPath), video=\(self.selectedVideoTrackName ?? "none"), audio=\(self.selectedAudioTrackName ?? "none")"
         )
         self.player = player
-        eventsSubscription?.cancel()
-        eventsSubscription = player.subscribeEvents { [weak self] event in
-            self?.handleEvent(event)
-        }
+        playerEventMonitor.attach(
+            to: player,
+            activeTrackNames: { [weak self] in
+                guard let self else { return (video: nil, audio: nil) }
+                return (
+                    video: self.selectedVideoTrackName,
+                    audio: self.selectedAudioTrackName
+                )
+            },
+            onEvent: { [weak self] event in
+                self?.handleEvent(event)
+            }
+        )
     }
 
     func switchVideoTrack(to trackName: String) {
@@ -117,97 +152,25 @@ final class BroadcastEntry: ObservableObject, Identifiable {
     }
 
     func startDVRIndexing() async {
-        guard dvrTimelineResolver == nil else {
-            broadcastEntryLogger.debug(
-                "DVR indexing already active path=\(self.broadcastPath, privacy: .public)"
-            )
-            return
-        }
-        guard let videoTrackName = selectedVideoTrackName, let audioTrackName = selectedAudioTrackName else {
-            broadcastEntryLogger.warning(
-                "DVR indexing skipped because selected tracks are missing path=\(self.broadcastPath, privacy: .public) video=\(self.selectedVideoTrackName ?? "none", privacy: .public) audio=\(self.selectedAudioTrackName ?? "none", privacy: .public)"
-            )
-            return
-        }
-
-        broadcastEntryLogger.debug(
-            "DVR indexing starting path=\(self.broadcastPath, privacy: .public) video=\(videoTrackName, privacy: .public) audio=\(audioTrackName, privacy: .public)"
+        await dvrPlaybackController.startIndexing(
+            catalog: catalog,
+            videoTrackName: selectedVideoTrackName,
+            audioTrackName: selectedAudioTrackName
         )
-
-        do {
-            let resolver = try DVR.TimelineResolver(
-                catalog: catalog,
-                videoTrackName: videoTrackName,
-                audioTrackName: audioTrackName
-            )
-            try await resolver.start()
-            dvrTimelineResolver = resolver
-            isDVRAvailable = true
-            dvrError = nil
-            broadcastEntryLogger.debug(
-                "DVR indexing started path=\(self.broadcastPath, privacy: .public)"
-            )
-        } catch {
-            isDVRAvailable = false
-            dvrError = error.localizedDescription
-            broadcastEntryLogger.warning(
-                "DVR indexing unavailable path=\(self.broadcastPath, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-        }
     }
 
     func rewindLast15Seconds() async {
-        guard let dvrTimelineResolver else {
-            broadcastEntryLogger.warning(
-                "DVR rewind ignored because timeline resolver is unavailable path=\(self.broadcastPath, privacy: .public)"
-            )
-            return
-        }
-        guard !isDVRLoading else {
-            broadcastEntryLogger.debug(
-                "DVR rewind ignored because another rewind is loading path=\(self.broadcastPath, privacy: .public)"
-            )
-            return
-        }
-        broadcastEntryLogger.debug(
-            "DVR rewind requested path=\(self.broadcastPath, privacy: .public) durationSeconds=15"
+        await dvrPlaybackController.rewindLast15Seconds(
+            catalog: catalog,
+            videoTrackName: selectedVideoTrackName,
+            audioTrackName: selectedAudioTrackName,
+            volume: Float(volume)
         )
-        isDVRLoading = true
-        dvrError = nil
-        defer { isDVRLoading = false }
-
-        do {
-            let selection = try await dvrTimelineResolver.selection(for: .seconds(15))
-            broadcastEntryLogger.debug(
-                "DVR rewind selection path=\(self.broadcastPath, privacy: .public) video=\(selection.video.name, privacy: .public) videoBoundaries=\(selection.video.timeline.count) audio=\(selection.audio.name, privacy: .public) audioBoundaries=\(selection.audio.timeline.count)"
-            )
-            let dvrPlayer = try await DVR.Player(
-                catalog: catalog,
-                selection: selection
-            )
-            self.dvrPlayer?.stop()
-            self.dvrPlayer = dvrPlayer
-            isDVRPresented = true
-            applySelectedVolume()
-            dvrPlayer.player.play()
-            broadcastEntryLogger.debug(
-                "DVR rewind playback requested path=\(self.broadcastPath, privacy: .public) volume=\(dvrPlayer.player.volume) itemStatus=\(dvrPlayer.item.status.rawValue)"
-            )
-        } catch {
-            dvrError = error.localizedDescription
-            broadcastEntryLogger.error(
-                "DVR rewind failed path=\(self.broadcastPath, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-        }
+        applySelectedVolume()
     }
 
     func dismissDVR() {
-        broadcastEntryLogger.debug(
-            "DVR presentation dismissed path=\(self.broadcastPath, privacy: .public)"
-        )
-        dvrPlayer?.stop()
-        dvrPlayer = nil
-        isDVRPresented = false
+        dvrPlaybackController.dismiss()
         applySelectedVolume()
     }
 
@@ -216,328 +179,72 @@ final class BroadcastEntry: ObservableObject, Identifiable {
             "Stopping broadcast entry path=\(self.broadcastPath), reason=\(reason), hasPlayer=\(self.player != nil), isPlaying=\(self.isPlaying), isPaused=\(self.isPaused), offline=\(self.offline)"
         )
         audioAnalysis.stop(reset: true)
-        eventsSubscription?.cancel()
-        eventsSubscription = nil
-        statsSubscription?.cancel()
-        statsSubscription = nil
-        playbackStats = nil
-        dvrIndexGeneration += 1
-        let timelineResolver = dvrTimelineResolver
-        dvrTimelineResolver = nil
+        playerEventMonitor.detach()
+
         let player = player
         self.player = nil
-        dvrPlayer?.stop()
-        dvrPlayer = nil
-        isDVRPresented = false
-        isDVRAvailable = false
         isPlaying = false
         isPaused = false
-        await timelineResolver?.stop()
+
+        await dvrPlaybackController.stop()
         await player?.stopAll(reason: reason)
+    }
+
+    private func forwardChildChanges() {
+        Publishers.Merge(
+            playerEventMonitor.objectWillChange,
+            dvrPlaybackController.objectWillChange
+        )
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &childObservationCancellables)
     }
 
     private func applySelectedVolume() {
         let selectedVolume = Float(volume)
-        dvrPlayer?.player.volume = selectedVolume
-        player?.setVolume(isDVRPresented ? 0 : selectedVolume)
+        dvrPlaybackController.player?.player.volume = selectedVolume
+        player?.setVolume(dvrPlaybackController.isPresented ? 0 : selectedVolume)
     }
 
     private func handleEvent(_ event: PlayerEvent) {
-        if let trackName = event.type.logTrackName {
-            broadcastEntryLogger.debug(
-                "Player event path=\(self.broadcastPath), event=\(event.name.rawValue), track=\(trackName)"
-            )
-        } else {
-            broadcastEntryLogger.debug(
-                "Player event path=\(self.broadcastPath), event=\(event.name.rawValue)"
-            )
-        }
-
-        startupDiagnostics.record(
-            event,
-            activeVideoTrackName: selectedVideoTrackName,
-            activeAudioTrackName: selectedAudioTrackName
-        )
-
         switch event.type {
-        case .playbackStart(_):
+        case .playbackStart:
             isPlaying = true
             isPaused = false
-            startStatsSubscription()
-        case .playbackPause(_):
+        case .playbackPause:
             isPaused = true
-        case .playbackResume(_):
+        case .playbackResume:
             isPaused = false
         case .trackSwitch(let track):
-            if track.kind == .video {
-                let previousTrackName = selectedVideoTrackName
-                if let trackName = track.trackName {
-                    selectedVideoTrackName = trackName
-                    self.pendingVideoTrackName = nil
-                } else if let pendingVideoTrackName {
-                    selectedVideoTrackName = pendingVideoTrackName
-                    self.pendingVideoTrackName = nil
-                }
-                if selectedVideoTrackName != previousTrackName {
-                    restartDVRIndexing()
-                }
+            guard track.kind == .video else { return }
+
+            let previousTrackName = selectedVideoTrackName
+            if let trackName = track.trackName {
+                selectedVideoTrackName = trackName
+                pendingVideoTrackName = nil
+            } else if let pendingVideoTrackName {
+                selectedVideoTrackName = pendingVideoTrackName
+                self.pendingVideoTrackName = nil
             }
-        case .playbackEnd(_):
+            if selectedVideoTrackName != previousTrackName {
+                reindexDVR()
+            }
+        case .playbackEnd:
             isPlaying = false
             isPaused = false
             offline = true
             audioAnalysis.stop()
-            statsSubscription?.cancel()
-            statsSubscription = nil
-            playbackStats = nil
         default:
             break
         }
     }
 
-    private func restartDVRIndexing() {
-        dvrIndexGeneration += 1
-        let generation = dvrIndexGeneration
-        let previousResolver = dvrTimelineResolver
-        dvrTimelineResolver = nil
-        isDVRAvailable = false
-
-        Task { [weak self] in
-            await previousResolver?.stop()
-            guard let self, self.dvrIndexGeneration == generation else { return }
-            await self.startDVRIndexing()
-        }
-    }
-
-    private func startStatsSubscription() {
-        guard statsSubscription == nil, let player else { return }
-
-        statsSubscription = player.subscribeStats { [weak self] stats in
-            self?.playbackStats = stats
-        }
-    }
-}
-
-private extension PlayerEventType {
-    var logTrackName: String? {
-        switch self {
-        case .playbackStart(let event), .trackPlaying(let event):
-            event.track.trackName ?? "none"
-        case .trackReady(let event):
-            event.track.trackName ?? "none"
-        case .trackSubscribeError(let event), .decodeError(let event):
-            event.track.trackName ?? "none"
-        case .trackSubscribeStart(let track),
-             .trackSubscribeEnd(let track),
-             .trackSwitch(let track),
-             .trackStallStart(let track),
-             .trackStallEnd(let track),
-             .rebufferStart(let track),
-             .rebufferEnd(let track):
-            track.trackName ?? "none"
-        case .trackSelect(let selection):
-            selection.trackName ?? "none"
-        case .playerInit,
-             .playerDestroy,
-             .playbackRequest,
-             .playbackPause,
-             .playbackResume,
-             .playbackEnd:
-            nil
-        }
-    }
-}
-
-struct PlayerStartupDiagnostics {
-    var playerInitAt: ContinuousClock.Instant?
-    var playRequestedAt: ContinuousClock.Instant?
-    var playbackStartedAt: ContinuousClock.Instant?
-    var playbackEndedAt: ContinuousClock.Instant?
-    var playbackStartedByKind: PlayerTrackKind?
-    private var tracks: [TrackStartupDiagnostics] = []
-
-    var initToPlayRequest: Duration? {
-        elapsed(from: playerInitAt, to: playRequestedAt)
-    }
-
-    var playRequestToPlaybackStart: Duration? {
-        elapsed(from: playRequestedAt, to: playbackStartedAt)
-    }
-
-    var orderedTracks: [TrackStartupDiagnostics] {
-        tracks
-    }
-
-    mutating func record(
-        _ event: PlayerEvent,
-        activeVideoTrackName: String?,
-        activeAudioTrackName: String?
-    ) {
-        switch event.type {
-        case .playerInit(_):
-            playerInitAt = playerInitAt ?? event.timestamp
-        case .playbackRequest(_):
-            playRequestedAt = event.timestamp
-            playbackStartedAt = nil
-            playbackEndedAt = nil
-            playbackStartedByKind = nil
-            tracks.removeAll()
-        case .playbackStart(let playback):
-            playbackStartedAt = playbackStartedAt ?? event.timestamp
-            playbackStartedByKind = playback.track.kind
-        case .playbackEnd(_):
-            playbackEndedAt = event.timestamp
-        case .trackSubscribeStart(let track):
-            startTrack(
-                event,
-                track,
-                activeTrackName: track.kind == .video
-                    ? activeVideoTrackName
-                    : activeAudioTrackName
-            )
-        case .trackReady(let ready):
-            updateTrack(event, ready.track) { track in
-                track.trackName = ready.track.trackName ?? track.trackName
-                track.readyAt = track.readyAt ?? event.timestamp
-                track.epoch = ready.track.epoch
-            }
-        case .trackPlaying(let playing):
-            updateTrack(event, playing.track) { track in
-                track.trackName = playing.track.trackName ?? track.trackName
-                track.playingAt = track.playingAt ?? event.timestamp
-                track.epoch = playing.track.epoch
-            }
-        case .trackSubscribeError(let error):
-            updateTrack(event, error.track) { track in
-                track.trackName = error.track.trackName ?? track.trackName
-                track.errorAt = event.timestamp
-                track.errorMessage = error.message
-                track.epoch = error.track.epoch
-            }
-        case .trackSubscribeEnd(let eventTrack):
-            updateTrack(event, eventTrack) { track in
-                track.trackName = eventTrack.trackName ?? track.trackName
-                track.endedAt = event.timestamp
-                track.epoch = eventTrack.epoch
-            }
-        case .trackSwitch(let eventTrack):
-            updateTrack(event, eventTrack) { track in
-                track.trackName = eventTrack.trackName ?? track.trackName
-                track.activeAt = track.activeAt ?? event.timestamp
-                track.epoch = eventTrack.epoch
-            }
-        default:
-            break
-        }
-    }
-
-    func elapsed(
-        from start: ContinuousClock.Instant?,
-        to end: ContinuousClock.Instant?
-    ) -> Duration? {
-        guard let start, let end else { return nil }
-        return start.duration(to: end)
-    }
-
-    private mutating func startTrack(
-        _ event: PlayerEvent,
-        _ eventTrack: PlayerTrackEvent,
-        activeTrackName: String?
-    ) {
-        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: eventTrack.kind)
-        track.trackName = eventTrack.trackName
-        track.subscribeStartedAt = event.timestamp
-        track.epoch = eventTrack.epoch
-        if track.isTrackSwitch {
-            tracks.removeAll { $0.kind == eventTrack.kind && $0.isTrackSwitch }
-            track.sourceTrackName = activeTrackName
-        }
-        tracks.append(track)
-    }
-
-    private mutating func updateTrack(
-        _ event: PlayerEvent,
-        _ eventTrack: PlayerTrackEvent,
-        _ update: (inout TrackStartupDiagnostics) -> Void
-    ) {
-        if let index = tracks.indices.reversed().first(where: { index in
-            let track = tracks[index]
-            guard track.kind == eventTrack.kind else { return false }
-            if let trackName = eventTrack.trackName,
-               let existingName = track.trackName,
-               existingName != trackName
-            {
-                return false
-            }
-            if eventTrack.epoch != .zero, track.epoch != eventTrack.epoch {
-                return false
-            }
-            return true
-        }) {
-            update(&tracks[index])
-            return
-        }
-
-        var track = TrackStartupDiagnostics(id: "track-\(event.sequence)", kind: eventTrack.kind)
-        track.epoch = eventTrack.epoch
-        update(&track)
-        tracks.append(track)
-    }
-}
-
-struct TrackStartupDiagnostics: Identifiable {
-    let id: String
-    let kind: PlayerTrackKind
-    var sourceTrackName: String?
-    var trackName: String?
-    var subscribeStartedAt: ContinuousClock.Instant?
-    var readyAt: ContinuousClock.Instant?
-    var playingAt: ContinuousClock.Instant?
-    var activeAt: ContinuousClock.Instant?
-    var errorAt: ContinuousClock.Instant?
-    var errorMessage: String?
-    var endedAt: ContinuousClock.Instant?
-    var epoch: UInt64 = .zero
-
-    var isTrackSwitch: Bool {
-        epoch > 1
-    }
-
-    var operationLabel: String {
-        isTrackSwitch ? "Switch" : "Play request"
-    }
-
-    func subscribeToReady() -> Duration? {
-        elapsed(from: subscribeStartedAt, to: readyAt)
-    }
-
-    func operationToReady(playRequestedAt: ContinuousClock.Instant?) -> Duration? {
-        elapsed(from: operationStartedAt(playRequestedAt: playRequestedAt), to: readyAt)
-    }
-
-    func readyToPlaying() -> Duration? {
-        elapsed(from: readyAt, to: playingAt)
-    }
-
-    func operationToPlaying(playRequestedAt: ContinuousClock.Instant?) -> Duration? {
-        elapsed(from: operationStartedAt(playRequestedAt: playRequestedAt), to: playingAt)
-    }
-
-    func operationToActive(playRequestedAt: ContinuousClock.Instant?) -> Duration? {
-        elapsed(from: operationStartedAt(playRequestedAt: playRequestedAt), to: activeAt)
-    }
-
-    private func operationStartedAt(
-        playRequestedAt: ContinuousClock.Instant?
-    ) -> ContinuousClock.Instant? {
-        isTrackSwitch ? subscribeStartedAt : playRequestedAt
-    }
-
-    private func elapsed(
-        from start: ContinuousClock.Instant?,
-        to end: ContinuousClock.Instant?
-    ) -> Duration? {
-        guard let start, let end else { return nil }
-        return start.duration(to: end)
+    private func reindexDVR() {
+        dvrPlaybackController.reindex(
+            catalog: catalog,
+            videoTrackName: selectedVideoTrackName,
+            audioTrackName: selectedAudioTrackName
+        )
     }
 }
